@@ -1,0 +1,610 @@
+import os
+import json
+import shutil
+import logging
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from backend.models import (
+    EmailMessage,
+    EmailCategory,
+    ClassificationResult,
+    UserProfile,
+    ReplyDraftRequest,
+    SendReplyRequest
+)
+from backend.config import (
+    load_settings,
+    save_settings,
+    get_user_profile,
+    update_user_profile,
+    RESUMES_DIR,
+    EMAILS_CACHE_FILE
+)
+from backend.ai_agent import classify_email, generate_personalized_reply
+from backend.outlook_client import outlook_client
+from backend.analytics import (
+    record_opportunity,
+    update_opportunity_stage,
+    log_event,
+    log_grounding_audit,
+    get_kpis_summary,
+    get_funnel_metrics,
+    get_compensation_benchmarks,
+    get_resume_roi_leaderboard,
+    get_recent_audit_events,
+    export_analytics_data
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("outlook_assistant")
+
+app = FastAPI(
+    title="AI Outlook Email Assistant & Resume Co-Pilot",
+    description="Automated AI Noise Cleaner and Resume Request Auto-Responder for Microsoft Outlook",
+    version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-Memory Email Cache & State
+CACHED_EMAILS: Dict[str, EmailMessage] = {}
+
+def sync_cache_to_analytics():
+    """Seeds cached reachouts into SQLite opportunities on startup."""
+    try:
+        for eid, email in CACHED_EMAILS.items():
+            if email.classification and email.classification.is_resume_request:
+                record_opportunity(
+                    email_id=email.id,
+                    subject=email.subject,
+                    sender_name=email.sender_name,
+                    sender_email=email.sender_email,
+                    recruiter_details=email.classification.recruiter_details,
+                    resume_match=email.classification.resume_match,
+                    status=email.status if email.status in ["DRAFTED", "REPLIED", "SCHEDULED"] else "INBOUND",
+                    received_at=email.received_at
+                )
+    except Exception as e:
+        logger.warning(f"Failed to sync cache to analytics: {e}")
+
+def load_cached_emails():
+    global CACHED_EMAILS
+    if EMAILS_CACHE_FILE.exists():
+        try:
+            with open(EMAILS_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                CACHED_EMAILS = {k: EmailMessage(**v) for k, v in data.items()}
+                sync_cache_to_analytics()
+                return
+        except Exception as e:
+            logger.warning(f"Failed to load cached emails: {e}")
+    
+    # Initialize with sample data if no cache exists
+    samples = outlook_client.get_sample_emails()
+    for email in samples:
+        email.classification = classify_email(email)
+        if email.classification.is_resume_request:
+            user_profile = get_user_profile()
+            email.draft_reply = generate_personalized_reply(email, user_profile)
+        CACHED_EMAILS[email.id] = email
+    save_cached_emails()
+    sync_cache_to_analytics()
+
+def save_cached_emails():
+    try:
+        data = {k: v.model_dump() for k, v in CACHED_EMAILS.items()}
+        with open(EMAILS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save cached emails: {e}")
+
+load_cached_emails()
+
+# --- System & Auth Endpoints ---
+
+@app.get("/api/status")
+def get_system_status():
+    settings = load_settings()
+    is_auth = outlook_client.is_authenticated()
+    auth_mode = outlook_client.get_auth_mode()
+    display_name = outlook_client.get_auth_display_name()
+    has_gemini = bool(settings.get("gemini_api_key") or os.getenv("GEMINI_API_KEY"))
+    resumes = [f.name for f in RESUMES_DIR.glob("*") if f.is_file()]
+    
+    return {
+        "status": "ONLINE",
+        "outlook_authenticated": is_auth,
+        "auth_mode": auth_mode,
+        "outlook_user": display_name,
+        "gemini_configured": has_gemini,
+        "active_resume": settings.get("user_profile", {}).get("active_resume_file", "resume_master.txt"),
+        "available_resumes": resumes,
+        "cached_emails_count": len(CACHED_EMAILS),
+        "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
+        "safety_mode": settings.get("user_profile", {}).get("safety_mode", "SAFE_REVIEW")
+    }
+
+@app.get("/api/settings")
+def get_settings():
+    settings = load_settings()
+    masked_key = ""
+    raw_key = settings.get("gemini_api_key", "")
+    if raw_key:
+        masked_key = raw_key[:4] + "..." + raw_key[-4:] if len(raw_key) > 8 else "****"
+    return {
+        "gemini_api_key_masked": masked_key,
+        "has_gemini_api_key": bool(raw_key),
+        "azure_client_id": settings.get("azure_client_id", ""),
+        "azure_tenant_id": settings.get("azure_tenant_id", "common"),
+        "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
+        "safe_folder_name": settings.get("safe_folder_name", "AI Cleaned - Noise")
+    }
+
+@app.post("/api/settings")
+def update_settings_endpoint(payload: Dict[str, Any]):
+    settings = load_settings()
+    if "gemini_api_key" in payload and payload["gemini_api_key"]:
+        settings["gemini_api_key"] = payload["gemini_api_key"].strip()
+        os.environ["GEMINI_API_KEY"] = settings["gemini_api_key"]
+    if "azure_client_id" in payload:
+        settings["azure_client_id"] = payload["azure_client_id"].strip()
+    if "azure_tenant_id" in payload:
+        settings["azure_tenant_id"] = payload["azure_tenant_id"].strip()
+    if "auto_pilot_enabled" in payload:
+        settings["auto_pilot_enabled"] = bool(payload["auto_pilot_enabled"])
+    if "safe_folder_name" in payload:
+        settings["safe_folder_name"] = payload["safe_folder_name"].strip()
+    
+    save_settings(settings)
+    return {"status": "SUCCESS", "message": "Settings updated successfully."}
+
+# Modern OAuth2 Login & Callback (Microsoft Graph)
+@app.get("/api/auth/login")
+def auth_login():
+    url = outlook_client.get_auth_url()
+    return RedirectResponse(url)
+
+@app.get("/api/auth/callback")
+def auth_callback(code: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None):
+    if error:
+        logger.error(f"OAuth callback error: {error} - {error_description}")
+        return RedirectResponse(f"/?auth_error={error}")
+    if not code:
+        return RedirectResponse("/?auth_error=no_code")
+    try:
+        res = outlook_client.exchange_code_for_token(code)
+        CACHED_EMAILS.clear()
+        sync_and_triage_inbox()
+        return RedirectResponse("/?auth=success")
+    except Exception as ex:
+        logger.error(f"Auth token exchange failed: {ex}")
+        return RedirectResponse(f"/?auth_error={str(ex)}")
+
+@app.post("/api/auth/submit-code")
+def auth_submit_code(payload: Dict[str, str]):
+    code = payload.get("code", "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code or URL required.")
+    try:
+        res = outlook_client.exchange_code_for_token(code)
+        CACHED_EMAILS.clear()
+        sync_and_triage_inbox()
+        return res
+    except Exception as ex:
+        logger.error(f"Code submit failed: {ex}")
+        raise HTTPException(status_code=400, detail=str(ex))
+
+# Direct IMAP / App Password Login
+@app.post("/api/auth/imap")
+def auth_imap(payload: Dict[str, str]):
+    email_addr = payload.get("email", "").strip()
+    password = payload.get("password", "").strip()
+    imap_server = payload.get("imap_server", "outlook.office365.com").strip()
+    smtp_server = payload.get("smtp_server", "smtp.office365.com").strip()
+    
+    if not email_addr or not password:
+        raise HTTPException(status_code=400, detail="Email and password required.")
+    
+    try:
+        res = outlook_client.configure_imap(email_addr, password, imap_server, smtp_server)
+        CACHED_EMAILS.clear()
+        sync_and_triage_inbox()
+        return res
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+
+# Device Code Flow Endpoints
+@app.post("/api/auth/device-code")
+def initiate_device_auth():
+    try:
+        flow_info = outlook_client.initiate_device_code_flow()
+        return flow_info
+    except Exception as e:
+        logger.error(f"Device code auth failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/auth/device-code/poll")
+def poll_device_auth():
+    result = outlook_client.poll_device_code_token()
+    if result.get("status") == "SUCCESS":
+        CACHED_EMAILS.clear()
+        sync_and_triage_inbox()
+    return result
+
+@app.post("/api/auth/logout")
+def logout_auth():
+    outlook_client.logout()
+    CACHED_EMAILS.clear()
+    load_cached_emails()
+    return {"status": "SUCCESS", "message": "Logged out from Microsoft Outlook."}
+
+# --- Profile & Resume Endpoints ---
+
+from backend.canonical_engine import (
+    scan_canonical_system,
+    find_best_resume_match,
+    get_canonical_ledger_summary,
+    resolve_resume_file,
+    LENS_DEFINITIONS,
+    LOCKED_FACTS
+)
+
+@app.get("/api/profile")
+def get_profile():
+    return get_user_profile()
+
+@app.post("/api/profile")
+def update_profile(profile: UserProfile):
+    update_user_profile(profile)
+    return {"status": "SUCCESS", "profile": profile}
+
+@app.get("/api/canonical/resumes")
+@app.get("/api/canonical/catalog")
+def get_canonical_resumes(refresh: bool = False):
+    """Returns indexed canonical resumes grouped by standard canonicals, targeted customs, and source of truth."""
+    return scan_canonical_system(force_refresh=refresh)
+
+@app.post("/api/canonical/match")
+def match_canonical_resume(payload: Dict[str, Any]):
+    """Match job title/description against canonical career system."""
+    job_title = payload.get("job_title", "")
+    job_description = payload.get("job_description", "")
+    sender = payload.get("sender", "")
+    return find_best_resume_match(job_title=job_title, job_description=job_description, sender=sender)
+
+@app.get("/api/canonical/ledger")
+def get_canonical_ledger():
+    """Returns the factual source of truth ledger text."""
+    return {"status": "SUCCESS", "ledger": get_canonical_ledger_summary()}
+
+@app.get("/api/resumes")
+def list_resumes():
+    """Returns all available resumes including standard canonicals and targeted variants."""
+    catalog = scan_canonical_system()
+    return {
+        "status": "SUCCESS",
+        "total": catalog.get("total_resumes", 0),
+        "all_resumes": catalog.get("all_resumes", []),
+        "standard_canonicals": catalog.get("standard_canonicals", []),
+        "targeted_customs": catalog.get("targeted_customs", []),
+        "master_variants": catalog.get("master_variants", []),
+        "source_of_truth_docs": catalog.get("source_of_truth_docs", []),
+        "lenses": LENS_DEFINITIONS
+    }
+
+@app.post("/api/profile/upload-resume")
+async def upload_resume(file: UploadFile = File(...)):
+    dest_path = RESUMES_DIR / file.filename
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    profile = get_user_profile()
+    profile.active_resume_file = file.filename
+    update_user_profile(profile)
+    
+    return {
+        "status": "SUCCESS", 
+        "filename": file.filename, 
+        "message": f"Resume '{file.filename}' uploaded and set as active."
+    }
+
+# --- Email Sync & Triage Endpoints ---
+
+@app.get("/api/emails")
+def list_emails(category: Optional[str] = None):
+    results = list(CACHED_EMAILS.values())
+    if category:
+        cat_upper = category.upper()
+        if cat_upper == "NOISE":
+            results = [e for e in results if e.classification and e.classification.is_noise]
+        elif cat_upper == "RESUME_REQUEST":
+            results = [e for e in results if e.classification and e.classification.is_resume_request]
+        elif cat_upper == "OTHER":
+            results = [e for e in results if e.classification and not e.classification.is_noise and not e.classification.is_resume_request]
+    
+    return results
+
+@app.post("/api/emails/sync")
+def sync_and_triage_inbox(force_refresh: bool = False):
+    emails = outlook_client.fetch_inbox_emails(count=50)
+    user_profile = get_user_profile()
+    settings = load_settings()
+    auto_pilot = settings.get("auto_pilot_enabled", False)
+    
+    triaged_count = 0
+    noise_count = 0
+    recruiter_count = 0
+    
+    for email in emails:
+        if email.id not in CACHED_EMAILS or not CACHED_EMAILS[email.id].classification or force_refresh:
+            classification = classify_email(email)
+            email.classification = classification
+            
+            if classification.is_resume_request:
+                recruiter_count += 1
+                if classification.resume_match and classification.resume_match.selected_resume:
+                    email.selected_resume_file = classification.resume_match.selected_resume
+                else:
+                    email.selected_resume_file = user_profile.active_resume_file
+                
+                email.draft_reply = generate_personalized_reply(email, user_profile)
+                
+                # Record in Analytics SQLite
+                record_opportunity(
+                    email_id=email.id,
+                    subject=email.subject,
+                    sender_name=email.sender_name,
+                    sender_email=email.sender_email,
+                    recruiter_details=classification.recruiter_details,
+                    resume_match=classification.resume_match,
+                    status="INBOUND",
+                    received_at=email.received_at
+                )
+                log_event(
+                    event_type="EMAIL_TRIAGED",
+                    opportunity_id=email.id,
+                    lens=classification.resume_match.matching_lens if classification.resume_match else None,
+                    resume_file=email.selected_resume_file,
+                    details=f"Inbound reachout from {email.sender_name} ({email.classification.recruiter_details.company_name if email.classification.recruiter_details else ''})",
+                    confidence=classification.confidence
+                )
+                
+                if auto_pilot and user_profile.safety_mode == "AUTONOMOUS":
+                    try:
+                        outlook_client.send_reply(
+                            to_email=email.sender_email,
+                            subject=email.subject,
+                            reply_body=email.draft_reply,
+                            resume_filename=email.selected_resume_file
+                        )
+                        email.status = "REPLIED"
+                        update_opportunity_stage(email.id, "REPLIED")
+                        log_event("REPLY_SENT", opportunity_id=email.id, resume_file=email.selected_resume_file)
+                    except Exception as ex:
+                        logger.error(f"Auto-pilot send failed for {email.id}: {ex}")
+            elif classification.is_noise:
+                noise_count += 1
+                log_event(
+                    event_type="NOISE_CLEANED",
+                    details=f"Filtered {classification.category.value}: {email.subject[:50]}"
+                )
+                if auto_pilot:
+                    email.status = "TRASHED"
+                    safe_folder_id = outlook_client.get_or_create_clean_folder(settings.get("safe_folder_name", "AI Cleaned - Noise"))
+                    if safe_folder_id:
+                        outlook_client.move_email_to_folder(email.id, safe_folder_id)
+            
+            CACHED_EMAILS[email.id] = email
+            triaged_count += 1
+    
+    save_cached_emails()
+    
+    return {
+        "status": "SUCCESS",
+        "total_emails": len(CACHED_EMAILS),
+        "newly_triaged": triaged_count,
+        "noise_detected": noise_count,
+        "resume_requests_found": recruiter_count
+    }
+
+@app.post("/api/emails/{email_id}/generate-reply")
+def generate_reply_for_email(email_id: str, request_params: ReplyDraftRequest):
+    if email_id not in CACHED_EMAILS:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    email = CACHED_EMAILS[email_id]
+    user_profile = get_user_profile()
+    draft = generate_personalized_reply(email, user_profile, request_params)
+    email.draft_reply = draft
+    save_cached_emails()
+    
+    log_event(
+        event_type="DRAFT_GENERATED",
+        opportunity_id=email_id,
+        resume_file=request_params.selected_resume or email.selected_resume_file,
+        details=f"Draft regenerated with {request_params.tone} tone."
+    )
+    
+    return {
+        "status": "SUCCESS",
+        "email_id": email_id,
+        "draft_reply": draft
+    }
+
+@app.post("/api/emails/{email_id}/save-draft")
+def save_draft_to_outlook(email_id: str, payload: Dict[str, Any]):
+    if email_id not in CACHED_EMAILS:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    email = CACHED_EMAILS[email_id]
+    reply_body = payload.get("reply_body", email.draft_reply or "")
+    user_profile = get_user_profile()
+    resume_file = payload.get("resume_filename", user_profile.active_resume_file)
+    
+    result = outlook_client.save_draft_reply(
+        message_id=email.id,
+        reply_body=reply_body,
+        resume_filename=resume_file
+    )
+    email.status = "DRAFTED"
+    save_cached_emails()
+    
+    update_opportunity_stage(email_id, "DRAFTED")
+    log_event(
+        event_type="DRAFT_SAVED",
+        opportunity_id=email_id,
+        resume_file=resume_file,
+        details=f"Draft created in Microsoft Outlook with {resume_file} attached."
+    )
+    
+    return result
+
+@app.post("/api/emails/{email_id}/send-reply")
+def send_email_reply(email_id: str, payload: SendReplyRequest):
+    if email_id not in CACHED_EMAILS:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    email = CACHED_EMAILS[email_id]
+    user_profile = get_user_profile()
+    resume_file = payload.resume_filename or user_profile.active_resume_file
+    to_email = payload.to_email or email.sender_email
+    
+    result = outlook_client.send_reply(
+        to_email=to_email,
+        subject=payload.subject or email.subject,
+        reply_body=payload.reply_body,
+        resume_filename=resume_file if payload.attach_resume else None
+    )
+    
+    if result.get("status") == "SUCCESS":
+        email.status = "REPLIED"
+        save_cached_emails()
+        
+        update_opportunity_stage(email_id, "REPLIED")
+        log_event(
+            event_type="REPLY_SENT",
+            opportunity_id=email_id,
+            resume_file=resume_file,
+            details=f"Reply sent to {to_email} with {resume_file} attached."
+        )
+        log_grounding_audit(
+            opportunity_id=email_id,
+            subject=email.subject,
+            company=email.classification.recruiter_details.company_name if email.classification and email.classification.recruiter_details else "Client",
+            role=email.classification.recruiter_details.role_title if email.classification and email.classification.recruiter_details else email.subject,
+            resume_used=resume_file,
+            facts_used=["Influenced $8M Google Cloud revenue", "$100M+ enterprise revenue delivered", "Promevo pipeline $2M+"],
+            reply_text=payload.reply_body
+        )
+    
+    return result
+
+@app.post("/api/emails/clean-noise")
+def clean_all_noise_endpoint():
+    settings = load_settings()
+    folder_name = settings.get("safe_folder_name", "AI Cleaned - Noise")
+    safe_folder_id = outlook_client.get_or_create_clean_folder(folder_name)
+    
+    cleaned_ids = []
+    for email_id, email in list(CACHED_EMAILS.items()):
+        if email.classification and email.classification.is_noise and email.status != "TRASHED":
+            if safe_folder_id:
+                outlook_client.move_email_to_folder(email.id, safe_folder_id)
+            else:
+                outlook_client.delete_email(email.id)
+            email.status = "TRASHED"
+            cleaned_ids.append(email_id)
+            log_event("NOISE_CLEANED", details=f"Moved '{email.subject[:40]}' to {folder_name}")
+    
+    save_cached_emails()
+    return {
+        "status": "SUCCESS",
+        "cleaned_count": len(cleaned_ids),
+        "cleaned_ids": cleaned_ids,
+        "message": f"Successfully cleared {len(cleaned_ids)} noise emails to '{folder_name}'."
+    }
+
+# --- Analytics & Observability Endpoints ---
+
+@app.get("/api/analytics/kpis")
+def get_analytics_kpis():
+    return get_kpis_summary()
+
+@app.get("/api/analytics/funnel")
+def get_analytics_funnel():
+    return get_funnel_metrics()
+
+@app.get("/api/analytics/compensation")
+def get_analytics_compensation():
+    return get_compensation_benchmarks()
+
+@app.get("/api/analytics/resumes-roi")
+def get_analytics_resumes_roi():
+    return get_resume_roi_leaderboard()
+
+@app.get("/api/analytics/events")
+def get_analytics_events(limit: int = 50):
+    return get_recent_audit_events(limit=limit)
+
+@app.get("/api/analytics/export")
+def get_analytics_export():
+    return export_analytics_data()
+
+@app.post("/api/emails/{email_id}/trash")
+def trash_single_email(email_id: str):
+    if email_id not in CACHED_EMAILS:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    email = CACHED_EMAILS[email_id]
+    outlook_client.delete_email(email.id)
+    email.status = "TRASHED"
+    save_cached_emails()
+    return {"status": "SUCCESS", "message": "Email moved to trash."}
+
+@app.get("/api/stats")
+def get_dashboard_stats():
+    total = len(CACHED_EMAILS)
+    noise_count = sum(1 for e in CACHED_EMAILS.values() if e.classification and e.classification.is_noise)
+    cleaned_count = sum(1 for e in CACHED_EMAILS.values() if e.status == "TRASHED")
+    resume_req_count = sum(1 for e in CACHED_EMAILS.values() if e.classification and e.classification.is_resume_request)
+    replied_count = sum(1 for e in CACHED_EMAILS.values() if e.status == "REPLIED")
+    
+    time_saved_minutes = (noise_count * 2.5) + (resume_req_count * 10)
+    
+    return {
+        "total_emails_analyzed": total,
+        "noise_detected": noise_count,
+        "noise_cleaned": cleaned_count,
+        "resume_requests": resume_req_count,
+        "replies_sent": replied_count,
+        "time_saved_minutes": round(time_saved_minutes),
+        "inbox_cleanliness_score": round((1.0 - (noise_count - cleaned_count) / max(total, 1)) * 100)
+    }
+
+# --- Static UI Mount ---
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+@app.api_route("/", methods=["GET", "HEAD"])
+def serve_index():
+    index_file = FRONTEND_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    return JSONResponse({"message": "Outlook AI Assistant API Running. Frontend directory not found."})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)

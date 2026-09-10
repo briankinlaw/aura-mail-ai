@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aura Mail AI | Outlook Noise Cleaner & Resume Co-Pilot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Top Navigation Bar -->
+  <header class="glass-header">
+    <div class="logo-group">
+      <div class="logo-icon">✨</div>
+      <div class="logo-text">
+        <h1>Aura Mail AI</h1>
+        <p>Outlook Inbox Noise Cleaner & Resume Auto-Responder</p>
+      </div>
+    </div>
+
+    <div class="header-status-bar">
+      <div class="status-badge" id="outlook-status-badge">
+        <span class="status-dot" id="outlook-dot"></span>
+        <span id="outlook-status-text">Outlook: Connected (Demo)</span>
+      </div>
+
+      <div class="status-badge" id="ai-status-badge">
+        <span class="status-dot" id="ai-dot"></span>
+        <span id="ai-status-text">Gemini 2.5 Flash: Active</span>
+      </div>
+
+      <button class="btn btn-secondary btn-sm" id="btn-sync-inbox">
+        <span>⚡</span> Sync Inbox
+      </button>
+
+      <button class="btn btn-secondary btn-sm" id="btn-open-connect">
+        <span>🔐</span> Connect Outlook
+      </button>
+
+      <button class="btn btn-secondary btn-sm" id="btn-open-settings">
+        <span>⚙️</span> Settings
+      </button>
+    </div>
+  </header>
+
+  <main class="app-container">
+    <!-- Metrics Banner -->
+    <section class="stats-grid">
+      <div class="stat-card glass">
+        <div class="stat-icon inquiries">🎯</div>
+        <div class="stat-info">
+          <h3 id="stat-resume-inquiries">0</h3>
+          <p>Recruiter Inquiries</p>
+        </div>
+      </div>
+
+      <div class="stat-card glass">
+        <div class="stat-icon noise">🗑️</div>
+        <div class="stat-info">
+          <h3 id="stat-noise-detected">0</h3>
+          <p>Noise Emails Filtered</p>
+        </div>
+      </div>
+
+      <div class="stat-card glass">
+        <div class="stat-icon time">⏱️</div>
+        <div class="stat-info">
+          <h3 id="stat-time-saved">0m</h3>
+          <p>Time Saved</p>
+        </div>
+      </div>
+
+      <div class="stat-card glass">
+        <div class="stat-icon clean">🛡️</div>
+        <div class="stat-info">
+          <h3 id="stat-cleanliness">100%</h3>
+          <p>Inbox Cleanliness Score</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs-nav">
+      <button class="tab-btn active" data-tab="recruiter-studio">
+        <span>🎯</span> Recruiter & Resume Studio
+        <span class="tab-badge" id="tab-badge-recruiters">0</span>
+      </button>
+      <button class="tab-btn" data-tab="canonical-vault">
+        <span>📂</span> Canonical Resume Vault
+        <span class="tab-badge" id="tab-badge-vault" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd;">0</span>
+      </button>
+      <button class="tab-btn" data-tab="analytics-studio">
+        <span>📊</span> Analytics & Observability
+        <span class="tab-badge" id="tab-badge-analytics" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7;">Live</span>
+      </button>
+      <button class="tab-btn" data-tab="noise-hub">
+        <span>🗑️</span> Noise Cleaner & Triage
+        <span class="tab-badge" id="tab-badge-noise">0</span>
+      </button>
+      <button class="tab-btn" data-tab="candidate-profile">
+        <span>👤</span> Candidate Bio & Preferences
+      </button>
+      <button class="tab-btn" data-tab="system-settings">
+        <span>⚙️</span> Engine Settings
+      </button>
+    </nav>
+
+    <!-- TAB 1: Recruiter & Resume Studio -->
+    <div class="tab-pane active" id="pane-recruiter-studio">
+      <div class="studio-layout">
+        <!-- Inbound Recruiter List -->
+        <div class="email-sidebar glass">
+          <div class="sidebar-filter-bar">
+            <h2>Recruiter Reachouts</h2>
+            <span class="category-tag recruiter" id="recruiter-count-pill">0 requests</span>
+          </div>
+          <div id="recruiter-emails-list" class="emails-list-container">
+            <!-- Dynamic Items -->
+          </div>
+        </div>
+
+        <!-- Co-Pilot Detail & Response Studio -->
+        <div class="studio-detail glass" id="recruiter-studio-detail">
+          <div class="inbound-header">
+            <h2 class="inbound-subject" id="inbound-subject">Select an inquiry to review</h2>
+            <div class="inbound-meta">
+              <span id="inbound-sender">From: Recruiter</span>
+              <span id="inbound-date">Date: --</span>
+            </div>
+          </div>
+
+          <!-- Recruiter Extracted Specs Box -->
+          <div class="recruiter-specs-box" id="recruiter-specs">
+            <div class="spec-item">
+              <span class="spec-label">Target Role</span>
+              <span class="spec-value" id="spec-role">Solutions Architecture Opportunity</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Company / Client</span>
+              <span class="spec-value" id="spec-company">Leading Enterprise</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Compensation</span>
+              <span class="spec-value" id="spec-salary">Competitive / Open</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Skills In Demand</span>
+              <div class="skills-chips" id="spec-skills">
+                <span class="skill-chip">Cloud Architecture</span>
+                <span class="skill-chip">Google Cloud</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI Canonical Match Badge & Lens Box -->
+          <div class="canonical-match-card" id="canonical-match-card">
+            <div class="canonical-match-header">
+              <div class="canonical-match-title">
+                <span class="match-pulse-dot"></span>
+                <strong>AI Canonical Lens Match:</strong>
+                <span class="lens-pill" id="match-lens-badge" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4);">Level 3A — Advisor / Principal Solutions Architect</span>
+              </div>
+              <div class="match-score-pill" id="match-score-pill">
+                <span id="match-score-value">95%</span> Match
+              </div>
+            </div>
+            <div class="canonical-match-body">
+              <div class="match-rationale" id="match-rationale">
+                Matched to Level 3A Advisor standard based on architecture, advisory, and pre-sales scope.
+              </div>
+              <div class="resume-selector-row">
+                <label for="resume-variant-select"><strong>Attached Resume Document:</strong></label>
+                <select id="resume-variant-select" class="resume-select-dropdown">
+                  <!-- Populated dynamically with all standard & custom resumes -->
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Inbound Message Viewer -->
+          <div class="message-body-viewer" id="inbound-message-body">
+            Email content will appear here...
+          </div>
+
+          <!-- AI Response Studio -->
+          <div class="ai-reply-container">
+            <div class="reply-header">
+              <div class="reply-title-group">
+                <span class="sparkle-icon">✨</span>
+                <strong style="font-size: 0.95rem;">Grounded Pitch & Executive Reply</strong>
+                <span class="ledger-grounded-badge" title="Grounded in Canonical Accomplishment Ledger facts">🔒 Fact Locked</span>
+              </div>
+              <div class="reply-controls">
+                <label for="tone-selector" style="font-size: 0.75rem; color: var(--text-secondary);">Tone:</label>
+                <select id="tone-selector" class="tone-select">
+                  <option value="Professional & Warm">Professional & Warm</option>
+                  <option value="Executive & Assertive">Executive & Assertive</option>
+                  <option value="Enthusiastic & Direct">Enthusiastic & Direct</option>
+                  <option value="Brief & Availability Focused">Brief & Availability Focused</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" id="btn-regenerate-draft">
+                  <span>🔄</span> Regenerate
+                </button>
+              </div>
+            </div>
+
+            <textarea id="reply-body-text" class="reply-textarea" placeholder="AI drafted reply will generate here..."></textarea>
+
+            <div class="attachment-bar">
+              <div class="resume-attachment-badge">
+                <span>📎</span>
+                <span id="attached-resume-name">Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx</span>
+                <span style="font-size: 0.7rem; opacity: 0.7;">(Auto-attached)</span>
+              </div>
+              <div style="font-size: 0.75rem; color: var(--text-muted);" id="attachment-format-hint">
+                Canonical Document (Word DOCX)
+              </div>
+            </div>
+
+            <div class="reply-actions">
+              <button class="btn btn-secondary" id="btn-save-draft">
+                <span>💾</span> Save to Outlook Drafts
+              </button>
+              <button class="btn btn-emerald" id="btn-send-reply">
+                <span>🚀</span> Send Reply Now
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Canonical Resume Vault -->
+    <div class="tab-pane" id="pane-canonical-vault" style="display: none;">
+      <div class="clean-hub-banner" style="background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.95));">
+        <div class="clean-hub-text">
+          <h2>📂 Canonical Resume System & Vault</h2>
+          <p id="vault-subtitle">Authoritative resumes indexed live from <code>/Users/briankinlaw/2026 Promevo_LOCAL</code></p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-secondary" id="btn-open-ledger-modal">
+            <span>📜</span> View Factual Ledger
+          </button>
+          <button class="btn btn-primary" id="btn-refresh-resumes">
+            <span>🔄</span> Re-scan Disk
+          </button>
+        </div>
+      </div>
+
+      <!-- Vault Sub-Filter & Search -->
+      <div class="glass" style="border-radius: var(--radius-lg); padding: 1.25rem; margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div style="display: flex; gap: 8px;" id="vault-category-filter">
+            <button class="btn btn-secondary btn-sm active-filter" data-vault-filter="ALL">All Resumes (<span id="vault-count-all">0</span>)</button>
+            <button class="btn btn-secondary btn-sm" data-vault-filter="standard_canonical">Level 3 Standard Canonicals (<span id="vault-count-standard">0</span>)</button>
+            <button class="btn btn-secondary btn-sm" data-vault-filter="targeted_custom">Custom Targeted Applications (<span id="vault-count-targeted">0</span>)</button>
+            <button class="btn btn-secondary btn-sm" data-vault-filter="source_of_truth">Source of Truth & Narratives (<span id="vault-count-truth">0</span>)</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="text" id="vault-search-input" class="form-control" placeholder="Search resumes or skills..." style="width: 260px; padding: 6px 12px; font-size: 0.85rem;">
+          </div>
+        </div>
+      </div>
+
+      <!-- Vault Cards Grid -->
+      <div class="vault-grid" id="vault-grid-container">
+        <!-- Dynamic Cards -->
+      </div>
+    </div>
+
+    <!-- TAB 3: Smart Inbox Triage & Noise Cleaner -->
+    <div class="tab-pane" id="pane-noise-hub" style="display: none;">
+      <div class="clean-hub-banner">
+        <div class="clean-hub-text">
+          <h2>🛡️ Inbox Noise Cleaner Hub</h2>
+          <p id="clean-hub-subtitle">Clean marketing emails, notifications, and clutter with 1 click.</p>
+        </div>
+        <button class="btn btn-danger" id="btn-batch-clean-noise">
+          <span>🧹</span> Clean All Noise Emails Now
+        </button>
+      </div>
+
+      <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <div style="display: flex; gap: 8px;" id="triage-filter-group">
+            <button class="btn btn-secondary btn-sm active-filter" data-filter="ALL">All Emails</button>
+            <button class="btn btn-secondary btn-sm" data-filter="NOISE">Noise Only</button>
+            <button class="btn btn-secondary btn-sm" data-filter="RESUME_REQUEST">Recruiter Only</button>
+            <button class="btn btn-secondary btn-sm" data-filter="OTHER">Important Direct</button>
+          </div>
+          <span style="font-size: 0.8rem; color: var(--text-secondary);" id="triage-total-label">Showing all emails</span>
+        </div>
+
+        <table class="noise-table">
+          <thead>
+            <tr>
+              <th>Sender</th>
+              <th>Subject</th>
+              <th>Category</th>
+              <th>AI Reasoning</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="triage-table-body">
+            <!-- Dynamic Rows -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TAB 4: Candidate Bio & Preferences -->
+    <div class="tab-pane" id="pane-candidate-profile" style="display: none;">
+      <div class="profile-grid">
+        <!-- Profile Details Form -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem;">👤 Candidate Profile & Preferences</h2>
+          
+          <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="prof-name" class="form-control" value="Brian K. Kinlaw">
+          </div>
+
+          <div class="form-group">
+            <label>Current Professional Title</label>
+            <input type="text" id="prof-title" class="form-control" value="Enterprise Cloud, Data & AI Solutions Architecture Advisor">
+          </div>
+
+          <div class="form-group">
+            <label>Executive Bio / Elevator Pitch</label>
+            <textarea id="prof-bio" class="form-control"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Core Skills (comma separated)</label>
+            <input type="text" id="prof-skills" class="form-control">
+          </div>
+
+          <div class="form-group">
+            <label>Target Roles (comma separated)</label>
+            <input type="text" id="prof-target-roles" class="form-control">
+          </div>
+
+          <div class="form-group">
+            <label>Work Preferences & Location</label>
+            <input type="text" id="prof-prefs" class="form-control">
+          </div>
+
+          <div class="form-group">
+            <label>Custom Instructions for AI Email Writer (Locked Metrics Grounding)</label>
+            <textarea id="prof-instructions" class="form-control"></textarea>
+          </div>
+
+          <div class="form-group" style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 1rem;">
+            <label style="color: #6ee7b7; font-weight: 600;">📬 Active Scanned Inboxes (comma separated)</label>
+            <input type="text" id="prof-active-emails" class="form-control" value="kinlawb@outlook.com, brian.kinlaw@outlook.com, briankkinlaw@gmail.com, cbkinlaw@satx.rr.com, briankinlaw@satx.rr.com, brian@mavencode.com" style="margin-top: 4px;" />
+            <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">These inboxes are actively monitored and triaged by Aura Mail AI.</p>
+          </div>
+
+          <div class="form-group" style="background: rgba(15, 23, 42, 0.3); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 0.75rem;">
+            <label style="color: #94a3b8; font-weight: 600;">🗄️ Historical Reference Accounts (Excluded from scan)</label>
+            <input type="text" id="prof-historical-emails" class="form-control" value="bkinlaw@dxc.com, brian.kinlaw@cdw.com, briankinlaw@revealwhy.com" style="margin-top: 4px;" />
+            <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Kept for reference only — ignored during inbox sync.</p>
+          </div>
+
+          <button class="btn btn-primary" id="btn-save-profile" style="margin-top: 1.25rem;">
+            <span>💾</span> Save Candidate Profile & Inboxes
+          </button>
+        </div>
+
+        <!-- Resume Active Status & Local Uploader -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem;">📄 Active Default Resume</h2>
+          
+          <div class="active-canonical-hero" id="active-canonical-hero" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-md); padding: 16px; margin-bottom: 1.25rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span class="lens-pill" id="profile-active-lens">Advisor (Level 3A)</span>
+              <span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">★ Active Default</span>
+            </div>
+            <h4 id="profile-active-name" style="margin-top: 8px; font-size: 0.95rem; word-break: break-all;">Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx</h4>
+            <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 4px;">Used whenever no specific custom match is chosen.</p>
+          </div>
+
+          <div class="upload-dropzone" id="resume-dropzone">
+            <div style="font-size: 2rem; margin-bottom: 8px;">📤</div>
+            <strong style="font-size: 0.9rem;">Upload Additional Resume Variant</strong>
+            <p style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;">Added to your active vault</p>
+            <input type="file" id="resume-file-input" style="display: none;" accept=".pdf,.docx,.txt">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: Analytics & Observability Studio -->
+    <div class="tab-pane" id="pane-analytics-studio" style="display: none;">
+      <!-- Top Analytics Header -->
+      <div class="clean-hub-banner" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(59, 130, 246, 0.12)); border: 1px solid rgba(16, 185, 129, 0.35);">
+        <div class="clean-hub-text">
+          <h2>📊 Career Intelligence & Telemetry Studio</h2>
+          <p>Real-time conversion funnels, market compensation benchmarks, resume ROI, and grounding audit trails.</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-secondary" id="btn-refresh-analytics">
+            <span>🔄</span> Refresh Telemetry
+          </button>
+          <button class="btn btn-primary" id="btn-export-analytics">
+            <span>📥</span> Export JSON Snapshot
+          </button>
+        </div>
+      </div>
+
+      <!-- Executive KPI Cards Grid -->
+      <div class="analytics-kpi-grid">
+        <div class="stat-card glass">
+          <div class="stat-icon inquiries">🎯</div>
+          <div class="stat-info">
+            <h3 id="kpi-total-reachouts">0</h3>
+            <p>Total Inbound Reachouts</p>
+          </div>
+        </div>
+
+        <div class="stat-card glass">
+          <div class="stat-icon clean">⚡</div>
+          <div class="stat-info">
+            <h3 id="kpi-active-pipeline">0</h3>
+            <p>Active Inbound Pipeline</p>
+          </div>
+        </div>
+
+        <div class="stat-card glass">
+          <div class="stat-icon time">📈</div>
+          <div class="stat-info">
+            <h3 id="kpi-conversion-rate">0%</h3>
+            <p>Response Conversion Rate</p>
+          </div>
+        </div>
+
+        <div class="stat-card glass">
+          <div class="stat-icon noise">⏱️</div>
+          <div class="stat-info">
+            <h3 id="kpi-time-saved">0h</h3>
+            <p>Hours Saved (AI Triage)</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Funnel & Compensation Row -->
+      <div class="analytics-row-grid">
+        <!-- Pipeline Velocity Funnel -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+            <div>
+              <h3 style="font-size: 1.1rem; font-weight: 700;">🚀 Opportunity Conversion Funnel</h3>
+              <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 2px;">End-to-end recruitment stage velocity</p>
+            </div>
+            <span class="lens-pill" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd;">Active Tracking</span>
+          </div>
+
+          <div class="funnel-container" id="funnel-chart-container">
+            <!-- Dynamic Funnel Bars -->
+          </div>
+        </div>
+
+        <!-- Market Compensation Distribution -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+            <div>
+              <h3 style="font-size: 1.1rem; font-weight: 700;">💰 Compensation Benchmarks by Lens</h3>
+              <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 2px;">Extracted salary & hourly bands across role archetypes</p>
+            </div>
+            <span class="lens-pill" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7;">Market Signals</span>
+          </div>
+
+          <div class="comp-benchmarks-list" id="comp-benchmarks-container">
+            <!-- Dynamic Compensation Bars -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Resume ROI & Audit Stream Row -->
+      <div class="analytics-row-grid" style="margin-top: 1.5rem;">
+        <!-- Resume ROI Leaderboard -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div>
+              <h3 style="font-size: 1.1rem; font-weight: 700;">🏆 Resume Variant Engagement (ROI)</h3>
+              <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 2px;">Top performing resumes across your 36 canonical variants</p>
+            </div>
+          </div>
+
+          <div class="roi-table-container">
+            <table class="roi-table">
+              <thead>
+                <tr>
+                  <th>Resume Variant Document</th>
+                  <th>Lens Archetype</th>
+                  <th>Attached</th>
+                  <th>Replies</th>
+                  <th>Conversion</th>
+                </tr>
+              </thead>
+              <tbody id="resume-roi-tbody">
+                <!-- Dynamic ROI Rows -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Immutable Audit & Telemetry Stream -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div>
+              <h3 style="font-size: 1.1rem; font-weight: 700;">🛡️ Telemetry & Grounding Audit Stream</h3>
+              <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 2px;">Immutable log of classifications, match decisions, and ledger facts used</p>
+            </div>
+          </div>
+
+          <div class="audit-stream-container" id="audit-stream-container">
+            <!-- Dynamic Event Log Items -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: System Settings -->
+    <div class="tab-pane" id="pane-system-settings" style="display: none;">
+      <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem; max-width: 720px; margin: 0 auto;">
+        <h2 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1.25rem;">⚙️ Engine & Integration Settings</h2>
+        
+        <div class="form-group">
+          <label>Google Gemini API Key (for LLM Triage & Generation)</label>
+          <input type="password" id="setting-gemini-key" class="form-control" placeholder="Enter Gemini API key (optional - offline heuristics enabled)">
+        </div>
+
+        <div class="form-group">
+          <label>Azure AD Client ID (Public App / Device Login)</label>
+          <input type="text" id="setting-azure-client" class="form-control">
+        </div>
+
+        <div class="form-group">
+          <label>Safe Noise Folder Name in Outlook</label>
+          <input type="text" id="setting-safe-folder" class="form-control" value="AI Cleaned - Noise">
+        </div>
+
+        <div class="form-group" style="display: flex; align-items: center; gap: 12px; margin-top: 1.5rem;">
+          <input type="checkbox" id="setting-autopilot" style="width: 18px; height: 18px; cursor: pointer;">
+          <div>
+            <strong>Enable Autopilot Mode</strong>
+            <p style="font-size: 0.8rem; color: var(--text-secondary);">Automatically move noise to Cleaned folder upon syncing.</p>
+          </div>
+        </div>
+
+        <div style="margin-top: 1.5rem; display: flex; gap: 10px;">
+          <button class="btn btn-primary" id="btn-save-settings">
+            <span>💾</span> Save Engine Settings
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Direct Outlook Client Bridge Modal -->
+  <div class="modal-overlay" id="device-login-modal">
+    <div class="modal-box" style="max-width: 620px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 1.4rem;">💻</span>
+          <div>
+            <h2 style="font-size: 1.25rem; font-weight: 700; margin: 0;">Microsoft Outlook Client</h2>
+            <span style="font-size: 0.75rem; color: #6ee7b7; font-weight: 600;">🟢 Direct macOS Desktop Bridge Active</span>
+          </div>
+        </div>
+        <button class="close-btn" id="modal-close-btn">&times;</button>
+      </div>
+
+      <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: var(--radius-md); padding: 14px; margin-bottom: 1.25rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <strong style="font-size: 0.9rem; color: #6ee7b7;">✨ Zero-Cloud Direct Desktop Connection</strong>
+          <span class="lens-pill" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7;">Privacy First</span>
+        </div>
+        <p style="font-size: 0.8rem; color: #cbd5e1; margin-top: 6px; line-height: 1.5;">
+          Aura Mail AI communicates directly with your running <strong>Microsoft Outlook</strong> application on macOS. No cloud tokens, no Azure app registrations, and no passwords required.
+        </p>
+      </div>
+
+      <!-- Active Universal Inboxes Card -->
+      <div class="card" style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255, 255, 255, 0.08); padding: 16px; border-radius: var(--radius-md); margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h4 style="font-size: 0.9rem; font-weight: 600; color: #f8fafc;">📬 Active Monitored Inboxes (6 Accounts)</h4>
+          <span style="font-size: 0.725rem; color: #6ee7b7;">Universal Inbox View</span>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">
+          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">kinlawb@outlook.com ★</span>
+          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">brian.kinlaw@outlook.com</span>
+          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">briankkinlaw@gmail.com</span>
+          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">cbkinlaw@satx.rr.com</span>
+          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">briankinlaw@satx.rr.com</span>
+          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">brian@mavencode.com</span>
+        </div>
+      </div>
+
+      <!-- Excluded Historical Reference Accounts Card -->
+      <div class="card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(255, 255, 255, 0.05); padding: 14px; border-radius: var(--radius-md); margin-bottom: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h4 style="font-size: 0.85rem; font-weight: 600; color: #94a3b8;">🗄️ Excluded Historical Archives (Skipped)</h4>
+          <span style="font-size: 0.7rem; color: var(--text-muted);">Reference Only</span>
+        </div>
+        <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
+          <code>bkinlaw@dxc.com</code> • <code>brian.kinlaw@cdw.com</code> • <code>briankinlaw@revealwhy.com</code>
+        </p>
+      </div>
+
+      <!-- Direct Actions -->
+      <div style="display: flex; gap: 10px; margin-bottom: 1rem;">
+        <button class="btn btn-primary" id="btn-modal-sync-inbox" style="flex: 1; justify-content: center; padding: 10px 16px;">
+          <span>⚡</span> Sync Active Inboxes Now
+        </button>
+        <button class="btn btn-secondary" id="btn-modal-open-profile" style="padding: 10px 16px;">
+          <span>👤</span> Manage Inboxes & Bio
+        </button>
+      </div>
+
+      <!-- Optional Collapsed Cloud Fallback for Power Users -->
+      <details style="margin-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 10px;">
+        <summary style="font-size: 0.75rem; color: var(--text-muted); cursor: pointer;">
+          ⚙️ Advanced: Cloud OAuth / Graph API Settings (Optional)
+        </summary>
+        <div style="margin-top: 10px; background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: var(--radius-sm);">
+          <label style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 4px;">Azure Client ID</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="azure-client-input" class="input-field" placeholder="Optional Azure Client ID" style="flex: 1; padding: 6px 10px; font-size: 0.775rem;" />
+            <button class="btn btn-secondary btn-sm" id="btn-save-azure-client">Save</button>
+          </div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <!-- Accomplishment Ledger Modal -->
+  <div class="modal-overlay" id="ledger-modal">
+    <div class="modal-box" style="max-width: 720px; max-height: 85vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 1.3rem;">📜</span>
+          <h2 style="font-size: 1.2rem; font-weight: 700;">Canonical Accomplishment Ledger</h2>
+        </div>
+        <button class="close-btn" id="ledger-modal-close-btn">&times;</button>
+      </div>
+
+      <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 1rem;">
+        <strong style="font-size: 0.85rem; color: #6ee7b7;">🔒 Level 1 Authoritative Source of Truth</strong>
+        <p style="font-size: 0.775rem; color: #cbd5e1; margin-top: 2px;">
+          All AI draft replies and resume targeting are grounded in these locked facts.
+        </p>
+      </div>
+
+      <div class="ledger-content-viewer" id="ledger-text-viewer" style="flex: 1; overflow-y: auto; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-md); padding: 16px; font-size: 0.825rem; line-height: 1.6; font-family: var(--font-mono); color: #e2e8f0; white-space: pre-wrap;">
+        Loading Accomplishment Ledger from disk...
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+        <button class="btn btn-secondary" id="btn-close-ledger">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

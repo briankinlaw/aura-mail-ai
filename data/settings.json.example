@@ -1,0 +1,52 @@
+{
+  "gemini_api_key": "YOUR_GEMINI_API_KEY_HERE",
+  "azure_client_id": "",
+  "azure_tenant_id": "common",
+  "auth_token": null,
+  "user_profile": {
+    "full_name": "Brian K. Kinlaw",
+    "current_title": "Enterprise Cloud, Data & AI Solutions Architecture Advisor",
+    "email": "kinlawb@outlook.com",
+    "phone": "(210) 717-5305",
+    "linkedin_url": "https://linkedin.com/in/briankinlaw/",
+    "portfolio_url": "https://linkedin.com/in/briankinlaw/",
+    "summary_bio": "Principal-level cloud, data, and AI solutions architect and trusted advisor with 20+ years of experience translating complex business requirements into enterprise architectures, implementation strategies, and production deployments.",
+    "core_skills": [
+      "Enterprise Architecture",
+      "Cloud Data & AI",
+      "Google Cloud / GCP",
+      "BigQuery / Databricks",
+      "Pre-sales & Discovery",
+      "AI Governance & NIST AI RMF",
+      "Technical Program Management",
+      "Agentic AI Systems"
+    ],
+    "target_roles": [
+      "Advisor / Principal Solutions Architect",
+      "Field CTO / Technology Strategist",
+      "Principal Technical Program Manager",
+      "AI Governance & Enterprise Data Leader"
+    ],
+    "work_preferences": "Remote or Hybrid (San Antonio, TX / Remote US). Open to advisory, contract, and full-time leadership roles.",
+    "active_resume_file": "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx",
+    "active_email_accounts": [
+      "kinlawb@outlook.com",
+      "brian.kinlaw@outlook.com",
+      "briankkinlaw@gmail.com",
+      "cbkinlaw@satx.rr.com",
+      "briankinlaw@satx.rr.com",
+      "brian@mavencode.com"
+    ],
+    "historical_email_accounts": [
+      "bkinlaw@dxc.com",
+      "brian.kinlaw@cdw.com",
+      "briankinlaw@revealwhy.com"
+    ],
+    "custom_reply_instructions": "Be warm, concise, professional, and executive-ready. Connect my verified background directly to the employer's objectives. Highlight 2-3 verified metrics (e.g. $8M Google Cloud revenue influenced, $100M+ enterprise revenue delivered, Promevo pipeline $2M+). Explicitly mention that my updated resume is attached. Invite them to schedule a brief intro discussion.",
+    "safety_mode": "SAFE_REVIEW",
+    "noise_handling": "MOVE_TO_CLEANED_FOLDER"
+  },
+  "auto_pilot_enabled": false,
+  "safe_folder_name": "AI Cleaned - Noise",
+  "demo_mode": false
+}

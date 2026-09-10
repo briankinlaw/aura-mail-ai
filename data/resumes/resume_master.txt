@@ -1,0 +1,23 @@
+JANE DOE
+Staff Software Engineer & AI Architect
+Email: jane.doe@example.com | Phone: +1 (555) 019-2834 | San Francisco, CA
+LinkedIn: linkedin.com/in/example | GitHub: github.com/example
+
+SUMMARY:
+Accomplished Software Engineer with 10+ years of expertise in distributed systems, enterprise AI platforms, LLM agent orchestration, and cloud infrastructure (GCP/AWS/Azure). Proven track record leading engineering teams to deliver high-throughput, mission-critical systems.
+
+CORE SKILLS:
+- Languages: Python, Go, TypeScript, SQL, Rust
+- AI/ML: LLM Orchestration, LangChain/LlamaIndex, Gemini API, RAG Architecture, Vector DBs (pgvector, Pinecone)
+- Backend & Cloud: FastAPI, Docker, Kubernetes, Terraform, PostgreSQL, Redis, Kafka
+
+EXPERIENCE:
+Principal AI Systems Architect | Apex Tech Inc (2021 - Present)
+- Led 14 engineers building enterprise LLM workflows processing 10M+ daily requests.
+- Designed scalable agentic triage pipeline cutting customer support latency by 72%.
+
+Senior Software Engineer | CloudScale Networks (2017 - 2021)
+- Architected high-concurrency microservices in Go and Python serving 50M+ active users.
+
+EDUCATION:
+B.S. in Computer Science | University of California, Berkeley
