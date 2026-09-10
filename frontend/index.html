@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aura Mail AI | Outlook Noise Cleaner & Resume Co-Pilot</title>
+  <title>Aura Mail AI | Cloud Multi-Account Noise Cleaner & Resume Co-Pilot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,28 +15,33 @@
     <div class="logo-group">
       <div class="logo-icon">✨</div>
       <div class="logo-text">
-        <h1>Aura Mail AI</h1>
-        <p>Outlook Inbox Noise Cleaner & Resume Auto-Responder</p>
+        <h1>Aura Mail AI <span style="font-size: 0.65rem; background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(59, 130, 246, 0.3);">v1.1 Cloud</span></h1>
+        <p>Universal Cloud Multi-Account Assistant & Canonical Career Co-Pilot</p>
       </div>
     </div>
 
     <div class="header-status-bar">
-      <div class="status-badge" id="outlook-status-badge">
-        <span class="status-dot" id="outlook-dot"></span>
-        <span id="outlook-status-text">Outlook: Connected (Demo)</span>
+      <div class="status-badge" id="cloud-status-badge">
+        <span class="status-dot" id="cloud-dot"></span>
+        <span id="cloud-status-text">Cloud Sync: Checking...</span>
+      </div>
+
+      <div class="status-badge" id="desktop-status-badge">
+        <span class="status-dot" id="desktop-dot"></span>
+        <span id="desktop-status-text">Mac Outlook: Checking...</span>
       </div>
 
       <div class="status-badge" id="ai-status-badge">
         <span class="status-dot" id="ai-dot"></span>
-        <span id="ai-status-text">Gemini 2.5 Flash: Active</span>
+        <span id="ai-status-text">Gemini AI: Active</span>
       </div>
 
       <button class="btn btn-secondary btn-sm" id="btn-sync-inbox">
-        <span>⚡</span> Sync Inbox
+        <span>⚡</span> Sync Inboxes
       </button>
 
-      <button class="btn btn-secondary btn-sm" id="btn-open-connect">
-        <span>🔐</span> Connect Outlook
+      <button class="btn btn-secondary btn-sm" id="btn-open-accounts">
+        <span>📬</span> Accounts (<span id="header-conn-count">0</span>)
       </button>
 
       <button class="btn btn-secondary btn-sm" id="btn-open-settings">
@@ -46,6 +51,18 @@
   </header>
 
   <main class="app-container">
+    <!-- Explicit Demo Mode Banner (Visible only when demo_mode=True) -->
+    <div id="demo-mode-banner" style="display: none; background: rgba(234, 179, 8, 0.15); border: 1px solid rgba(234, 179, 8, 0.4); border-radius: var(--radius-md); padding: 10px 16px; margin-bottom: 1.5rem; justify-content: space-between; align-items: center;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 1.2rem;">🧪</span>
+        <div>
+          <strong style="color: #fef08a; font-size: 0.875rem;">DEMO MODE ACTIVE (Simulated Offline Sandbox)</strong>
+          <p style="color: #fde047; font-size: 0.75rem; margin-top: 2px;">Displaying mock reachouts and newsletter data. Actions simulate cloud operations without modifying live mailboxes.</p>
+        </div>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="btn-disable-demo" style="background: rgba(0,0,0,0.3);">Exit Demo Mode</button>
+    </div>
+
     <!-- Metrics Banner -->
     <section class="stats-grid">
       <div class="stat-card glass">
@@ -60,7 +77,7 @@
         <div class="stat-icon noise">🗑️</div>
         <div class="stat-info">
           <h3 id="stat-noise-detected">0</h3>
-          <p>Noise Emails Filtered</p>
+          <p>Noise Filtered</p>
         </div>
       </div>
 
@@ -76,7 +93,7 @@
         <div class="stat-icon clean">🛡️</div>
         <div class="stat-info">
           <h3 id="stat-cleanliness">100%</h3>
-          <p>Inbox Cleanliness Score</p>
+          <p>Inbox Cleanliness</p>
         </div>
       </div>
     </section>
@@ -98,6 +115,10 @@
       <button class="tab-btn" data-tab="noise-hub">
         <span>🗑️</span> Noise Cleaner & Triage
         <span class="tab-badge" id="tab-badge-noise">0</span>
+      </button>
+      <button class="tab-btn" data-tab="connected-accounts">
+        <span>📬</span> Cloud Accounts
+        <span class="tab-badge" id="tab-badge-accounts" style="background: rgba(168, 85, 247, 0.2); color: #d8b4fe;">0</span>
       </button>
       <button class="tab-btn" data-tab="candidate-profile">
         <span>👤</span> Candidate Bio & Preferences
@@ -221,7 +242,7 @@
 
             <div class="reply-actions">
               <button class="btn btn-secondary" id="btn-save-draft">
-                <span>💾</span> Save to Outlook Drafts
+                <span>💾</span> Save to Cloud Drafts
               </button>
               <button class="btn btn-emerald" id="btn-send-reply">
                 <span>🚀</span> Send Reply Now
@@ -270,131 +291,8 @@
       </div>
     </div>
 
-    <!-- TAB 3: Smart Inbox Triage & Noise Cleaner -->
-    <div class="tab-pane" id="pane-noise-hub" style="display: none;">
-      <div class="clean-hub-banner">
-        <div class="clean-hub-text">
-          <h2>🛡️ Inbox Noise Cleaner Hub</h2>
-          <p id="clean-hub-subtitle">Clean marketing emails, notifications, and clutter with 1 click.</p>
-        </div>
-        <button class="btn btn-danger" id="btn-batch-clean-noise">
-          <span>🧹</span> Clean All Noise Emails Now
-        </button>
-      </div>
-
-      <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <div style="display: flex; gap: 8px;" id="triage-filter-group">
-            <button class="btn btn-secondary btn-sm active-filter" data-filter="ALL">All Emails</button>
-            <button class="btn btn-secondary btn-sm" data-filter="NOISE">Noise Only</button>
-            <button class="btn btn-secondary btn-sm" data-filter="RESUME_REQUEST">Recruiter Only</button>
-            <button class="btn btn-secondary btn-sm" data-filter="OTHER">Important Direct</button>
-          </div>
-          <span style="font-size: 0.8rem; color: var(--text-secondary);" id="triage-total-label">Showing all emails</span>
-        </div>
-
-        <table class="noise-table">
-          <thead>
-            <tr>
-              <th>Sender</th>
-              <th>Subject</th>
-              <th>Category</th>
-              <th>AI Reasoning</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="triage-table-body">
-            <!-- Dynamic Rows -->
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- TAB 4: Candidate Bio & Preferences -->
-    <div class="tab-pane" id="pane-candidate-profile" style="display: none;">
-      <div class="profile-grid">
-        <!-- Profile Details Form -->
-        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
-          <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem;">👤 Candidate Profile & Preferences</h2>
-          
-          <div class="form-group">
-            <label>Full Name</label>
-            <input type="text" id="prof-name" class="form-control" value="Brian K. Kinlaw">
-          </div>
-
-          <div class="form-group">
-            <label>Current Professional Title</label>
-            <input type="text" id="prof-title" class="form-control" value="Enterprise Cloud, Data & AI Solutions Architecture Advisor">
-          </div>
-
-          <div class="form-group">
-            <label>Executive Bio / Elevator Pitch</label>
-            <textarea id="prof-bio" class="form-control"></textarea>
-          </div>
-
-          <div class="form-group">
-            <label>Core Skills (comma separated)</label>
-            <input type="text" id="prof-skills" class="form-control">
-          </div>
-
-          <div class="form-group">
-            <label>Target Roles (comma separated)</label>
-            <input type="text" id="prof-target-roles" class="form-control">
-          </div>
-
-          <div class="form-group">
-            <label>Work Preferences & Location</label>
-            <input type="text" id="prof-prefs" class="form-control">
-          </div>
-
-          <div class="form-group">
-            <label>Custom Instructions for AI Email Writer (Locked Metrics Grounding)</label>
-            <textarea id="prof-instructions" class="form-control"></textarea>
-          </div>
-
-          <div class="form-group" style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 1rem;">
-            <label style="color: #6ee7b7; font-weight: 600;">📬 Active Scanned Inboxes (comma separated)</label>
-            <input type="text" id="prof-active-emails" class="form-control" value="kinlawb@outlook.com, brian.kinlaw@outlook.com, briankkinlaw@gmail.com, cbkinlaw@satx.rr.com, briankinlaw@satx.rr.com, brian@mavencode.com" style="margin-top: 4px;" />
-            <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">These inboxes are actively monitored and triaged by Aura Mail AI.</p>
-          </div>
-
-          <div class="form-group" style="background: rgba(15, 23, 42, 0.3); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 0.75rem;">
-            <label style="color: #94a3b8; font-weight: 600;">🗄️ Historical Reference Accounts (Excluded from scan)</label>
-            <input type="text" id="prof-historical-emails" class="form-control" value="bkinlaw@dxc.com, brian.kinlaw@cdw.com, briankinlaw@revealwhy.com" style="margin-top: 4px;" />
-            <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Kept for reference only — ignored during inbox sync.</p>
-          </div>
-
-          <button class="btn btn-primary" id="btn-save-profile" style="margin-top: 1.25rem;">
-            <span>💾</span> Save Candidate Profile & Inboxes
-          </button>
-        </div>
-
-        <!-- Resume Active Status & Local Uploader -->
-        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
-          <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem;">📄 Active Default Resume</h2>
-          
-          <div class="active-canonical-hero" id="active-canonical-hero" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-md); padding: 16px; margin-bottom: 1.25rem;">
-            <div style="display: flex; align-items: center; justify-content: space-between;">
-              <span class="lens-pill" id="profile-active-lens">Advisor (Level 3A)</span>
-              <span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">★ Active Default</span>
-            </div>
-            <h4 id="profile-active-name" style="margin-top: 8px; font-size: 0.95rem; word-break: break-all;">Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx</h4>
-            <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 4px;">Used whenever no specific custom match is chosen.</p>
-          </div>
-
-          <div class="upload-dropzone" id="resume-dropzone">
-            <div style="font-size: 2rem; margin-bottom: 8px;">📤</div>
-            <strong style="font-size: 0.9rem;">Upload Additional Resume Variant</strong>
-            <p style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;">Added to your active vault</p>
-            <input type="file" id="resume-file-input" style="display: none;" accept=".pdf,.docx,.txt">
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TAB: Analytics & Observability Studio -->
+    <!-- TAB 3: Analytics & Observability Studio -->
     <div class="tab-pane" id="pane-analytics-studio" style="display: none;">
-      <!-- Top Analytics Header -->
       <div class="clean-hub-banner" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(59, 130, 246, 0.12)); border: 1px solid rgba(16, 185, 129, 0.35);">
         <div class="clean-hub-text">
           <h2>📊 Career Intelligence & Telemetry Studio</h2>
@@ -416,7 +314,7 @@
           <div class="stat-icon inquiries">🎯</div>
           <div class="stat-info">
             <h3 id="kpi-total-reachouts">0</h3>
-            <p>Total Inbound Reachouts</p>
+            <p>Total Reachouts</p>
           </div>
         </div>
 
@@ -432,7 +330,7 @@
           <div class="stat-icon time">📈</div>
           <div class="stat-info">
             <h3 id="kpi-conversion-rate">0%</h3>
-            <p>Response Conversion Rate</p>
+            <p>Response Conversion</p>
           </div>
         </div>
 
@@ -523,31 +421,175 @@
       </div>
     </div>
 
-    <!-- TAB 5: System Settings -->
+    <!-- TAB 4: Smart Inbox Triage & Noise Cleaner -->
+    <div class="tab-pane" id="pane-noise-hub" style="display: none;">
+      <div class="clean-hub-banner">
+        <div class="clean-hub-text">
+          <h2>🛡️ Inbox Noise Cleaner Hub</h2>
+          <p id="clean-hub-subtitle">Clean marketing emails, notifications, and clutter with 1 click.</p>
+        </div>
+        <button class="btn btn-danger" id="btn-batch-clean-noise">
+          <span>🧹</span> Clean All Noise Emails Now
+        </button>
+      </div>
+
+      <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <div style="display: flex; gap: 8px;" id="triage-filter-group">
+            <button class="btn btn-secondary btn-sm active-filter" data-filter="ALL">All Emails</button>
+            <button class="btn btn-secondary btn-sm" data-filter="NOISE">Noise Only</button>
+            <button class="btn btn-secondary btn-sm" data-filter="RESUME_REQUEST">Recruiter Only</button>
+            <button class="btn btn-secondary btn-sm" data-filter="OTHER">Important Direct</button>
+          </div>
+          <span style="font-size: 0.8rem; color: var(--text-secondary);" id="triage-total-label">Showing all emails</span>
+        </div>
+
+        <table class="noise-table">
+          <thead>
+            <tr>
+              <th>Sender</th>
+              <th>Subject</th>
+              <th>Category</th>
+              <th>AI Reasoning</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="triage-table-body">
+            <!-- Dynamic Rows -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TAB 5: Connected Cloud Accounts & Inboxes (NEW) -->
+    <div class="tab-pane" id="pane-connected-accounts" style="display: none;">
+      <div class="clean-hub-banner" style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(59, 130, 246, 0.12)); border: 1px solid rgba(168, 85, 247, 0.35);">
+        <div class="clean-hub-text">
+          <h2>📬 Connected Mailbox Accounts & Inboxes</h2>
+          <p>Manage individual Microsoft Graph, Gmail, and IMAP accounts with granular status, capability discovery, and live connection health.</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-primary" id="btn-add-account-modal">
+            <span>➕</span> Connect New Account
+          </button>
+        </div>
+      </div>
+
+      <!-- Account Cards Grid -->
+      <div class="vault-grid" id="accounts-cards-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));">
+        <!-- Populated dynamically with Account Cards -->
+      </div>
+    </div>
+
+    <!-- TAB 6: Candidate Bio & Preferences -->
+    <div class="tab-pane" id="pane-candidate-profile" style="display: none;">
+      <div class="profile-grid">
+        <!-- Profile Details Form -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem;">👤 Candidate Profile & Preferences</h2>
+          
+          <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="prof-name" class="form-control" value="Brian K. Kinlaw">
+          </div>
+
+          <div class="form-group">
+            <label>Current Professional Title</label>
+            <input type="text" id="prof-title" class="form-control" value="Enterprise Cloud, Data & AI Solutions Architecture Advisor">
+          </div>
+
+          <div class="form-group">
+            <label>Executive Bio / Elevator Pitch</label>
+            <textarea id="prof-bio" class="form-control"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Core Skills (comma separated)</label>
+            <input type="text" id="prof-skills" class="form-control">
+          </div>
+
+          <div class="form-group">
+            <label>Target Roles (comma separated)</label>
+            <input type="text" id="prof-target-roles" class="form-control">
+          </div>
+
+          <div class="form-group">
+            <label>Work Preferences & Location</label>
+            <input type="text" id="prof-prefs" class="form-control">
+          </div>
+
+          <div class="form-group">
+            <label>Custom Instructions for AI Email Writer (Locked Metrics Grounding)</label>
+            <textarea id="prof-instructions" class="form-control"></textarea>
+          </div>
+
+          <div class="form-group" style="background: rgba(15, 23, 42, 0.3); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 0.75rem;">
+            <label style="color: #94a3b8; font-weight: 600;">🗄️ Excluded Historical Reference Accounts (Excluded from scan)</label>
+            <input type="text" id="prof-historical-emails" class="form-control" value="bkinlaw@dxc.com, brian.kinlaw@cdw.com, briankinlaw@revealwhy.com" style="margin-top: 4px;" />
+            <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Kept for reference only — strictly ignored during inbox synchronization.</p>
+          </div>
+
+          <button class="btn btn-primary" id="btn-save-profile" style="margin-top: 1.25rem;">
+            <span>💾</span> Save Candidate Profile
+          </button>
+        </div>
+
+        <!-- Resume Active Status & Local Uploader -->
+        <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem;">
+          <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem;">📄 Active Default Resume</h2>
+          
+          <div class="active-canonical-hero" id="active-canonical-hero" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-md); padding: 16px; margin-bottom: 1.25rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span class="lens-pill" id="profile-active-lens">Advisor (Level 3A)</span>
+              <span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">★ Active Default</span>
+            </div>
+            <h4 id="profile-active-name" style="margin-top: 8px; font-size: 0.95rem; word-break: break-all;">Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx</h4>
+            <p style="font-size: 0.775rem; color: var(--text-secondary); margin-top: 4px;">Used whenever no specific custom match is chosen.</p>
+          </div>
+
+          <div class="upload-dropzone" id="resume-dropzone">
+            <div style="font-size: 2rem; margin-bottom: 8px;">📤</div>
+            <strong style="font-size: 0.9rem;">Upload Additional Resume Variant</strong>
+            <p style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;">Added to your active vault</p>
+            <input type="file" id="resume-file-input" style="display: none;" accept=".pdf,.docx,.txt">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 7: Engine Settings -->
     <div class="tab-pane" id="pane-system-settings" style="display: none;">
       <div class="glass" style="border-radius: var(--radius-lg); padding: 1.5rem; max-width: 720px; margin: 0 auto;">
-        <h2 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1.25rem;">⚙️ Engine & Integration Settings</h2>
+        <h2 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1.25rem;">⚙️ Engine & Cloud Integration Settings</h2>
         
         <div class="form-group">
-          <label>Google Gemini API Key (for LLM Triage & Generation)</label>
-          <input type="password" id="setting-gemini-key" class="form-control" placeholder="Enter Gemini API key (optional - offline heuristics enabled)">
+          <label>Google Gemini API Key (Stored securely in macOS Keychain)</label>
+          <input type="password" id="setting-gemini-key" class="form-control" placeholder="Enter new Gemini API key or leave blank to keep Keychain secret">
+          <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Status: <span id="gemini-key-status" style="color: #6ee7b7;">Configured in macOS Keychain</span></p>
         </div>
 
         <div class="form-group">
-          <label>Azure AD Client ID (Public App / Device Login)</label>
-          <input type="text" id="setting-azure-client" class="form-control">
+          <label>Microsoft Entra Application (Client) ID for MSAL Graph</label>
+          <input type="text" id="setting-azure-client" class="form-control" placeholder="e.g. 11111111-2222-3333-4444-555555555555">
+          <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Required for Outlook.com & Microsoft 365 cloud synchronization.</p>
         </div>
 
         <div class="form-group">
-          <label>Safe Noise Folder Name in Outlook</label>
+          <label>Microsoft Entra Tenant ID</label>
+          <input type="text" id="setting-azure-tenant" class="form-control" value="common">
+          <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Use 'common' for personal & work accounts, 'consumers' for personal, or your M365 tenant ID.</p>
+        </div>
+
+        <div class="form-group">
+          <label>Safe Noise Quarantine Folder Name in Cloud Mailboxes</label>
           <input type="text" id="setting-safe-folder" class="form-control" value="AI Cleaned - Noise">
         </div>
 
-        <div class="form-group" style="display: flex; align-items: center; gap: 12px; margin-top: 1.5rem;">
-          <input type="checkbox" id="setting-autopilot" style="width: 18px; height: 18px; cursor: pointer;">
+        <div class="form-group" style="display: flex; align-items: center; gap: 12px; margin-top: 1.5rem; background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: var(--radius-md);">
+          <input type="checkbox" id="setting-demo-mode" style="width: 18px; height: 18px; cursor: pointer;">
           <div>
-            <strong>Enable Autopilot Mode</strong>
-            <p style="font-size: 0.8rem; color: var(--text-secondary);">Automatically move noise to Cleaned folder upon syncing.</p>
+            <strong>Explicit Demo Mode (Offline Sandbox)</strong>
+            <p style="font-size: 0.8rem; color: var(--text-secondary);">Isolate the application in a safe offline mock environment with labeled sample data.</p>
           </div>
         </div>
 
@@ -560,80 +602,64 @@
     </div>
   </main>
 
-  <!-- Direct Outlook Client Bridge Modal -->
-  <div class="modal-overlay" id="device-login-modal">
-    <div class="modal-box" style="max-width: 620px;">
+  <!-- Connect / Auth Modal -->
+  <div class="modal-overlay" id="account-auth-modal">
+    <div class="modal-box" style="max-width: 580px;">
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-size: 1.4rem;">💻</span>
-          <div>
-            <h2 style="font-size: 1.25rem; font-weight: 700; margin: 0;">Microsoft Outlook Client</h2>
-            <span style="font-size: 0.75rem; color: #6ee7b7; font-weight: 600;">🟢 Direct macOS Desktop Bridge Active</span>
-          </div>
+          <span style="font-size: 1.3rem;">🔐</span>
+          <h2 style="font-size: 1.2rem; font-weight: 700; margin: 0;">Connect Cloud Mailbox</h2>
         </div>
         <button class="close-btn" id="modal-close-btn">&times;</button>
       </div>
 
-      <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: var(--radius-md); padding: 14px; margin-bottom: 1.25rem;">
-        <div style="display: flex; align-items: center; justify-content: space-between;">
-          <strong style="font-size: 0.9rem; color: #6ee7b7;">✨ Zero-Cloud Direct Desktop Connection</strong>
-          <span class="lens-pill" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7;">Privacy First</span>
-        </div>
-        <p style="font-size: 0.8rem; color: #cbd5e1; margin-top: 6px; line-height: 1.5;">
-          Aura Mail AI communicates directly with your running <strong>Microsoft Outlook</strong> application on macOS. No cloud tokens, no Azure app registrations, and no passwords required.
-        </p>
+      <div style="display: flex; gap: 8px; margin-bottom: 1.25rem;">
+        <button class="btn btn-secondary btn-sm active-filter" id="auth-tab-msal" style="flex: 1;">Microsoft Graph (MSAL)</button>
+        <button class="btn btn-secondary btn-sm" id="auth-tab-imap" style="flex: 1;">IMAP / SMTP (Spectrum / Custom)</button>
       </div>
 
-      <!-- Active Universal Inboxes Card -->
-      <div class="card" style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255, 255, 255, 0.08); padding: 16px; border-radius: var(--radius-md); margin-bottom: 1rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h4 style="font-size: 0.9rem; font-weight: 600; color: #f8fafc;">📬 Active Monitored Inboxes (6 Accounts)</h4>
-          <span style="font-size: 0.725rem; color: #6ee7b7;">Universal Inbox View</span>
+      <!-- MSAL Panel -->
+      <div id="auth-panel-msal">
+        <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: var(--radius-md); padding: 12px; margin-bottom: 1rem;">
+          <strong style="font-size: 0.85rem; color: #93c5fd;">☁️ Direct Microsoft Cloud Sync</strong>
+          <p style="font-size: 0.775rem; color: #cbd5e1; margin-top: 4px;">Connects directly to Microsoft Graph API. Drafts and operations synchronize seamlessly into New Outlook for Mac.</p>
         </div>
-        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">
-          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">kinlawb@outlook.com ★</span>
-          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">brian.kinlaw@outlook.com</span>
-          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">briankkinlaw@gmail.com</span>
-          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">cbkinlaw@satx.rr.com</span>
-          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">briankinlaw@satx.rr.com</span>
-          <span class="skill-chip" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3);">brian@mavencode.com</span>
+
+        <div style="margin-bottom: 1rem;">
+          <button class="btn btn-primary" id="btn-start-device-flow" style="width: 100%; justify-content: center; padding: 10px;">
+            <span>🔑</span> Start Microsoft Device Sign-In Flow
+          </button>
+        </div>
+
+        <div id="device-flow-display" style="display: none; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-md); padding: 14px; text-align: center; margin-bottom: 1rem;">
+          <p style="font-size: 0.8rem; color: #cbd5e1;">Open <a href="https://microsoft.com/devicelogin" target="_blank" style="color: #93c5fd; text-decoration: underline;">microsoft.com/devicelogin</a> and enter code:</p>
+          <div id="device-code-display" style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: #6ee7b7; letter-spacing: 2px; margin: 10px 0;">CODE-HERE</div>
+          <p id="device-poll-status" style="font-size: 0.75rem; color: var(--text-muted);">Waiting for code entry...</p>
         </div>
       </div>
 
-      <!-- Excluded Historical Reference Accounts Card -->
-      <div class="card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(255, 255, 255, 0.05); padding: 14px; border-radius: var(--radius-md); margin-bottom: 1.25rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-          <h4 style="font-size: 0.85rem; font-weight: 600; color: #94a3b8;">🗄️ Excluded Historical Archives (Skipped)</h4>
-          <span style="font-size: 0.7rem; color: var(--text-muted);">Reference Only</span>
+      <!-- IMAP Panel -->
+      <div id="auth-panel-imap" style="display: none;">
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" id="imap-email-input" class="form-control" placeholder="e.g. cbkinlaw@satx.rr.com or brian@mavencode.com">
         </div>
-        <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
-          <code>bkinlaw@dxc.com</code> • <code>brian.kinlaw@cdw.com</code> • <code>briankinlaw@revealwhy.com</code>
-        </p>
-      </div>
-
-      <!-- Direct Actions -->
-      <div style="display: flex; gap: 10px; margin-bottom: 1rem;">
-        <button class="btn btn-primary" id="btn-modal-sync-inbox" style="flex: 1; justify-content: center; padding: 10px 16px;">
-          <span>⚡</span> Sync Active Inboxes Now
+        <div class="form-group">
+          <label>Mailbox Password (Stored securely in macOS Keychain)</label>
+          <input type="password" id="imap-password-input" class="form-control" placeholder="Enter mailbox password">
+        </div>
+        <div class="form-group">
+          <label>IMAP Server</label>
+          <input type="text" id="imap-server-input" class="form-control" placeholder="mail.twc.com or mail.mavencode.com">
+        </div>
+        <div class="form-group">
+          <label>SMTP Server</label>
+          <input type="text" id="smtp-server-input" class="form-control" placeholder="mail.twc.com or mail.mavencode.com">
+        </div>
+        <button class="btn btn-primary" id="btn-save-imap-auth" style="width: 100%; justify-content: center; margin-top: 1rem;">
+          <span>🔐</span> Connect & Save to Keychain
         </button>
-        <button class="btn btn-secondary" id="btn-modal-open-profile" style="padding: 10px 16px;">
-          <span>👤</span> Manage Inboxes & Bio
-        </button>
       </div>
-
-      <!-- Optional Collapsed Cloud Fallback for Power Users -->
-      <details style="margin-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 10px;">
-        <summary style="font-size: 0.75rem; color: var(--text-muted); cursor: pointer;">
-          ⚙️ Advanced: Cloud OAuth / Graph API Settings (Optional)
-        </summary>
-        <div style="margin-top: 10px; background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: var(--radius-sm);">
-          <label style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 4px;">Azure Client ID</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" id="azure-client-input" class="input-field" placeholder="Optional Azure Client ID" style="flex: 1; padding: 6px 10px; font-size: 0.775rem;" />
-            <button class="btn btn-secondary btn-sm" id="btn-save-azure-client">Save</button>
-          </div>
-        </div>
-      </details>
     </div>
   </div>
 
@@ -665,7 +691,7 @@
     </div>
   </div>
 
-  <!-- Toast Container -->
+  <!-- Toast Notification Container -->
   <div class="toast-container" id="toast-container"></div>
 
   <script src="/static/app.js"></script>

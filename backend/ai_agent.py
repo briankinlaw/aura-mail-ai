@@ -46,8 +46,8 @@ RESUME_REQUEST_PATTERNS = [
 ]
 
 def get_gemini_client():
-    settings = load_settings()
-    api_key = settings.get("gemini_api_key") or os.getenv("GEMINI_API_KEY")
+    from backend.security import get_secret
+    api_key = get_secret("gemini_api_key", "GEMINI_API_KEY")
     if not api_key:
         return None
     try:

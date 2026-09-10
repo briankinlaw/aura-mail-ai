@@ -1,7 +1,8 @@
-// Aura Mail AI - Frontend Application Controller (with Canonical Career System Integration)
+// Aura Mail AI - Frontend Application Controller (v1.1 Cloud Multi-Account)
 
 let APP_STATE = {
   emails: [],
+  accounts: [],
   selectedEmailId: null,
   profile: null,
   canonicalData: null,
@@ -23,10 +24,15 @@ const elements = {
   tabBadgeRecruiters: document.getElementById('tab-badge-recruiters'),
   tabBadgeNoise: document.getElementById('tab-badge-noise'),
   tabBadgeVault: document.getElementById('tab-badge-vault'),
+  tabBadgeAccounts: document.getElementById('tab-badge-accounts'),
+  headerConnCount: document.getElementById('header-conn-count'),
   recruiterCountPill: document.getElementById('recruiter-count-pill'),
   
   recruiterEmailsList: document.getElementById('recruiter-emails-list'),
   triageTableBody: document.getElementById('triage-table-body'),
+  accountsCardsGrid: document.getElementById('accounts-cards-grid'),
+  demoModeBanner: document.getElementById('demo-mode-banner'),
+  btnDisableDemo: document.getElementById('btn-disable-demo'),
   
   inboundSubject: document.getElementById('inbound-subject'),
   inboundSender: document.getElementById('inbound-sender'),
@@ -55,7 +61,8 @@ const elements = {
   btnSaveDraft: document.getElementById('btn-save-draft'),
   btnSendReply: document.getElementById('btn-send-reply'),
   btnBatchCleanNoise: document.getElementById('btn-batch-clean-noise'),
-  btnOpenConnect: document.getElementById('btn-open-connect'),
+  btnOpenAccounts: document.getElementById('btn-open-accounts'),
+  btnAddAccountModal: document.getElementById('btn-add-account-modal'),
   btnOpenSettings: document.getElementById('btn-open-settings'),
   btnSaveProfile: document.getElementById('btn-save-profile'),
   btnSaveSettings: document.getElementById('btn-save-settings'),
@@ -76,20 +83,28 @@ const elements = {
   btnCloseLedger: document.getElementById('btn-close-ledger'),
   ledgerTextViewer: document.getElementById('ledger-text-viewer'),
   
-  // Device Code Modal
-  deviceLoginModal: document.getElementById('device-login-modal'),
+  // Auth Modal
+  accountAuthModal: document.getElementById('account-auth-modal'),
   modalCloseBtn: document.getElementById('modal-close-btn'),
-  deviceCodeText: document.getElementById('device-code-text'),
+  authTabMsal: document.getElementById('auth-tab-msal'),
+  authTabImap: document.getElementById('auth-tab-imap'),
+  authPanelMsal: document.getElementById('auth-panel-msal'),
+  authPanelImap: document.getElementById('auth-panel-imap'),
+  btnStartDeviceFlow: document.getElementById('btn-start-device-flow'),
+  deviceFlowDisplay: document.getElementById('device-flow-display'),
+  deviceCodeDisplay: document.getElementById('device-code-display'),
   devicePollStatus: document.getElementById('device-poll-status'),
-  btnOpenMicrosoftLogin: document.getElementById('btn-open-microsoft-login'),
+  btnSaveImapAuth: document.getElementById('btn-save-imap-auth'),
   
   resumeDropzone: document.getElementById('resume-dropzone'),
   resumeFileInput: document.getElementById('resume-file-input'),
   profileActiveName: document.getElementById('profile-active-name'),
   profileActiveLens: document.getElementById('profile-active-lens'),
   
-  outlookStatusText: document.getElementById('outlook-status-text'),
-  outlookDot: document.getElementById('outlook-dot'),
+  cloudStatusText: document.getElementById('cloud-status-text'),
+  cloudDot: document.getElementById('cloud-dot'),
+  desktopStatusText: document.getElementById('desktop-status-text'),
+  desktopDot: document.getElementById('desktop-dot'),
   aiStatusText: document.getElementById('ai-status-text'),
   aiDot: document.getElementById('ai-dot')
 };
@@ -104,11 +119,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function refreshAll() {
   await Promise.all([
     fetchStatus(),
+    fetchAccounts(),
     fetchProfile(),
     fetchCanonicalResumes(),
     fetchEmails(),
     fetchStats()
   ]);
+  await fetchAnalyticsData();
 }
 
 // --- Tabs Navigation ---
@@ -136,30 +153,45 @@ async function fetchStatus() {
     const data = await res.json();
     APP_STATE.status = data;
     
-    if (data.auth_mode === 'GRAPH_CLOUD_OAUTH') {
-      elements.outlookStatusText.textContent = data.outlook_user || 'Outlook: Cloud Synced';
-      elements.outlookDot.className = 'status-dot';
-      elements.btnOpenConnect.innerHTML = '<span>☁️</span> Cloud Synced';
-      elements.btnOpenConnect.className = 'btn btn-emerald btn-sm';
-      elements.deviceLoginModal.classList.remove('active');
-    } else if (data.auth_mode === 'MAC_DESKTOP_CLIENT') {
-      elements.outlookStatusText.textContent = 'Outlook Client: Connected (Direct Bridge)';
-      elements.outlookDot.className = 'status-dot';
-      elements.btnOpenConnect.innerHTML = '<span>🟢</span> Outlook Client Active';
-      elements.btnOpenConnect.className = 'btn btn-emerald btn-sm';
+    // Cloud Status
+    if (data.demo_mode) {
+      elements.cloudStatusText.textContent = 'Demo Mode (Offline Sandbox)';
+      elements.cloudDot.className = 'status-dot';
+      elements.cloudDot.style.background = '#eab308';
+      if (elements.demoModeBanner) elements.demoModeBanner.style.display = 'flex';
     } else {
-      elements.outlookStatusText.textContent = 'Demo Mode (Offline)';
-      elements.outlookDot.className = 'status-dot';
-      elements.btnOpenConnect.innerHTML = '<span>🔄</span> Connect Outlook';
-      elements.btnOpenConnect.className = 'btn btn-secondary btn-sm';
+      if (elements.demoModeBanner) elements.demoModeBanner.style.display = 'none';
+      if (data.connected_accounts > 0) {
+        elements.cloudStatusText.textContent = `Cloud Sync: ${data.connected_accounts}/${data.total_accounts} Active`;
+        elements.cloudDot.className = 'status-dot';
+        elements.cloudDot.style.background = '#10b981';
+      } else {
+        elements.cloudStatusText.textContent = 'Cloud: Disconnected (Configure Accounts)';
+        elements.cloudDot.className = 'status-dot';
+        elements.cloudDot.style.background = '#ef4444';
+      }
     }
     
+    // Advisory Mac Desktop App Status
+    if (data.desktop_outlook_app && data.desktop_outlook_app.is_running) {
+      elements.desktopStatusText.textContent = 'Mac Outlook: Running';
+      elements.desktopDot.className = 'status-dot';
+      elements.desktopDot.style.background = '#10b981';
+    } else {
+      elements.desktopStatusText.textContent = 'Mac Outlook: Offline (Cloud Active)';
+      elements.desktopDot.className = 'status-dot';
+      elements.desktopDot.style.background = '#94a3b8';
+    }
+    
+    // AI Status
     if (data.gemini_configured) {
-      elements.aiStatusText.textContent = 'Gemini 2.5 Flash: Active';
+      elements.aiStatusText.textContent = 'Gemini AI: Active (Keychain)';
       elements.aiDot.className = 'status-dot';
+      elements.aiDot.style.background = '#10b981';
     } else {
       elements.aiStatusText.textContent = 'AI Engine: Local Heuristics';
       elements.aiDot.className = 'status-dot';
+      elements.aiDot.style.background = '#3b82f6';
     }
     
     if (data.active_resume) {
@@ -168,6 +200,22 @@ async function fetchStatus() {
     }
   } catch (err) {
     console.error('Failed to fetch status', err);
+  }
+}
+
+async function fetchAccounts() {
+  try {
+    const res = await fetch('/api/accounts');
+    const accounts = await res.json();
+    APP_STATE.accounts = accounts;
+    
+    const connectedCount = accounts.filter(a => a.is_connected).length;
+    if (elements.headerConnCount) elements.headerConnCount.textContent = connectedCount;
+    if (elements.tabBadgeAccounts) elements.tabBadgeAccounts.textContent = accounts.length;
+    
+    renderAccountsGrid();
+  } catch (err) {
+    console.error('Failed to fetch accounts', err);
   }
 }
 
@@ -216,10 +264,6 @@ async function fetchProfile() {
     document.getElementById('prof-prefs').value = profile.work_preferences || '';
     document.getElementById('prof-instructions').value = profile.custom_reply_instructions || '';
     
-    const activeEmailsInput = document.getElementById('prof-active-emails');
-    if (activeEmailsInput) {
-      activeEmailsInput.value = (profile.active_email_accounts || []).join(', ');
-    }
     const histEmailsInput = document.getElementById('prof-historical-emails');
     if (histEmailsInput) {
       histEmailsInput.value = (profile.historical_email_accounts || []).join(', ');
@@ -252,6 +296,110 @@ async function fetchCanonicalResumes(forceRefresh = false) {
 }
 
 // --- Render Methods ---
+
+function renderAccountsGrid() {
+  const container = elements.accountsCardsGrid;
+  if (!container) return;
+  container.innerHTML = '';
+  
+  if (APP_STATE.accounts.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="grid-column: 1 / -1;">
+        <div class="empty-state-icon">📭</div>
+        <p>No mailbox accounts configured yet. Click "Connect New Account" to add one.</p>
+      </div>`;
+    return;
+  }
+  
+  APP_STATE.accounts.forEach(acc => {
+    const card = document.createElement('div');
+    card.className = 'vault-card';
+    card.style.background = 'rgba(30, 41, 59, 0.7)';
+    
+    let provBadge = '☁️ Microsoft Graph';
+    let provColor = '#3b82f6';
+    if (acc.provider === 'GMAIL') {
+      provBadge = '📮 Gmail API';
+      provColor = '#ea4335';
+    } else if (acc.provider === 'IMAP') {
+      provBadge = '🌐 Standard IMAP/SMTP';
+      provColor = '#10b981';
+    } else if (acc.provider === 'DEMO') {
+      provBadge = '🧪 Demo Sandbox';
+      provColor = '#eab308';
+    }
+    
+    const isConn = acc.is_connected;
+    const statusPill = isConn ? 
+      `<span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">● Connected</span>` :
+      `<span style="font-size: 0.75rem; color: #ef4444; font-weight: 600;">○ Disconnected</span>`;
+    
+    const caps = (acc.capabilities || []).map(c => `<span class="skill-chip" style="font-size: 0.65rem; padding: 2px 6px;">${c}</span>`).join(' ');
+    
+    card.innerHTML = `
+      <div>
+        <div class="vault-card-header" style="margin-bottom: 8px;">
+          <span class="lens-pill" style="background: ${provColor}22; color: ${provColor}; border: 1px solid ${provColor}55;">
+            ${provBadge}
+          </span>
+          ${statusPill}
+        </div>
+        <div class="vault-card-title" style="font-size: 1.05rem; word-break: break-all;">${acc.email_address}</div>
+        <div class="vault-card-headline" style="color: var(--text-secondary); margin-top: 4px;">${acc.display_name}</div>
+        
+        ${acc.is_alias ? `<p style="font-size: 0.75rem; color: #93c5fd; margin-top: 6px;">↳ Alias of parent mailbox: <code>${acc.alias_of}</code></p>` : ''}
+        ${acc.last_error ? `<div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--radius-sm); padding: 6px 10px; margin-top: 8px; font-size: 0.75rem; color: #fca5a5;">⚠️ ${acc.last_error}</div>` : ''}
+        
+        <div style="margin-top: 10px;">
+          <div style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 4px;">Capabilities:</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">${caps}</div>
+        </div>
+      </div>
+      
+      <div style="margin-top: 14px; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 10px;">
+        <div class="vault-card-footer">
+          <span style="font-size: 0.7rem; color: var(--text-muted);">
+            Sync: ${acc.last_sync_time ? acc.last_sync_time.split('T')[1].slice(0,5) : 'Never'}
+          </span>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn btn-secondary btn-sm" onclick="testAccount('${acc.account_id}')">Test</button>
+            <button class="btn btn-secondary btn-sm" onclick="openAuthModalFor('${acc.provider}', '${acc.account_id}')">
+              ${isConn ? 'Re-Auth' : 'Sign In'}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+window.testAccount = async function(accountId) {
+  showToast(`Testing connection for ${accountId}...`, 'info');
+  try {
+    const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/test`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Connection verified for ${accountId}!`, 'success');
+    } else {
+      showToast(`Connection test failed: ${data.safe_message}`, 'error');
+    }
+    await fetchAccounts();
+    await fetchStatus();
+  } catch (err) {
+    showToast(`Test error: ${err.message}`, 'error');
+  }
+};
+
+window.openAuthModalFor = function(providerType, accountId) {
+  elements.accountAuthModal.classList.add('active');
+  if (providerType === 'IMAP') {
+    elements.authTabImap.click();
+    document.getElementById('imap-email-input').value = accountId;
+  } else {
+    elements.authTabMsal.click();
+  }
+};
 
 function populateResumeDropdown() {
   const select = elements.resumeVariantSelect;
@@ -308,30 +456,30 @@ function renderRecruiterList() {
     return;
   }
   
-  recruiterEmails.forEach(email => {
+  recruiterEmails.forEach(emailMsg => {
     const card = document.createElement('div');
-    card.className = `email-card ${email.id === APP_STATE.selectedEmailId ? 'selected' : ''}`;
-    card.id = `card-${email.id}`;
+    card.className = `email-card ${emailMsg.id === APP_STATE.selectedEmailId ? 'selected' : ''}`;
+    card.id = `card-${emailMsg.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     
-    const roleName = email.classification?.recruiter_details?.role_title || email.subject;
-    const compName = email.classification?.recruiter_details?.company_name || 'Hiring Team';
-    const match = email.classification?.resume_match;
+    const roleName = emailMsg.classification?.recruiter_details?.role_title || emailMsg.subject;
+    const compName = emailMsg.classification?.recruiter_details?.company_name || 'Hiring Team';
+    const match = emailMsg.classification?.resume_match;
     const lensBadge = match?.lens_badge || 'Advisor (Level 3A)';
     
     card.innerHTML = `
       <div class="email-card-header">
-        <span class="sender-name">${email.sender_name}</span>
-        <span class="email-time">${email.received_at.split(' ')[1] || ''}</span>
+        <span class="sender-name">${emailMsg.sender_name}</span>
+        <span class="email-time">${emailMsg.received_at.split(' ')[1] || ''}</span>
       </div>
       <div class="email-subject">${roleName}</div>
-      <div class="email-snippet">${email.preview}</div>
+      <div class="email-snippet">${emailMsg.preview}</div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
         <span class="category-tag recruiter">🎯 ${compName}</span>
         <span class="lens-pill" style="font-size: 0.65rem; padding: 1px 6px; background: rgba(59,130,246,0.15); color: #93c5fd;">${lensBadge}</span>
       </div>
     `;
     
-    card.addEventListener('click', () => selectRecruiterEmail(email.id));
+    card.addEventListener('click', () => selectRecruiterEmail(emailMsg.id));
     container.appendChild(card);
   });
   
@@ -344,19 +492,19 @@ function selectRecruiterEmail(emailId) {
   APP_STATE.selectedEmailId = emailId;
   
   document.querySelectorAll('.email-card').forEach(c => c.classList.remove('selected'));
-  const card = document.getElementById(`card-${emailId}`);
+  const card = document.getElementById(`card-${emailId.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
   if (card) card.classList.add('selected');
   
-  const email = APP_STATE.emails.find(e => e.id === emailId);
-  if (!email) return;
+  const emailMsg = APP_STATE.emails.find(e => e.id === emailId);
+  if (!emailMsg) return;
   
-  elements.inboundSubject.textContent = email.subject;
-  elements.inboundSender.textContent = `From: ${email.sender_name} <${email.sender_email}>`;
-  elements.inboundDate.textContent = `Received: ${email.received_at}`;
-  elements.inboundMessageBody.textContent = email.body_text;
+  elements.inboundSubject.textContent = emailMsg.subject;
+  elements.inboundSender.textContent = `From: ${emailMsg.sender_name} <${emailMsg.sender_email}>`;
+  elements.inboundDate.textContent = `Received: ${emailMsg.received_at}`;
+  elements.inboundMessageBody.textContent = emailMsg.body_text;
   
   // Recruiter Specs
-  const specs = email.classification?.recruiter_details;
+  const specs = emailMsg.classification?.recruiter_details;
   if (specs) {
     elements.specRole.textContent = specs.role_title || 'Enterprise Solutions Architecture Role';
     elements.specCompany.textContent = specs.company_name || 'Prospective Employer';
@@ -367,7 +515,7 @@ function selectRecruiterEmail(emailId) {
   }
   
   // Canonical Match & Lens Card
-  const match = email.classification?.resume_match;
+  const match = emailMsg.classification?.resume_match;
   if (match) {
     elements.matchLensBadge.textContent = match.lens_name;
     elements.matchLensBadge.style.background = `${match.lens_color}22`;
@@ -377,7 +525,7 @@ function selectRecruiterEmail(emailId) {
     elements.matchScoreValue.textContent = `${match.match_score}%`;
     elements.matchRationale.textContent = match.rationale;
     
-    const chosenResume = email.selected_resume_file || match.selected_resume;
+    const chosenResume = emailMsg.selected_resume_file || match.selected_resume;
     if (chosenResume) {
       elements.resumeVariantSelect.value = chosenResume;
       elements.attachedResumeName.textContent = chosenResume;
@@ -391,7 +539,7 @@ function selectRecruiterEmail(emailId) {
   }
   
   // Draft Reply
-  elements.replyBodyText.value = email.draft_reply || '';
+  elements.replyBodyText.value = emailMsg.draft_reply || '';
 }
 
 function renderTriageTable() {
@@ -409,44 +557,44 @@ function renderTriageTable() {
   
   document.getElementById('triage-total-label').textContent = `Showing ${filtered.length} emails`;
   
-  filtered.forEach(email => {
+  filtered.forEach(emailMsg => {
     const tr = document.createElement('tr');
     
     let tagClass = 'other';
     let tagLabel = 'Direct / Human';
-    if (email.classification?.category === 'RESUME_REQUEST') {
+    if (emailMsg.classification?.category === 'RESUME_REQUEST') {
       tagClass = 'recruiter';
       tagLabel = '🎯 Recruiter / Resume';
-    } else if (email.classification?.category === 'NOISE_PROMOTIONAL') {
+    } else if (emailMsg.classification?.category === 'NOISE_PROMOTIONAL') {
       tagClass = 'noise-promo';
       tagLabel = '📢 Promotional Spam';
-    } else if (email.classification?.category === 'NOISE_NEWSLETTER') {
+    } else if (emailMsg.classification?.category === 'NOISE_NEWSLETTER') {
       tagClass = 'noise-news';
       tagLabel = '📰 Newsletter';
-    } else if (email.classification?.category === 'NOISE_NOTIFICATION') {
+    } else if (emailMsg.classification?.category === 'NOISE_NOTIFICATION') {
       tagClass = 'noise-notif';
       tagLabel = '🔔 System Alert';
     }
     
-    const isTrashed = email.status === 'TRASHED';
+    const isTrashed = emailMsg.status === 'TRASHED';
     
     tr.innerHTML = `
       <td>
-        <strong style="font-size: 0.85rem;">${email.sender_name}</strong>
-        <div style="font-size: 0.75rem; color: var(--text-muted);">${email.sender_email}</div>
+        <strong style="font-size: 0.85rem;">${emailMsg.sender_name}</strong>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">${emailMsg.sender_email}</div>
       </td>
       <td>
-        <div style="font-weight: 500; color: #e2e8f0; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${email.subject}</div>
-        <div style="font-size: 0.75rem; color: var(--text-secondary); max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${email.preview}</div>
+        <div style="font-weight: 500; color: #e2e8f0; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${emailMsg.subject}</div>
+        <div style="font-size: 0.75rem; color: var(--text-secondary); max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${emailMsg.preview}</div>
       </td>
       <td><span class="category-tag ${tagClass}">${tagLabel}</span></td>
       <td style="font-size: 0.775rem; color: var(--text-secondary); max-width: 250px;">
-        ${email.classification?.reasoning || 'Classified by Aura AI'}
+        ${emailMsg.classification?.reasoning || 'Classified by Aura AI'}
       </td>
       <td>
         ${isTrashed ? 
           '<span style="color: var(--text-muted); font-size: 0.8rem;">✓ Cleaned</span>' :
-          `<button class="btn btn-secondary btn-sm" onclick="trashSingleEmail('${email.id}')">Trash</button>`
+          `<button class="btn btn-secondary btn-sm" onclick="trashSingleEmail('${emailMsg.id}')">Trash</button>`
         }
       </td>
     `;
@@ -531,7 +679,6 @@ function renderVaultGrid() {
   });
 }
 
-// Global action to set default resume
 window.setActiveResume = async function(filename) {
   if (!APP_STATE.profile) return;
   APP_STATE.profile.active_resume_file = filename;
@@ -555,12 +702,16 @@ window.setActiveResume = async function(filename) {
 function setupEventListeners() {
   // Sync Inbox
   elements.btnSyncInbox.addEventListener('click', async () => {
-    showToast('Syncing inbox and triaging with AI...', 'info');
+    showToast('Syncing cloud inboxes and triaging with AI...', 'info');
     elements.btnSyncInbox.disabled = true;
     try {
       const res = await fetch('/api/emails/sync', { method: 'POST' });
       const data = await res.json();
-      showToast(`Sync complete! Found ${data.resume_requests_found} recruiter reachouts and ${data.noise_detected} noise items.`, 'success');
+      if (data.sync_stats && data.sync_stats.accounts_failed > 0) {
+        showToast(`Sync finished with warnings: ${data.sync_stats.accounts_synced} mailboxes synced, ${data.sync_stats.accounts_failed} failed.`, 'error');
+      } else {
+        showToast(`Sync complete! Found ${data.resume_requests_found} recruiter reachouts and ${data.noise_detected} noise items.`, 'success');
+      }
       await refreshAll();
     } catch (err) {
       showToast('Sync failed: ' + err.message, 'error');
@@ -569,7 +720,114 @@ function setupEventListeners() {
     }
   });
 
-  // Resume Dropdown Change in Recruiter Studio
+  // Open Accounts Tab
+  elements.btnOpenAccounts.addEventListener('click', () => {
+    const accTab = document.querySelector('[data-tab="connected-accounts"]');
+    if (accTab) accTab.click();
+  });
+
+  if (elements.btnAddAccountModal) {
+    elements.btnAddAccountModal.addEventListener('click', () => {
+      elements.accountAuthModal.classList.add('active');
+    });
+  }
+
+  // Auth Tabs
+  elements.authTabMsal.addEventListener('click', () => {
+    elements.authTabMsal.classList.add('active-filter');
+    elements.authTabImap.classList.remove('active-filter');
+    elements.authPanelMsal.style.display = 'block';
+    elements.authPanelImap.style.display = 'none';
+  });
+
+  elements.authTabImap.addEventListener('click', () => {
+    elements.authTabImap.classList.add('active-filter');
+    elements.authTabMsal.classList.remove('active-filter');
+    elements.authPanelMsal.style.display = 'none';
+    elements.authPanelImap.style.display = 'block';
+  });
+
+  // MSAL Device Flow
+  elements.btnStartDeviceFlow.addEventListener('click', async () => {
+    elements.btnStartDeviceFlow.disabled = true;
+    elements.btnStartDeviceFlow.textContent = 'Initiating Microsoft Login...';
+    try {
+      const res = await fetch('/api/auth/msal/device-code', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.user_code) {
+        elements.deviceCodeDisplay.textContent = data.user_code;
+        elements.deviceFlowDisplay.style.display = 'block';
+        elements.devicePollStatus.textContent = 'Waiting for you to enter code at microsoft.com/devicelogin...';
+        
+        // Start polling
+        if (APP_STATE.devicePollInterval) clearInterval(APP_STATE.devicePollInterval);
+        APP_STATE.devicePollInterval = setInterval(async () => {
+          try {
+            const pollRes = await fetch('/api/auth/msal/device-code/poll', { method: 'POST' });
+            const pollData = await pollRes.json();
+            if (pollData.success) {
+              clearInterval(APP_STATE.devicePollInterval);
+              showToast(`Connected to Microsoft Graph as ${pollData.account_id}!`, 'success');
+              elements.accountAuthModal.classList.remove('active');
+              await refreshAll();
+            } else if (!pollData.retryable) {
+              elements.devicePollStatus.textContent = pollData.safe_message;
+            }
+          } catch (e) {}
+        }, 5000);
+      } else {
+        showToast(data.detail || 'Failed to start device flow.', 'error');
+      }
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    } finally {
+      elements.btnStartDeviceFlow.disabled = false;
+      elements.btnStartDeviceFlow.textContent = 'Start Microsoft Device Sign-In Flow';
+    }
+  });
+
+  // Save IMAP Auth
+  elements.btnSaveImapAuth.addEventListener('click', async () => {
+    const emailAddr = document.getElementById('imap-email-input').value.trim();
+    const pwd = document.getElementById('imap-password-input').value.trim();
+    const imapServer = document.getElementById('imap-server-input').value.trim();
+    const smtpServer = document.getElementById('smtp-server-input').value.trim();
+    
+    if (!emailAddr || !pwd) {
+      showToast('Email address and password required.', 'error');
+      return;
+    }
+    
+    elements.btnSaveImapAuth.disabled = true;
+    elements.btnSaveImapAuth.textContent = 'Verifying & Storing in Keychain...';
+    try {
+      const res = await fetch('/api/auth/imap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailAddr,
+          password: pwd,
+          imap_server: imapServer,
+          smtp_server: smtpServer
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast(`Connected to IMAP mailbox for ${emailAddr}!`, 'success');
+        elements.accountAuthModal.classList.remove('active');
+        await refreshAll();
+      } else {
+        showToast(data.detail || data.safe_message || 'IMAP verification failed.', 'error');
+      }
+    } catch (err) {
+      showToast('Connection failed: ' + err.message, 'error');
+    } finally {
+      elements.btnSaveImapAuth.disabled = false;
+      elements.btnSaveImapAuth.textContent = 'Connect & Save to Keychain';
+    }
+  });
+
+  // Resume Dropdown Change
   if (elements.resumeVariantSelect) {
     elements.resumeVariantSelect.addEventListener('change', (e) => {
       const selected = e.target.value;
@@ -577,9 +835,9 @@ function setupEventListeners() {
       const isPdf = selected.endsWith('.pdf');
       elements.attachmentFormatHint.textContent = isPdf ? 'Canonical Document (Adobe PDF)' : 'Canonical Document (Word DOCX)';
       
-      const email = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
-      if (email) {
-        email.selected_resume_file = selected;
+      const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
+      if (emailMsg) {
+        emailMsg.selected_resume_file = selected;
       }
       showToast(`Attached resume updated to ${selected}. Click Regenerate to adapt pitch.`, 'info');
     });
@@ -593,7 +851,7 @@ function setupEventListeners() {
     showToast(`Generating ${tone} response grounded in ${chosenResume}...`, 'info');
     
     try {
-      const res = await fetch(`/api/emails/${APP_STATE.selectedEmailId}/generate-reply`, {
+      const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/generate-reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tone: tone, selected_resume: chosenResume })
@@ -607,21 +865,25 @@ function setupEventListeners() {
     }
   });
 
-  // Save to Outlook Drafts
+  // Save to Cloud Drafts
   elements.btnSaveDraft.addEventListener('click', async () => {
     if (!APP_STATE.selectedEmailId) return;
     const replyBody = elements.replyBodyText.value;
     const chosenResume = elements.resumeVariantSelect.value;
-    showToast(`Saving draft to Outlook with ${chosenResume} attached...`, 'info');
+    showToast(`Creating draft in cloud mailbox with '${chosenResume}' attached...`, 'info');
     
     try {
-      const res = await fetch(`/api/emails/${APP_STATE.selectedEmailId}/save-draft`, {
+      const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/save-draft`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reply_body: replyBody, resume_filename: chosenResume })
       });
       const data = await res.json();
-      showToast('Draft successfully created in Outlook with canonical resume attached!', 'success');
+      if (data.success) {
+        showToast(data.safe_message || 'Draft successfully created in cloud Drafts folder!', 'success');
+      } else {
+        showToast(`Draft error: ${data.safe_message}`, 'error');
+      }
       await refreshAll();
     } catch (err) {
       showToast('Failed to save draft: ' + err.message, 'error');
@@ -636,15 +898,19 @@ function setupEventListeners() {
     
     if (!confirm(`Are you ready to send this response with ${chosenResume} attached?`)) return;
     
-    showToast('Sending response via Outlook...', 'info');
+    showToast('Sending response via cloud provider...', 'info');
     try {
-      const res = await fetch(`/api/emails/${APP_STATE.selectedEmailId}/send-reply`, {
+      const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/send-reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reply_body: replyBody, attach_resume: true, resume_filename: chosenResume })
       });
       const data = await res.json();
-      showToast('Reply and canonical resume sent successfully!', 'success');
+      if (data.success) {
+        showToast(data.safe_message || 'Reply sent successfully!', 'success');
+      } else {
+        showToast(`Send error: ${data.safe_message}`, 'error');
+      }
       await refreshAll();
     } catch (err) {
       showToast('Failed to send reply: ' + err.message, 'error');
@@ -700,10 +966,16 @@ function setupEventListeners() {
   if (elements.btnCloseLedger) {
     elements.btnCloseLedger.addEventListener('click', () => elements.ledgerModal.classList.remove('active'));
   }
+  if (elements.modalCloseBtn) {
+    elements.modalCloseBtn.addEventListener('click', () => {
+      elements.accountAuthModal.classList.remove('active');
+      if (APP_STATE.devicePollInterval) clearInterval(APP_STATE.devicePollInterval);
+    });
+  }
 
   // Batch Clean Noise
   elements.btnBatchCleanNoise.addEventListener('click', async () => {
-    showToast('Moving all noise emails to safe cleanup folder...', 'info');
+    showToast('Moving noise emails to cloud quarantine folder...', 'info');
     try {
       const res = await fetch('/api/emails/clean-noise', { method: 'POST' });
       const data = await res.json();
@@ -727,10 +999,7 @@ function setupEventListeners() {
 
   // Candidate Profile Save
   elements.btnSaveProfile.addEventListener('click', async () => {
-    const activeEmailsRaw = document.getElementById('prof-active-emails')?.value || '';
     const histEmailsRaw = document.getElementById('prof-historical-emails')?.value || '';
-    
-    const activeAccounts = activeEmailsRaw.split(',').map(s => s.trim()).filter(Boolean);
     const historicalAccounts = histEmailsRaw.split(',').map(s => s.trim()).filter(Boolean);
 
     const payload = {
@@ -741,19 +1010,18 @@ function setupEventListeners() {
       target_roles: document.getElementById('prof-target-roles').value.split(',').map(s => s.trim()).filter(Boolean),
       work_preferences: document.getElementById('prof-prefs').value,
       custom_reply_instructions: document.getElementById('prof-instructions').value,
-      active_email_accounts: activeAccounts,
       historical_email_accounts: historicalAccounts,
       active_resume_file: APP_STATE.profile?.active_resume_file || "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx"
     };
     
-    showToast('Saving profile & account preferences...', 'info');
+    showToast('Saving profile preferences...', 'info');
     try {
       await fetch('/api/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      showToast('Candidate Profile & Active Inboxes saved successfully!', 'success');
+      showToast('Candidate Profile saved successfully!', 'success');
       await refreshAll();
     } catch (err) {
       showToast('Failed to save profile: ' + err.message, 'error');
@@ -783,112 +1051,6 @@ function setupEventListeners() {
     }
   });
 
-  // Open Direct Outlook Client Status Modal
-  elements.btnOpenConnect.addEventListener('click', async () => {
-    elements.deviceLoginModal.classList.add('active');
-    try {
-      const setRes = await fetch('/api/settings');
-      const setJson = await setRes.json();
-      const azureInput = document.getElementById('azure-client-input');
-      if (azureInput && setJson.azure_client_id) {
-        azureInput.value = setJson.azure_client_id;
-      }
-    } catch (e) {}
-  });
-
-  if (elements.modalCloseBtn) {
-    elements.modalCloseBtn.addEventListener('click', () => {
-      elements.deviceLoginModal.classList.remove('active');
-    });
-  }
-
-  const btnModalSync = document.getElementById('btn-modal-sync-inbox');
-  if (btnModalSync) {
-    btnModalSync.addEventListener('click', async () => {
-      elements.deviceLoginModal.classList.remove('active');
-      elements.btnSyncInbox.click();
-    });
-  }
-
-  const btnModalProfile = document.getElementById('btn-modal-open-profile');
-  if (btnModalProfile) {
-    btnModalProfile.addEventListener('click', () => {
-      elements.deviceLoginModal.classList.remove('active');
-      const profTab = document.querySelector('[data-tab="candidate-profile"]');
-      if (profTab) profTab.click();
-    });
-  }
-
-  // Save Azure Client ID
-  const btnSaveAzure = document.getElementById('btn-save-azure-client');
-  if (btnSaveAzure) {
-    btnSaveAzure.addEventListener('click', async () => {
-      const cid = document.getElementById('azure-client-input').value.trim();
-      if (!cid) {
-        showToast('Please enter your Azure Application (Client) ID.', 'error');
-        return;
-      }
-      btnSaveAzure.disabled = true;
-      btnSaveAzure.textContent = 'Saving...';
-      try {
-        await fetch('/api/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ azure_client_id: cid })
-        });
-        showToast('Azure Client ID saved! Click Step 1 to sign in.', 'success');
-      } catch (err) {
-        showToast('Failed to save Client ID', 'error');
-      } finally {
-        btnSaveAzure.disabled = false;
-        btnSaveAzure.textContent = 'Save ID';
-      }
-    });
-  }
-
-  // Submit OAuth2 Code
-  const btnSubmitOAuth = document.getElementById('btn-submit-oauth-code');
-  if (btnSubmitOAuth) {
-    btnSubmitOAuth.addEventListener('click', async () => {
-      const codeInput = document.getElementById('oauth-code-input').value.trim();
-      if (!codeInput) {
-        showToast('Please paste the URL or authorization code.', 'error');
-        return;
-      }
-      
-      btnSubmitOAuth.disabled = true;
-      btnSubmitOAuth.textContent = 'Exchanging token...';
-      showToast('Connecting to Microsoft Graph Cloud...', 'info');
-      
-      try {
-        const res = await fetch('/api/auth/submit-code', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: codeInput })
-        });
-        
-        const data = await res.json();
-        if (res.ok && data.status === 'SUCCESS') {
-          showToast(`Successfully connected to Microsoft Graph as ${data.username}!`, 'success');
-          elements.deviceLoginModal.classList.remove('active');
-          await refreshAll();
-        } else {
-          showToast(data.detail || 'Failed to exchange authorization code.', 'error');
-        }
-      } catch (err) {
-        showToast(`Authentication error: ${err.message}`, 'error');
-      } finally {
-        btnSubmitOAuth.disabled = false;
-        btnSubmitOAuth.textContent = 'Complete Sync ✓';
-      }
-    });
-  }
-
-  elements.modalCloseBtn.addEventListener('click', () => {
-    elements.deviceLoginModal.classList.remove('active');
-    if (APP_STATE.devicePollInterval) clearInterval(APP_STATE.devicePollInterval);
-  });
-
   // Settings Button
   elements.btnOpenSettings.addEventListener('click', () => {
     const settingsTab = document.querySelector('[data-tab="system-settings"]');
@@ -897,62 +1059,49 @@ function setupEventListeners() {
 
   // Save Settings
   elements.btnSaveSettings.addEventListener('click', async () => {
-    const geminiKey = document.getElementById('setting-gemini-key').value;
-    const azureClient = document.getElementById('setting-azure-client').value;
-    const safeFolder = document.getElementById('setting-safe-folder').value;
-    const autopilot = document.getElementById('setting-autopilot').checked;
+    const geminiKey = document.getElementById('setting-gemini-key').value.trim();
+    const azureClient = document.getElementById('setting-azure-client').value.trim();
+    const azureTenant = document.getElementById('setting-azure-tenant').value.trim();
+    const safeFolder = document.getElementById('setting-safe-folder').value.trim();
+    const demoMode = document.getElementById('setting-demo-mode').checked;
     
     showToast('Saving engine settings...', 'info');
     try {
+      const payload = {
+        azure_client_id: azureClient,
+        azure_tenant_id: azureTenant,
+        safe_folder_name: safeFolder,
+        demo_mode: demoMode
+      };
+      if (geminiKey) payload.gemini_api_key = geminiKey;
+
       await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          gemini_api_key: geminiKey,
-          azure_client_id: azureClient,
-          safe_folder_name: safeFolder,
-          auto_pilot_enabled: autopilot
-        })
+        body: JSON.stringify(payload)
       });
-      showToast('Settings saved!', 'success');
-      await fetchStatus();
+      showToast('Settings saved successfully in macOS Keychain & configuration!', 'success');
+      await refreshAll();
     } catch (err) {
-      showToast('Failed to save settings', 'error');
+      showToast('Failed to save settings: ' + err.message, 'error');
     }
   });
 
-  // Refresh Analytics Button
-  const btnRefreshAnalytics = document.getElementById('btn-refresh-analytics');
-  if (btnRefreshAnalytics) {
-    btnRefreshAnalytics.addEventListener('click', async () => {
-      showToast('Refreshing career pipeline telemetry...', 'info');
-      await fetchAnalyticsData();
-      showToast('Telemetry and KPIs updated!', 'success');
-    });
-  }
-
-  // Export Analytics Button
-  const btnExportAnalytics = document.getElementById('btn-export-analytics');
-  if (btnExportAnalytics) {
-    btnExportAnalytics.addEventListener('click', async () => {
-      try {
-        const res = await fetch('/api/analytics/export');
-        const data = await res.json();
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `Aura_Career_Analytics_${new Date().toISOString().split('T')[0]}.json`;
-        a.click();
-        showToast('Exported complete telemetry snapshot to JSON!', 'success');
-      } catch (err) {
-        showToast('Export failed: ' + err.message, 'error');
-      }
+  // Disable Demo Button
+  if (elements.btnDisableDemo) {
+    elements.btnDisableDemo.addEventListener('click', async () => {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ demo_mode: false })
+      });
+      showToast('Demo Mode disabled. Switched to live multi-account cloud mode.', 'info');
+      await refreshAll();
     });
   }
 }
 
-// --- Analytics & Observability Fetch & Render ---
+// --- Analytics Fetch & Render ---
 
 async function fetchAnalyticsData() {
   try {
@@ -1106,27 +1255,23 @@ function renderAuditStream(events) {
   });
 }
 
-// Hook refreshAll to also update analytics
-const originalRefreshAll = refreshAll;
-refreshAll = async function() {
-  await originalRefreshAll();
-  await fetchAnalyticsData();
-};
-
-// Global function for table action
 window.trashSingleEmail = async function(emailId) {
   try {
-    await fetch(`/api/emails/${emailId}/trash`, { method: 'POST' });
-    showToast('Moved to trash.', 'info');
+    const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/trash`, { method: 'POST' });
+    if (res.ok) {
+      showToast('Moved to trash.', 'info');
+    } else {
+      showToast('Failed to trash email.', 'error');
+    }
     await refreshAll();
   } catch (err) {
     showToast('Failed: ' + err.message, 'error');
   }
 };
 
-// --- Toast Notification Helper ---
 function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container');
+  if (!container) return;
   const toast = document.createElement('div');
   toast.className = 'toast';
   
@@ -1142,5 +1287,5 @@ function showToast(message, type = 'info') {
     toast.style.transform = 'translateX(100%)';
     toast.style.transition = 'all 0.3s ease';
     setTimeout(() => toast.remove(), 300);
-  }, 4000);
+  }, 4500);
 }

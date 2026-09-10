@@ -9,11 +9,27 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Environment & Secrets
-.env
-.env.local
+# Environment & Runtime Secrets
+.env*
 *.key
 *.pem
+*.token
+token_cache*
+*.bin
+
+# Runtime Configuration & Data Caches (sanitized .example files only)
+data/settings.json
+data/emails_cache.json
+data/analytics.db
+data/analytics.db-journal
+data/*.db
+data/*.sqlite*
+data/token_cache*
+
+# Distributable archives & temporary bundles
+*.zip
+*.tar.gz
+*.tgz
 
 # macOS metadata
 .DS_Store
@@ -26,7 +42,3 @@ htmlcov/
 .idea/
 *.swp
 *.swo
-
-# Local caches & dynamic databases (keep structure via examples)
-data/analytics.db
-data/emails_cache.json

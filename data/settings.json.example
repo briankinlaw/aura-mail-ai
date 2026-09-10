@@ -1,8 +1,6 @@
 {
-  "gemini_api_key": "YOUR_GEMINI_API_KEY_HERE",
   "azure_client_id": "",
   "azure_tenant_id": "common",
-  "auth_token": null,
   "user_profile": {
     "full_name": "Brian K. Kinlaw",
     "current_title": "Enterprise Cloud, Data & AI Solutions Architecture Advisor",
@@ -46,6 +44,62 @@
     "safety_mode": "SAFE_REVIEW",
     "noise_handling": "MOVE_TO_CLEANED_FOLDER"
   },
+  "configured_accounts": [
+    {
+      "account_id": "kinlawb@outlook.com",
+      "email": "kinlawb@outlook.com",
+      "provider": "MICROSOFT_GRAPH",
+      "display_name": "Brian Kinlaw (Primary Outlook)",
+      "enabled": true,
+      "is_primary": true
+    },
+    {
+      "account_id": "brian.kinlaw@outlook.com",
+      "email": "brian.kinlaw@outlook.com",
+      "provider": "MICROSOFT_GRAPH",
+      "display_name": "Brian Kinlaw (Outlook Alias)",
+      "enabled": true,
+      "is_primary": false
+    },
+    {
+      "account_id": "briankkinlaw@gmail.com",
+      "email": "briankkinlaw@gmail.com",
+      "provider": "GMAIL",
+      "display_name": "Brian Kinlaw (Google)",
+      "enabled": true,
+      "is_primary": false
+    },
+    {
+      "account_id": "cbkinlaw@satx.rr.com",
+      "email": "cbkinlaw@satx.rr.com",
+      "provider": "IMAP",
+      "display_name": "Brian Kinlaw (Spectrum Roadrunner 1)",
+      "imap_server": "mail.twc.com",
+      "smtp_server": "mail.twc.com",
+      "enabled": true,
+      "is_primary": false
+    },
+    {
+      "account_id": "briankinlaw@satx.rr.com",
+      "email": "briankinlaw@satx.rr.com",
+      "provider": "IMAP",
+      "display_name": "Brian Kinlaw (Spectrum Roadrunner 2)",
+      "imap_server": "mail.twc.com",
+      "smtp_server": "mail.twc.com",
+      "enabled": true,
+      "is_primary": false
+    },
+    {
+      "account_id": "brian@mavencode.com",
+      "email": "brian@mavencode.com",
+      "provider": "IMAP",
+      "display_name": "Brian Kinlaw (MavenCode Advisory)",
+      "imap_server": "mail.mavencode.com",
+      "smtp_server": "mail.mavencode.com",
+      "enabled": true,
+      "is_primary": false
+    }
+  ],
   "auto_pilot_enabled": false,
   "safe_folder_name": "AI Cleaned - Noise",
   "demo_mode": false
