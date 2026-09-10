@@ -581,6 +581,18 @@
         </div>
 
         <div class="form-group">
+          <label>Google OAuth 2.0 Client ID (for Gmail API Direct OAuth)</label>
+          <input type="text" id="setting-google-client" class="form-control" placeholder="e.g. 1234567890-xxx.apps.googleusercontent.com">
+          <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">From Google Cloud Console -> APIs & Services -> Credentials.</p>
+        </div>
+
+        <div class="form-group">
+          <label>Google OAuth Client Secret (Stored securely in macOS Keychain)</label>
+          <input type="password" id="setting-google-secret" class="form-control" placeholder="Enter Google Client Secret or leave blank to preserve existing">
+          <p style="font-size: 0.725rem; color: var(--text-muted); margin-top: 4px;">Status: <span id="google-secret-status" style="color: #94a3b8;">Not configured</span></p>
+        </div>
+
+        <div class="form-group">
           <label>Safe Noise Quarantine Folder Name in Cloud Mailboxes</label>
           <input type="text" id="setting-safe-folder" class="form-control" value="AI Cleaned - Noise">
         </div>
@@ -606,55 +618,95 @@
   <div class="modal-overlay" id="account-auth-modal">
     <div class="modal-box" style="max-width: 580px;">
       <div class="modal-header">
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
           <span style="font-size: 1.3rem;">🔐</span>
           <h2 style="font-size: 1.2rem; font-weight: 700; margin: 0;">Connect Cloud Mailbox</h2>
+          <span id="modal-target-account-badge" style="display: none; font-size: 0.725rem; font-family: var(--font-mono); background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); color: #93c5fd; padding: 2px 8px; border-radius: 9999px;"></span>
         </div>
         <button class="close-btn" id="modal-close-btn">&times;</button>
       </div>
 
-      <div style="display: flex; gap: 8px; margin-bottom: 1.25rem;">
-        <button class="btn btn-secondary btn-sm active-filter" id="auth-tab-msal" style="flex: 1;">Microsoft Graph (MSAL)</button>
-        <button class="btn btn-secondary btn-sm" id="auth-tab-imap" style="flex: 1;">IMAP / SMTP (Spectrum / Custom)</button>
+      <div style="display: flex; gap: 6px; margin-bottom: 1.25rem;">
+        <button class="btn btn-secondary btn-sm active-filter" id="auth-tab-msal" style="flex: 1;">☁️ Microsoft Graph</button>
+        <button class="btn btn-secondary btn-sm" id="auth-tab-google" style="flex: 1;">📮 Google / Gmail</button>
+        <button class="btn btn-secondary btn-sm" id="auth-tab-imap" style="flex: 1;">🌐 IMAP / SMTP</button>
       </div>
 
       <!-- MSAL Panel -->
       <div id="auth-panel-msal">
         <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: var(--radius-md); padding: 12px; margin-bottom: 1rem;">
-          <strong style="font-size: 0.85rem; color: #93c5fd;">☁️ Direct Microsoft Cloud Sync</strong>
-          <p style="font-size: 0.775rem; color: #cbd5e1; margin-top: 4px;">Connects directly to Microsoft Graph API. Drafts and operations synchronize seamlessly into New Outlook for Mac.</p>
+          <strong style="font-size: 0.85rem; color: #93c5fd;">☁️ Microsoft Graph Cloud Sync (Outlook / M365)</strong>
+          <p style="font-size: 0.775rem; color: #cbd5e1; margin-top: 4px;">Connects directly to Microsoft Graph API for <code>kinlawb@outlook.com</code> and <code>brian.kinlaw@outlook.com</code> (separate mailboxes). Tokens and session caches are persisted independently in macOS Keychain.</p>
         </div>
 
-        <div style="margin-bottom: 1rem;">
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 1rem;">
           <button class="btn btn-primary" id="btn-start-device-flow" style="width: 100%; justify-content: center; padding: 10px;">
             <span>🔑</span> Start Microsoft Device Sign-In Flow
+          </button>
+          <button class="btn btn-secondary btn-sm" id="btn-start-direct-msal" style="width: 100%; justify-content: center; padding: 8px; font-size: 0.8rem;">
+            <span>🌐</span> Sign in with Microsoft (Direct Browser Consent)
           </button>
         </div>
 
         <div id="device-flow-display" style="display: none; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-md); padding: 14px; text-align: center; margin-bottom: 1rem;">
-          <p style="font-size: 0.8rem; color: #cbd5e1;">Open <a href="https://microsoft.com/devicelogin" target="_blank" style="color: #93c5fd; text-decoration: underline;">microsoft.com/devicelogin</a> and enter code:</p>
-          <div id="device-code-display" style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: #6ee7b7; letter-spacing: 2px; margin: 10px 0;">CODE-HERE</div>
+          <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px;">Open <a id="device-link-anchor" href="https://www.microsoft.com/link" target="_blank" style="color: #93c5fd; text-decoration: underline; font-weight: 600;">microsoft.com/link</a> and enter code:</p>
+          <div id="device-code-display" style="font-family: var(--font-mono); font-size: 1.6rem; font-weight: 700; color: #6ee7b7; letter-spacing: 3px; margin: 10px 0; background: rgba(16, 185, 129, 0.1); padding: 8px; border-radius: var(--radius-sm); border: 1px dashed rgba(16, 185, 129, 0.3);">CODE-HERE</div>
           <p id="device-poll-status" style="font-size: 0.75rem; color: var(--text-muted);">Waiting for code entry...</p>
+        </div>
+
+        <div style="background: rgba(59, 130, 246, 0.08); border: 1px dashed rgba(59, 130, 246, 0.3); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.75rem; color: #cbd5e1;">
+          💡 <strong>Tip for Multiple Microsoft Accounts:</strong> If your browser automatically selects the wrong account or asks for <code>briankinlaw@satx.rr.com</code> (which is a saved 2FA recovery email), open <a href="https://www.microsoft.com/link" target="_blank" style="color: #93c5fd; text-decoration: underline;">microsoft.com/link</a> in an <strong>Incognito / Private Window</strong> (or click <em>"Use another account"</em> on Microsoft's page) and sign in directly with <code>brian.kinlaw@outlook.com</code>.
+        </div>
+      </div>
+
+      <!-- Google / Gmail Panel -->
+      <div id="auth-panel-google" style="display: none;">
+        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--radius-md); padding: 12px; margin-bottom: 1rem;">
+          <strong style="font-size: 0.85rem; color: #fca5a5;">📮 Google Cloud OAuth & Gmail API</strong>
+          <p style="font-size: 0.775rem; color: #cbd5e1; margin-top: 4px;">Connects directly to Google Gmail API for <code>briankkinlaw@gmail.com</code> and Google Workspace accounts like <code>brian@mavencode.com</code>. Tokens are safely stored in macOS Keychain.</p>
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+          <button class="btn btn-primary" id="btn-start-google-auth" style="width: 100%; justify-content: center; padding: 10px; background: linear-gradient(135deg, #ea4335, #db4437);">
+            <span>🌐</span> Sign in with Google (OAuth Consent)
+          </button>
+        </div>
+
+        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-md); padding: 12px; margin-bottom: 1rem;">
+          <label style="font-size: 0.8rem; font-weight: 600; color: #94a3b8; display: block; margin-bottom: 6px;">Manual Code Exchange / Redirect URL</label>
+          <input type="text" id="google-auth-code-input" class="form-control" placeholder="Paste authorization code or full callback URL here" style="font-size: 0.8rem;">
+          <button class="btn btn-secondary btn-sm" id="btn-submit-google-code" style="width: 100%; justify-content: center; margin-top: 8px;">
+            Verify & Connect Google Account
+          </button>
+        </div>
+
+        <div style="background: rgba(59, 130, 246, 0.08); border: 1px dashed rgba(59, 130, 246, 0.3); border-radius: var(--radius-sm); padding: 8px 12px; font-size: 0.75rem; color: #93c5fd;">
+          💡 <strong>Quick Option:</strong> You can also connect Gmail in 30 seconds via the <strong>IMAP / SMTP</strong> tab using <code>imap.gmail.com</code> with a 16-character Google App Password.
         </div>
       </div>
 
       <!-- IMAP Panel -->
       <div id="auth-panel-imap" style="display: none;">
+        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-md); padding: 12px; margin-bottom: 1rem;">
+          <strong style="font-size: 0.85rem; color: #6ee7b7;">🌐 Standard IMAP / SMTP Mailboxes</strong>
+          <p style="font-size: 0.775rem; color: #cbd5e1; margin-top: 4px;">For Spectrum Roadrunner (<code>@satx.rr.com</code>) or other custom IMAP mailboxes.</p>
+        </div>
+
         <div class="form-group">
           <label>Email Address</label>
-          <input type="email" id="imap-email-input" class="form-control" placeholder="e.g. cbkinlaw@satx.rr.com or brian@mavencode.com">
+          <input type="email" id="imap-email-input" class="form-control" placeholder="e.g. cbkinlaw@satx.rr.com or briankinlaw@satx.rr.com">
         </div>
         <div class="form-group">
           <label>Mailbox Password (Stored securely in macOS Keychain)</label>
           <input type="password" id="imap-password-input" class="form-control" placeholder="Enter mailbox password">
         </div>
         <div class="form-group">
-          <label>IMAP Server</label>
-          <input type="text" id="imap-server-input" class="form-control" placeholder="mail.twc.com or mail.mavencode.com">
+          <label>IMAP Server (Default: mail.twc.com:993 SSL/TLS)</label>
+          <input type="text" id="imap-server-input" class="form-control" placeholder="mail.twc.com">
         </div>
         <div class="form-group">
-          <label>SMTP Server</label>
-          <input type="text" id="smtp-server-input" class="form-control" placeholder="mail.twc.com or mail.mavencode.com">
+          <label>SMTP Server (Default: mail.twc.com:587 STARTTLS)</label>
+          <input type="text" id="smtp-server-input" class="form-control" placeholder="mail.twc.com">
         </div>
         <button class="btn btn-primary" id="btn-save-imap-auth" style="width: 100%; justify-content: center; margin-top: 1rem;">
           <span>🔐</span> Connect & Save to Keychain

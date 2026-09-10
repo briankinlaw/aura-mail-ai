@@ -78,7 +78,7 @@ graph TD
   - Every operation returns a structured `ProviderOperationResult` with `success`, `provider`, `account_id`, `operation`, `remote_object_id`, `error_code`, `safe_message`, `retryable`.
 - **Microsoft Graph Provider** (`graph.py`):
   - Integrates `msal.PublicClientApplication` with serialized token cache in macOS Keychain.
-  - Automatically de-duplicates aliases (e.g. `brian.kinlaw@outlook.com` as alias of `kinlawb@outlook.com`).
+  - Supports multi-mailbox accounts and automatic alias resolution.
   - Implements Graph pagination (`@odata.nextLink`) and requests least-privilege scopes (`Mail.ReadWrite`, `Mail.Send`, `User.Read`, `offline_access`).
   - Creates threaded drafts via `POST /me/messages/{id}/createReply` and validates attachment upload separately.
 - **Gmail Provider** (`gmail.py`):

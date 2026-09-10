@@ -37,6 +37,22 @@ class ImapProvider(BaseEmailProvider):
     def __init__(self):
         # Folder map cache per account: {account_id: {"drafts": "Drafts", "sent": "Sent Items", ...}}
         self._folder_cache: Dict[str, Dict[str, str]] = {}
+        self._last_error: Dict[str, str] = {}
+
+    @staticmethod
+    def _parse_host_port(server_str: str, default_port: int) -> Tuple[str, int]:
+        server_str = (server_str or "").strip()
+        if not server_str:
+            return "", default_port
+        if ":" in server_str:
+            parts = server_str.split(":", 1)
+            host = parts[0].strip()
+            try:
+                port = int(parts[1].strip())
+                return host, port
+            except ValueError:
+                return host, default_port
+        return server_str, default_port
 
     def _get_account_config(self, account_id: str) -> Optional[Dict[str, Any]]:
         from backend.config import load_settings
@@ -49,23 +65,60 @@ class ImapProvider(BaseEmailProvider):
     def _get_imap_connection(self, account_id: str) -> Optional[imaplib.IMAP4_SSL]:
         cfg = self._get_account_config(account_id)
         if not cfg:
+            self._last_error[account_id] = f"Account {account_id} not configured in settings."
             return None
         
         email_addr = cfg.get("email", account_id)
         password = get_secret(f"imap_password_{email_addr.lower()}")
         if not password:
-            logger.warning(f"No password found in Keychain for IMAP account {email_addr}")
+            err = f"No password found in macOS Keychain for IMAP account {email_addr}."
+            logger.warning(err)
+            self._last_error[account_id] = err
             return None
         
-        server = cfg.get("imap_server", "mail.twc.com" if "rr.com" in email_addr else "outlook.office365.com")
-        port = int(cfg.get("imap_port", 993))
+        raw_server = cfg.get("imap_server", "mail.twc.com" if "rr.com" in email_addr else "outlook.office365.com")
+        server, port = self._parse_host_port(raw_server, int(cfg.get("imap_port", 993)))
         
+        import ssl
+        context = ssl.create_default_context()
+
+        # Attempt 1: Standard login with full email address
         try:
-            client = imaplib.IMAP4_SSL(server, port, timeout=15)
+            client = imaplib.IMAP4_SSL(server, port, ssl_context=context, timeout=15)
             client.login(email_addr, password)
+            self._last_error.pop(account_id, None)
             return client
-        except Exception as e:
-            logger.error(f"IMAP login failed for {email_addr} on {server}:{port}: {e}")
+        except Exception as e1:
+            logger.warning(f"IMAP login for {email_addr} with full email failed on {server}:{port}: {e1}")
+            
+            # Attempt 2: Try username prefix without domain (e.g. briankinlaw)
+            if "@" in email_addr:
+                user_prefix = email_addr.split("@")[0]
+                try:
+                    client2 = imaplib.IMAP4_SSL(server, port, ssl_context=context, timeout=15)
+                    client2.login(user_prefix, password)
+                    logger.info(f"IMAP login succeeded for {email_addr} using username prefix '{user_prefix}'.")
+                    self._last_error.pop(account_id, None)
+                    return client2
+                except Exception as e2:
+                    logger.warning(f"IMAP login with prefix '{user_prefix}' on {server} failed: {e2}")
+
+            # Attempt 3: Spectrum mobile.charter.net fallback if Roadrunner/TWC
+            if "twc.com" in server.lower() or "rr.com" in email_addr.lower():
+                try:
+                    client3 = imaplib.IMAP4_SSL("mobile.charter.net", 993, ssl_context=context, timeout=15)
+                    client3.login(email_addr, password)
+                    logger.info(f"IMAP login succeeded for {email_addr} on mobile.charter.net.")
+                    self._last_error.pop(account_id, None)
+                    return client3
+                except Exception as e3:
+                    logger.warning(f"IMAP fallback to mobile.charter.net failed: {e3}")
+
+            err_detail = str(e1)
+            if "Invalid user name or password" in err_detail or "AUTHENTICATIONFAILED" in err_detail.upper():
+                self._last_error[account_id] = f"Invalid username or password on {server}:{port}. Verify webmail login at webmail.spectrum.net."
+            else:
+                self._last_error[account_id] = f"IMAP connection failed ({server}:{port}): {err_detail}"
             return None
 
     def _discover_folders(self, client: imaplib.IMAP4_SSL, account_id: str) -> Dict[str, str]:
@@ -142,13 +195,14 @@ class ImapProvider(BaseEmailProvider):
     def validate_connection(self, account_id: str) -> ProviderOperationResult:
         client = self._get_imap_connection(account_id)
         if not client:
+            err_msg = self._last_error.get(account_id, f"Failed to authenticate with IMAP server for {account_id}.")
             return ProviderOperationResult(
                 success=False,
                 provider="IMAP",
                 account_id=account_id,
                 operation="VALIDATE",
                 error_code="CONNECTION_FAILED",
-                safe_message=f"Failed to authenticate with IMAP server for {account_id}."
+                safe_message=err_msg
             )
         try:
             client.select("INBOX", readonly=True)
@@ -436,8 +490,8 @@ class ImapProvider(BaseEmailProvider):
                 safe_message=f"No password found in Keychain for {account_id}."
             )
 
-        smtp_server = cfg.get("smtp_server", "mail.twc.com" if "rr.com" in account_id else "smtp.office365.com")
-        smtp_port = int(cfg.get("smtp_port", 587))
+        raw_smtp = cfg.get("smtp_server", "mail.twc.com" if "rr.com" in account_id else "smtp.office365.com")
+        smtp_server, smtp_port = self._parse_host_port(raw_smtp, int(cfg.get("smtp_port", 587)))
 
         try:
             msg = MIMEMultipart()

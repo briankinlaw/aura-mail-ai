@@ -57,7 +57,7 @@
       "account_id": "brian.kinlaw@outlook.com",
       "email": "brian.kinlaw@outlook.com",
       "provider": "MICROSOFT_GRAPH",
-      "display_name": "Brian Kinlaw (Outlook Alias)",
+      "display_name": "Brian Kinlaw (Secondary Outlook)",
       "enabled": true,
       "is_primary": false
     },
@@ -92,10 +92,8 @@
     {
       "account_id": "brian@mavencode.com",
       "email": "brian@mavencode.com",
-      "provider": "IMAP",
-      "display_name": "Brian Kinlaw (MavenCode Advisory)",
-      "imap_server": "mail.mavencode.com",
-      "smtp_server": "mail.mavencode.com",
+      "provider": "GMAIL",
+      "display_name": "Brian Kinlaw (MavenCode Google Workspace)",
       "enabled": true,
       "is_primary": false
     }

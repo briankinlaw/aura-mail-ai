@@ -51,12 +51,33 @@ class GmailProvider(BaseEmailProvider):
         self.client_id = client_id or os.getenv("GOOGLE_CLIENT_ID", "")
         self.client_secret = client_secret or os.getenv("GOOGLE_CLIENT_SECRET", "")
 
+    @property
+    def effective_client_id(self) -> str:
+        if self.client_id:
+            return self.client_id
+        from backend.config import load_settings
+        settings = load_settings()
+        return settings.get("google_client_id", "") or os.getenv("GOOGLE_CLIENT_ID", "")
+
+    @property
+    def effective_client_secret(self) -> str:
+        if self.client_secret:
+            return self.client_secret
+        from backend.security import get_secret
+        from backend.config import load_settings
+        sec = get_secret("google_client_secret", "GOOGLE_CLIENT_SECRET")
+        if sec:
+            return sec
+        settings = load_settings()
+        return settings.get("google_client_secret", "")
+
     def get_auth_url(self, redirect_uri: str = "http://127.0.0.1:8000/api/auth/google/callback", state: str = "gmail_auth") -> Optional[str]:
-        if not self.client_id:
+        cid = self.effective_client_id
+        if not cid:
             return None
         import urllib.parse
         params = {
-            "client_id": self.client_id,
+            "client_id": cid,
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": " ".join(GMAIL_SCOPES),
@@ -67,20 +88,22 @@ class GmailProvider(BaseEmailProvider):
         return f"{GOOGLE_AUTH_URI}?{urllib.parse.urlencode(params)}"
 
     def exchange_code_for_token(self, code: str, redirect_uri: str = "http://127.0.0.1:8000/api/auth/google/callback", account_id: Optional[str] = None) -> ProviderOperationResult:
-        if not self.client_id or not self.client_secret:
+        cid = self.effective_client_id
+        csec = self.effective_client_secret
+        if not cid or not csec:
             return ProviderOperationResult(
                 success=False,
                 provider="GMAIL",
                 account_id=account_id or "briankkinlaw@gmail.com",
                 operation="AUTHENTICATE",
                 error_code="CREDENTIALS_MISSING",
-                safe_message="Google OAuth Client ID or Secret not configured."
+                safe_message="Google OAuth Client ID or Client Secret not configured. Please enter them in Settings or connect via Gmail App Password."
             )
 
         payload = {
             "code": code,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
+            "client_id": cid,
+            "client_secret": csec,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code"
         }
@@ -138,13 +161,15 @@ class GmailProvider(BaseEmailProvider):
         
         # Try refreshing
         refresh_token = get_secret(f"gmail_refresh_{acc_key}")
-        if refresh_token and self.client_id and self.client_secret:
+        cid = self.effective_client_id
+        csec = self.effective_client_secret
+        if refresh_token and cid and csec:
             try:
                 res = requests.post(
                     GOOGLE_TOKEN_URI,
                     data={
-                        "client_id": self.client_id,
-                        "client_secret": self.client_secret,
+                        "client_id": cid,
+                        "client_secret": csec,
                         "refresh_token": refresh_token,
                         "grant_type": "refresh_token"
                     },

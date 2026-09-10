@@ -10,20 +10,24 @@ Welcome! This guide provides peer reviewers with a structured walkthrough of the
 
 | Component | Primary File | Key Review Points |
 | :--- | :--- | :--- |
-| **Native macOS Bridge** | [`backend/outlook_client.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/outlook_client.py) | Universal inbox scanning, AppleScript IPC automation, historical account exclusion filter (`dxc.com`, `cdw.com`, `revealwhy.com`), draft creation with POSIX file attachments. |
+| **Cloud Provider Dispatcher** | [`backend/provider_manager.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/provider_manager.py)<br>[`backend/providers/`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/providers/) | Multi-account cloud routing across Microsoft Graph (MSAL), Google Cloud OAuth (Gmail API & Google Workspace), and RFC 3501 IMAP/SMTP (`mail.twc.com`). Composite ID codec (`PROVIDER::ACCOUNT::NATIVE_ID`). |
+| **Microsoft Graph Provider** | [`backend/providers/graph.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/providers/graph.py) | MSAL Device Code Flow (`microsoft.com/link`) and Direct OAuth flow with `login_hint` + `prompt=login` account targeting. Independent token caches in macOS Keychain. |
+| **Gmail & Google Workspace** | [`backend/providers/gmail.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/providers/gmail.py) | Google OAuth2 token exchange, MIME multipart in-reply-to draft generation, POSIX attachment staging, label-based noise quarantine. |
+| **Standard IMAP / SMTP** | [`backend/providers/imap.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/providers/imap.py) | RFC 6154 Special-Use folder discovery, SSL/TLS (`993`) & STARTTLS (`587`), host/port sanitization, and username prefix fallbacks. |
+| **macOS Keychain Security** | [`backend/security.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/security.py) | Zero plaintext secrets on disk. Keyring-backed Keychain vault, boot-time repository secret scanner, and automated test guards. |
 | **Canonical Career Engine** | [`backend/canonical_engine.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/canonical_engine.py) | 36-document local indexer, pure-Python OpenXML parser, 3-level role taxonomy matrix, token affinity scoring, locked facts grounding. |
 | **AI Triage & Agentic Logic** | [`backend/ai_agent.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/ai_agent.py) | Two-tier classification (sub-millisecond heuristic pre-filter + Gemini 3.6 Flash), prompt grounding, 429 rate limit circuit breaker with automatic fallback. |
 | **Telemetry & Observability** | [`backend/analytics.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/analytics.py) | SQLite database layer, compensation range parser, conversion funnel metrics, resume ROI tracking, append-only audit stream. |
 | **FastAPI Service & Endpoints** | [`backend/main.py`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/main.py) | REST API structure, CORS middleware, caching synchronization, request validation. |
-| **Glassmorphic UI Dashboard** | [`frontend/index.html`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/frontend/index.html)<br>[`frontend/app.js`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/frontend/app.js)<br>[`frontend/style.css`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/frontend/style.css) | Vanilla ES2022 + CSS variables, zero framework dependencies, interactive modals, responsive glassmorphic cards. |
-| **Automated Test Suite** | [`backend/tests/`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/tests/) | 22 comprehensive unit tests covering analytics, canonical matching, classification, and API endpoints. |
+| **Glassmorphic UI Dashboard** | [`frontend/index.html`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/frontend/index.html)<br>[`frontend/app.js`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/frontend/app.js)<br>[`frontend/style.css`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/frontend/style.css) | Vanilla ES2022 + CSS variables, zero framework dependencies, interactive multi-provider auth modals, responsive glassmorphic cards. |
+| **Automated Test Suite** | [`backend/tests/`](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/tests/) | 40 comprehensive unit and integration tests covering analytics, canonical matching, multi-account routing, providers, and security. |
 
 ---
 
 ## 🚀 How to Run and Test Locally
 
 ### 1. Prerequisites
-- macOS (for native AppleScript Microsoft Outlook automation) or Linux/Windows (runs in local heuristic/demo mode).
+- macOS (for native AppleScript Microsoft Outlook automation & Keychain vault) or Linux/Windows (runs in local heuristic/demo mode).
 - Python 3.9+.
 
 ### 2. Environment Setup
@@ -43,7 +47,7 @@ pip install -r requirements.txt
 ```bash
 PYTHONPATH=. .venv/bin/pytest backend/tests/ -v
 ```
-*Expected Output: `22 passed in < 3s`*
+*Expected Output: `40 passed in < 40s`*
 
 ### 4. Start the Application
 ```bash

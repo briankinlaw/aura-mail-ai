@@ -35,9 +35,12 @@ class ProviderManager:
         settings = load_settings()
         azure_client_id = settings.get("azure_client_id", "")
         azure_tenant_id = settings.get("azure_tenant_id", "common")
+        google_client_id = settings.get("google_client_id", "") or os.getenv("GOOGLE_CLIENT_ID", "")
+        from backend.security import get_secret
+        google_client_secret = get_secret("google_client_secret", "GOOGLE_CLIENT_SECRET") or settings.get("google_client_secret", "")
 
         self.graph_provider = MicrosoftGraphProvider(client_id=azure_client_id, tenant_id=azure_tenant_id)
-        self.gmail_provider = GmailProvider()
+        self.gmail_provider = GmailProvider(client_id=google_client_id, client_secret=google_client_secret)
         self.imap_provider = ImapProvider()
         self.demo_provider = DemoProvider()
 
@@ -74,7 +77,7 @@ class ProviderManager:
         cfg = self.get_account_config(account_id)
         if not cfg:
             # Fallback based on email domain
-            if "@gmail.com" in account_id.lower():
+            if "@gmail.com" in account_id.lower() or "@mavencode.com" in account_id.lower():
                 return self.gmail_provider, {"account_id": account_id, "provider": "GMAIL"}
             elif "@outlook.com" in account_id.lower() or "@hotmail.com" in account_id.lower():
                 return self.graph_provider, {"account_id": account_id, "provider": "MICROSOFT_GRAPH"}

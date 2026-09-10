@@ -226,6 +226,31 @@ def test_gmail_create_draft(mock_post):
             assert res.success is True
             assert res.remote_object_id == "gmail_draft_999"
 
+def test_gmail_auth_url():
+    gmail = GmailProvider(client_id="test-client-id", client_secret="test-secret")
+    url = gmail.get_auth_url()
+    assert url is not None
+    assert "accounts.google.com" in url
+    assert "test-client-id" in url
+
+@patch("backend.providers.gmail.requests.post")
+@patch("backend.providers.gmail.requests.get")
+def test_gmail_token_exchange(mock_get, mock_post):
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {
+        "access_token": "mock_google_access",
+        "refresh_token": "mock_google_refresh"
+    }
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {"emailAddress": "briankkinlaw@gmail.com"}
+
+    gmail = GmailProvider(client_id="test-client-id", client_secret="test-secret")
+    with patch("backend.providers.gmail.set_secret") as mock_set:
+        res = gmail.exchange_code_for_token("mock_code_123")
+        assert res.success is True
+        assert res.account_id == "briankkinlaw@gmail.com"
+        assert mock_set.called
+
 # --- IMAP Provider (Mocked) Tests ---
 
 def test_imap_rfc6154_folder_discovery():

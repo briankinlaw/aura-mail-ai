@@ -87,13 +87,19 @@ const elements = {
   accountAuthModal: document.getElementById('account-auth-modal'),
   modalCloseBtn: document.getElementById('modal-close-btn'),
   authTabMsal: document.getElementById('auth-tab-msal'),
+  authTabGoogle: document.getElementById('auth-tab-google'),
   authTabImap: document.getElementById('auth-tab-imap'),
   authPanelMsal: document.getElementById('auth-panel-msal'),
+  authPanelGoogle: document.getElementById('auth-panel-google'),
   authPanelImap: document.getElementById('auth-panel-imap'),
   btnStartDeviceFlow: document.getElementById('btn-start-device-flow'),
+  btnStartDirectMsal: document.getElementById('btn-start-direct-msal'),
   deviceFlowDisplay: document.getElementById('device-flow-display'),
   deviceCodeDisplay: document.getElementById('device-code-display'),
   devicePollStatus: document.getElementById('device-poll-status'),
+  btnStartGoogleAuth: document.getElementById('btn-start-google-auth'),
+  googleAuthCodeInput: document.getElementById('google-auth-code-input'),
+  btnSubmitGoogleCode: document.getElementById('btn-submit-google-code'),
   btnSaveImapAuth: document.getElementById('btn-save-imap-auth'),
   
   resumeDropzone: document.getElementById('resume-dropzone'),
@@ -121,6 +127,7 @@ async function refreshAll() {
     fetchStatus(),
     fetchAccounts(),
     fetchProfile(),
+    fetchSettings(),
     fetchCanonicalResumes(),
     fetchEmails(),
     fetchStats()
@@ -277,6 +284,52 @@ async function fetchProfile() {
   }
 }
 
+async function fetchSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    const settings = await res.json();
+    
+    const azureInput = document.getElementById('setting-azure-client');
+    if (azureInput && settings.azure_client_id) azureInput.value = settings.azure_client_id;
+    
+    const tenantInput = document.getElementById('setting-azure-tenant');
+    if (tenantInput && settings.azure_tenant_id) tenantInput.value = settings.azure_tenant_id;
+    
+    const googleInput = document.getElementById('setting-google-client');
+    if (googleInput && settings.google_client_id) googleInput.value = settings.google_client_id;
+    
+    const googleStatus = document.getElementById('google-secret-status');
+    if (googleStatus) {
+      if (settings.has_google_client_secret) {
+        googleStatus.textContent = `Configured in macOS Keychain (${settings.google_client_secret_masked || '••••'})`;
+        googleStatus.style.color = '#6ee7b7';
+      } else {
+        googleStatus.textContent = 'Not configured';
+        googleStatus.style.color = '#94a3b8';
+      }
+    }
+    
+    const geminiStatus = document.getElementById('gemini-key-status');
+    if (geminiStatus) {
+      if (settings.has_gemini_api_key) {
+        geminiStatus.textContent = `Configured in macOS Keychain (${settings.gemini_api_key_masked || '••••'})`;
+        geminiStatus.style.color = '#6ee7b7';
+      } else {
+        geminiStatus.textContent = 'Not configured';
+        geminiStatus.style.color = '#f87171';
+      }
+    }
+
+    const folderInput = document.getElementById('setting-safe-folder');
+    if (folderInput && settings.safe_folder_name) folderInput.value = settings.safe_folder_name;
+
+    const demoCheck = document.getElementById('setting-demo-mode');
+    if (demoCheck) demoCheck.checked = !!settings.demo_mode;
+  } catch (err) {
+    console.error('Failed to fetch settings', err);
+  }
+}
+
 async function fetchCanonicalResumes(forceRefresh = false) {
   try {
     const res = await fetch(`/api/canonical/resumes?refresh=${forceRefresh ? 'true' : 'false'}`);
@@ -393,11 +446,39 @@ window.testAccount = async function(accountId) {
 
 window.openAuthModalFor = function(providerType, accountId) {
   elements.accountAuthModal.classList.add('active');
-  if (providerType === 'IMAP') {
-    elements.authTabImap.click();
-    document.getElementById('imap-email-input').value = accountId;
+  elements.accountAuthModal.dataset.accountId = accountId || '';
+  
+  const targetBadge = document.getElementById('modal-target-account-badge');
+  if (targetBadge) {
+    if (accountId) {
+      targetBadge.textContent = `Target: ${accountId}`;
+      targetBadge.style.display = 'inline-block';
+    } else {
+      targetBadge.style.display = 'none';
+    }
+  }
+
+  const pType = (providerType || '').toUpperCase();
+  const accLower = (accountId || '').toLowerCase();
+
+  if (pType === 'GMAIL' || accLower.includes('@gmail.com') || accLower.includes('@mavencode.com')) {
+    if (elements.authTabGoogle) elements.authTabGoogle.click();
+    const gInput = document.getElementById('google-auth-code-input');
+    if (gInput) gInput.value = '';
+  } else if (pType === 'IMAP' || accLower.includes('@satx.rr.com')) {
+    if (elements.authTabImap) elements.authTabImap.click();
+    const emInput = document.getElementById('imap-email-input');
+    if (emInput) emInput.value = accountId || '';
+    
+    // Auto-fill known server host defaults if empty or matching domain
+    const imapInput = document.getElementById('imap-server-input');
+    const smtpInput = document.getElementById('smtp-server-input');
+    if (accLower.includes('satx.rr.com')) {
+      if (imapInput) imapInput.value = 'mail.twc.com';
+      if (smtpInput) smtpInput.value = 'mail.twc.com';
+    }
   } else {
-    elements.authTabMsal.click();
+    if (elements.authTabMsal) elements.authTabMsal.click();
   }
 };
 
@@ -733,19 +814,88 @@ function setupEventListeners() {
   }
 
   // Auth Tabs
-  elements.authTabMsal.addEventListener('click', () => {
-    elements.authTabMsal.classList.add('active-filter');
-    elements.authTabImap.classList.remove('active-filter');
-    elements.authPanelMsal.style.display = 'block';
-    elements.authPanelImap.style.display = 'none';
-  });
+  if (elements.authTabMsal) {
+    elements.authTabMsal.addEventListener('click', () => {
+      elements.authTabMsal.classList.add('active-filter');
+      if (elements.authTabGoogle) elements.authTabGoogle.classList.remove('active-filter');
+      if (elements.authTabImap) elements.authTabImap.classList.remove('active-filter');
+      if (elements.authPanelMsal) elements.authPanelMsal.style.display = 'block';
+      if (elements.authPanelGoogle) elements.authPanelGoogle.style.display = 'none';
+      if (elements.authPanelImap) elements.authPanelImap.style.display = 'none';
+    });
+  }
 
-  elements.authTabImap.addEventListener('click', () => {
-    elements.authTabImap.classList.add('active-filter');
-    elements.authTabMsal.classList.remove('active-filter');
-    elements.authPanelMsal.style.display = 'none';
-    elements.authPanelImap.style.display = 'block';
-  });
+  if (elements.authTabGoogle) {
+    elements.authTabGoogle.addEventListener('click', () => {
+      elements.authTabGoogle.classList.add('active-filter');
+      if (elements.authTabMsal) elements.authTabMsal.classList.remove('active-filter');
+      if (elements.authTabImap) elements.authTabImap.classList.remove('active-filter');
+      if (elements.authPanelGoogle) elements.authPanelGoogle.style.display = 'block';
+      if (elements.authPanelMsal) elements.authPanelMsal.style.display = 'none';
+      if (elements.authPanelImap) elements.authPanelImap.style.display = 'none';
+    });
+  }
+
+  if (elements.authTabImap) {
+    elements.authTabImap.addEventListener('click', () => {
+      elements.authTabImap.classList.add('active-filter');
+      if (elements.authTabMsal) elements.authTabMsal.classList.remove('active-filter');
+      if (elements.authTabGoogle) elements.authTabGoogle.classList.remove('active-filter');
+      if (elements.authPanelImap) elements.authPanelImap.style.display = 'block';
+      if (elements.authPanelMsal) elements.authPanelMsal.style.display = 'none';
+      if (elements.authPanelGoogle) elements.authPanelGoogle.style.display = 'none';
+    });
+  }
+
+  // Google OAuth Flow
+  if (elements.btnStartGoogleAuth) {
+    elements.btnStartGoogleAuth.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/auth/google/url');
+        const data = await res.json();
+        if (res.ok && data.auth_url) {
+          window.location.href = data.auth_url;
+        } else {
+          showToast(data.detail || 'Please configure Google OAuth Client ID in Settings first, or connect via IMAP with a Gmail App Password.', 'warning');
+        }
+      } catch (err) {
+        showToast('Error initiating Google sign-in: ' + err.message, 'error');
+      }
+    });
+  }
+
+  if (elements.btnSubmitGoogleCode) {
+    elements.btnSubmitGoogleCode.addEventListener('click', async () => {
+      const codeVal = (elements.googleAuthCodeInput.value || '').trim();
+      if (!codeVal) {
+        showToast('Please paste the Google authorization code or callback URL.', 'error');
+        return;
+      }
+      elements.btnSubmitGoogleCode.disabled = true;
+      elements.btnSubmitGoogleCode.textContent = 'Verifying Google Code...';
+      try {
+        const targetAcc = elements.accountAuthModal.dataset.accountId || '';
+        const res = await fetch('/api/auth/google/submit-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: codeVal, account_id: targetAcc })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          showToast(`Connected to Google Cloud API as ${data.account_id}!`, 'success');
+          elements.accountAuthModal.classList.remove('active');
+          await refreshAll();
+        } else {
+          showToast(data.detail || data.safe_message || 'Google token exchange failed.', 'error');
+        }
+      } catch (err) {
+        showToast('Google exchange error: ' + err.message, 'error');
+      } finally {
+        elements.btnSubmitGoogleCode.disabled = false;
+        elements.btnSubmitGoogleCode.textContent = 'Verify & Connect Google Account';
+      }
+    });
+  }
 
   // MSAL Device Flow
   elements.btnStartDeviceFlow.addEventListener('click', async () => {
@@ -756,14 +906,25 @@ function setupEventListeners() {
       const data = await res.json();
       if (res.ok && data.user_code) {
         elements.deviceCodeDisplay.textContent = data.user_code;
+        const linkAnchor = document.getElementById('device-link-anchor');
+        const verifyUri = data.verification_uri || 'https://www.microsoft.com/link';
+        if (linkAnchor) {
+          linkAnchor.href = verifyUri;
+          linkAnchor.textContent = verifyUri.replace(/^https?:\/\/(www\.)?/, '');
+        }
         elements.deviceFlowDisplay.style.display = 'block';
-        elements.devicePollStatus.textContent = 'Waiting for you to enter code at microsoft.com/devicelogin...';
+        elements.devicePollStatus.textContent = `Waiting for you to enter code at ${verifyUri.replace(/^https?:\/\/(www\.)?/, '')}...`;
         
         // Start polling
+        const targetAcc = elements.accountAuthModal.dataset.accountId || '';
         if (APP_STATE.devicePollInterval) clearInterval(APP_STATE.devicePollInterval);
         APP_STATE.devicePollInterval = setInterval(async () => {
           try {
-            const pollRes = await fetch('/api/auth/msal/device-code/poll', { method: 'POST' });
+            const pollRes = await fetch('/api/auth/msal/device-code/poll', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ account_id: targetAcc })
+            });
             const pollData = await pollRes.json();
             if (pollData.success) {
               clearInterval(APP_STATE.devicePollInterval);
@@ -785,6 +946,25 @@ function setupEventListeners() {
       elements.btnStartDeviceFlow.textContent = 'Start Microsoft Device Sign-In Flow';
     }
   });
+
+  // Direct MSAL Browser OAuth Flow
+  if (elements.btnStartDirectMsal) {
+    elements.btnStartDirectMsal.addEventListener('click', async () => {
+      try {
+        const targetAcc = elements.accountAuthModal.dataset.accountId || '';
+        const urlParam = targetAcc ? `?account_id=${encodeURIComponent(targetAcc)}` : '';
+        const res = await fetch(`/api/auth/msal/url${urlParam}`);
+        const data = await res.json();
+        if (res.ok && data.auth_url) {
+          window.location.href = data.auth_url;
+        } else {
+          showToast(data.detail || 'Microsoft Client ID not configured.', 'warning');
+        }
+      } catch (err) {
+        showToast('Error initiating Microsoft direct login: ' + err.message, 'error');
+      }
+    });
+  }
 
   // Save IMAP Auth
   elements.btnSaveImapAuth.addEventListener('click', async () => {
@@ -1062,6 +1242,8 @@ function setupEventListeners() {
     const geminiKey = document.getElementById('setting-gemini-key').value.trim();
     const azureClient = document.getElementById('setting-azure-client').value.trim();
     const azureTenant = document.getElementById('setting-azure-tenant').value.trim();
+    const googleClient = document.getElementById('setting-google-client')?.value.trim() || '';
+    const googleSecret = document.getElementById('setting-google-secret')?.value.trim() || '';
     const safeFolder = document.getElementById('setting-safe-folder').value.trim();
     const demoMode = document.getElementById('setting-demo-mode').checked;
     
@@ -1070,10 +1252,12 @@ function setupEventListeners() {
       const payload = {
         azure_client_id: azureClient,
         azure_tenant_id: azureTenant,
+        google_client_id: googleClient,
         safe_folder_name: safeFolder,
         demo_mode: demoMode
       };
       if (geminiKey) payload.gemini_api_key = geminiKey;
+      if (googleSecret) payload.google_client_secret = googleSecret;
 
       await fetch('/api/settings', {
         method: 'POST',

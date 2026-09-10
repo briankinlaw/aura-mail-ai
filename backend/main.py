@@ -171,12 +171,16 @@ def get_settings():
     settings = load_settings()
     raw_key = get_secret("gemini_api_key", "GEMINI_API_KEY") or ""
     masked_key = mask_secret(raw_key)
+    google_secret = get_secret("google_client_secret", "GOOGLE_CLIENT_SECRET") or settings.get("google_client_secret", "")
 
     return {
         "gemini_api_key_masked": masked_key,
         "has_gemini_api_key": bool(raw_key),
         "azure_client_id": settings.get("azure_client_id", ""),
         "azure_tenant_id": settings.get("azure_tenant_id", "common"),
+        "google_client_id": settings.get("google_client_id", "") or os.getenv("GOOGLE_CLIENT_ID", ""),
+        "has_google_client_secret": bool(google_secret),
+        "google_client_secret_masked": mask_secret(google_secret) if google_secret else "",
         "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
         "safe_folder_name": settings.get("safe_folder_name", "AI Cleaned - Noise"),
         "demo_mode": settings.get("demo_mode", False),
@@ -197,6 +201,13 @@ def update_settings_endpoint(payload: Dict[str, Any]):
         settings["azure_client_id"] = payload["azure_client_id"].strip()
     if "azure_tenant_id" in payload:
         settings["azure_tenant_id"] = payload["azure_tenant_id"].strip()
+    if "google_client_id" in payload:
+        settings["google_client_id"] = payload["google_client_id"].strip()
+    if "google_client_secret" in payload and payload["google_client_secret"]:
+        gsec = payload["google_client_secret"].strip()
+        if len(gsec) > 3:
+            set_secret("google_client_secret", gsec)
+            os.environ["GOOGLE_CLIENT_SECRET"] = gsec
     if "auto_pilot_enabled" in payload:
         settings["auto_pilot_enabled"] = bool(payload["auto_pilot_enabled"])
     if "safe_folder_name" in payload:
@@ -210,10 +221,14 @@ def update_settings_endpoint(payload: Dict[str, Any]):
 
 # --- Cloud OAuth Authentication Endpoints ---
 
+# Microsoft Graph (MSAL) Endpoints
 @app.get("/api/auth/msal/url")
-def get_msal_auth_url(redirect_uri: Optional[str] = None):
+def get_msal_auth_url(redirect_uri: Optional[str] = None, account_id: Optional[str] = None, login_hint: Optional[str] = None):
+    hint = login_hint or account_id or None
     url = provider_manager.graph_provider.get_auth_url(
-        redirect_uri=redirect_uri or "http://127.0.0.1:8000/api/auth/callback"
+        redirect_uri=redirect_uri or "http://127.0.0.1:8000/api/auth/callback",
+        login_hint=hint,
+        state=hint
     )
     if not url:
         raise HTTPException(
@@ -253,18 +268,19 @@ def poll_msal_device_code(payload: Optional[Dict[str, Any]] = None):
     return res.model_dump()
 
 @app.get("/api/auth/callback")
-def auth_callback(code: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None):
+def auth_callback(code: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None, state: Optional[str] = None):
     if error:
         logger.error(f"OAuth callback error: {error} - {error_description}")
         return RedirectResponse(f"/?auth_error={error}")
     if not code:
         return RedirectResponse("/?auth_error=no_code")
     try:
-        res = provider_manager.graph_provider.exchange_code_for_token(code)
+        account_id = state if state and "@" in state else None
+        res = provider_manager.graph_provider.exchange_code_for_token(code, account_id=account_id)
         if res.success:
             CACHED_EMAILS.clear()
             sync_and_triage_inbox()
-            return RedirectResponse("/?auth=success")
+            return RedirectResponse("/?auth=success&provider=microsoft")
         else:
             return RedirectResponse(f"/?auth_error={res.error_code}")
     except Exception as ex:
@@ -274,6 +290,7 @@ def auth_callback(code: Optional[str] = None, error: Optional[str] = None, error
 @app.post("/api/auth/submit-code")
 def submit_auth_code(payload: Dict[str, str]):
     code_raw = payload.get("code", "").strip()
+    account_id = payload.get("account_id", "").strip() or None
     if not code_raw:
         raise HTTPException(status_code=400, detail="Authorization code or URL required.")
     
@@ -286,7 +303,62 @@ def submit_auth_code(payload: Dict[str, str]):
         if "code" in qs:
             code = qs["code"][0]
 
-    res = provider_manager.graph_provider.exchange_code_for_token(code)
+    res = provider_manager.graph_provider.exchange_code_for_token(code, account_id=account_id)
+    if res.success:
+        CACHED_EMAILS.clear()
+        sync_and_triage_inbox()
+        return res.model_dump()
+    raise HTTPException(status_code=400, detail=res.safe_message)
+
+# Google OAuth (Gmail API) Endpoints
+@app.get("/api/auth/google/url")
+def get_google_auth_url(redirect_uri: Optional[str] = None):
+    url = provider_manager.gmail_provider.get_auth_url(
+        redirect_uri=redirect_uri or "http://127.0.0.1:8000/api/auth/google/callback"
+    )
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth Client ID is required. Please set it in Settings, or use Gmail App Password via the IMAP tab."
+        )
+    return {"status": "SUCCESS", "auth_url": url}
+
+@app.get("/api/auth/google/callback")
+def google_auth_callback(code: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None, state: Optional[str] = None):
+    if error:
+        logger.error(f"Google OAuth callback error: {error} - {error_description}")
+        return RedirectResponse(f"/?auth_error={error}")
+    if not code:
+        return RedirectResponse("/?auth_error=no_code")
+    try:
+        res = provider_manager.gmail_provider.exchange_code_for_token(code)
+        if res.success:
+            CACHED_EMAILS.clear()
+            sync_and_triage_inbox()
+            return RedirectResponse("/?auth=success&provider=google")
+        else:
+            return RedirectResponse(f"/?auth_error={res.safe_message or res.error_code}")
+    except Exception as ex:
+        logger.error(f"Google Auth token exchange failed: {ex}")
+        return RedirectResponse(f"/?auth_error={str(ex)}")
+
+@app.post("/api/auth/google/submit-code")
+def submit_google_auth_code(payload: Dict[str, str]):
+    code_raw = payload.get("code", "").strip()
+    account_id = payload.get("account_id", "").strip() or None
+    redirect_uri = payload.get("redirect_uri", "http://127.0.0.1:8000/api/auth/google/callback")
+    if not code_raw:
+        raise HTTPException(status_code=400, detail="Authorization code or URL required.")
+    
+    code = code_raw
+    if "code=" in code_raw:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(code_raw)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "code" in qs:
+            code = qs["code"][0]
+
+    res = provider_manager.gmail_provider.exchange_code_for_token(code, redirect_uri=redirect_uri, account_id=account_id)
     if res.success:
         CACHED_EMAILS.clear()
         sync_and_triage_inbox()
@@ -297,8 +369,11 @@ def submit_auth_code(payload: Dict[str, str]):
 def auth_imap(payload: Dict[str, str]):
     email_addr = payload.get("email", "").strip().lower()
     password = payload.get("password", "").strip()
-    imap_server = payload.get("imap_server", "").strip()
-    smtp_server = payload.get("smtp_server", "").strip()
+    imap_server_raw = payload.get("imap_server", "").strip()
+    smtp_server_raw = payload.get("smtp_server", "").strip()
+    
+    imap_host, imap_port = provider_manager.imap_provider._parse_host_port(imap_server_raw, 993)
+    smtp_host, smtp_port = provider_manager.imap_provider._parse_host_port(smtp_server_raw, 587)
     
     if not email_addr or not password:
         raise HTTPException(status_code=400, detail="Email and password are required.")
@@ -311,10 +386,10 @@ def auth_imap(payload: Dict[str, str]):
     for acc in configured:
         if acc.get("account_id", "").lower() == email_addr:
             acc["provider"] = "IMAP"
-            if imap_server:
-                acc["imap_server"] = imap_server
-            if smtp_server:
-                acc["smtp_server"] = smtp_server
+            acc["imap_server"] = imap_host or acc.get("imap_server", "mail.twc.com")
+            acc["imap_port"] = imap_port
+            acc["smtp_server"] = smtp_host or acc.get("smtp_server", "mail.twc.com")
+            acc["smtp_port"] = smtp_port
             found = True
             break
     if not found:
@@ -323,8 +398,10 @@ def auth_imap(payload: Dict[str, str]):
             "email": email_addr,
             "provider": "IMAP",
             "display_name": email_addr,
-            "imap_server": imap_server or "mail.twc.com",
-            "smtp_server": smtp_server or "mail.twc.com",
+            "imap_server": imap_host or "mail.twc.com",
+            "imap_port": imap_port,
+            "smtp_server": smtp_host or "mail.twc.com",
+            "smtp_port": smtp_port,
             "enabled": True
         })
     settings["configured_accounts"] = configured

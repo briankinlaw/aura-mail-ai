@@ -16,8 +16,8 @@ SERVICE_NAME = "aura_mail_ai"
 
 # Secret Pattern Signatures for Repository Auditing
 SECRET_PATTERNS = [
-    ("GEMINI_KEY_OLD", re.compile(r"AQ\.[A-Za-z0-9_-]{35,}")),
-    ("GOOGLE_API_KEY", re.compile(r"AIzaSy[A-Za-z0-9_-]{33}")),
+    ("GEMINI_KEY_OLD", re.compile(r"\bAQ\.[A-Za-z0-9_-]{35,}\b")),
+    ("GOOGLE_API_KEY", re.compile(r"\bAIzaSy[A-Za-z0-9_-]{33}\b")),
     ("GENERIC_API_KEY", re.compile(r"""['"](?:api[_-]?key|client[_-]?secret|auth[_-]?token)['"]\s*:\s*['"][a-zA-Z0-9_\-\.]{16,}['"]""", re.IGNORECASE)),
     ("PRIVATE_KEY", re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----")),
     ("PASSWORD_IN_JSON", re.compile(r"""['"]password['"]\s*:\s*['"][^'"]{4,}['"]""", re.IGNORECASE))

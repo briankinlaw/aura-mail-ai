@@ -47,12 +47,12 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
 ### Step 1: Cloud Accounts Management
 - [ ] Navigate to the **Cloud Accounts** tab (`data-tab="connected-accounts"`).
 - [ ] Verify separate account cards are displayed for:
-  - `kinlawb@outlook.com` (Microsoft Graph)
-  - `brian.kinlaw@outlook.com` (Alias)
-  - `briankkinlaw@gmail.com` (Gmail)
+  - `kinlawb@outlook.com` (Primary Microsoft Graph)
+  - `brian.kinlaw@outlook.com` (Secondary Microsoft Graph)
+  - `briankkinlaw@gmail.com` (Google Cloud / Gmail)
+  - `brian@mavencode.com` (MavenCode Google Workspace)
   - `cbkinlaw@satx.rr.com` (Spectrum IMAP)
   - `briankinlaw@satx.rr.com` (Spectrum IMAP)
-  - `brian@mavencode.com` (MavenCode IMAP)
 - [ ] Verify capabilities chips (`DRAFTS`, `SEND`, `ATTACHMENTS`, `MOVE`, `DELETE`, `QUARANTINE`) are listed on each card.
 - [ ] Click **Test** on an account to verify on-demand health checking.
 

@@ -72,37 +72,62 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             token_cache=cache
         )
 
-    def get_auth_url(self, redirect_uri: str = "http://127.0.0.1:8000/api/auth/callback") -> Optional[str]:
-        """Generates OAuth2 authorization URL via MSAL."""
-        app = self._build_msal_app()
+    def get_auth_url(self, redirect_uri: str = "http://127.0.0.1:8000/api/auth/callback", login_hint: Optional[str] = None, state: Optional[str] = None) -> Optional[str]:
+        """Generates OAuth2 authorization URL via MSAL with forced account login when login_hint is provided."""
+        app = self._build_msal_app(login_hint)
         if not app:
             return None
-        return app.get_authorization_request_url(
-            scopes=self.scopes,
-            redirect_uri=redirect_uri,
-            prompt="select_account"
-        )
+        kwargs = {
+            "scopes": self.scopes,
+            "redirect_uri": redirect_uri,
+            "prompt": "login" if login_hint else "select_account"
+        }
+        if login_hint:
+            kwargs["login_hint"] = login_hint
+        if state:
+            kwargs["state"] = state
+        elif login_hint:
+            kwargs["state"] = login_hint
+        return app.get_authorization_request_url(**kwargs)
 
     def initiate_device_code_flow(self) -> Dict[str, Any]:
         """Initiates MSAL Device Code Flow for headless or cross-platform authentication."""
         app = self._build_msal_app()
         if not app:
-            raise Exception("Microsoft Graph Azure Client ID not configured.")
+            raise Exception("Microsoft Graph Azure Client ID not configured. Please set in Settings.")
         
         flow = app.initiate_device_flow(scopes=self.scopes)
         if "user_code" not in flow:
             err = flow.get("error_description", flow.get("error", "Failed to initiate device flow"))
+            
+            # If app requires /consumers endpoint, automatically switch and retry
+            if "AADSTS9002346" in str(err) or "/consumers" in str(err).lower():
+                self.tenant_id = "consumers"
+                self.authority = f"{AUTHORITY_BASE}/consumers"
+                app = self._build_msal_app()
+                flow = app.initiate_device_flow(scopes=self.scopes)
+                if "user_code" in flow:
+                    return flow
+                err = flow.get("error_description", flow.get("error", "Failed to initiate device flow"))
+            
+            if "AADSTS70002" in str(err) or "marked as 'mobile'" in str(err).lower():
+                raise Exception(
+                    "Azure Setting Required: In Azure Portal -> App registrations -> Authentication -> "
+                    "Advanced settings, toggle 'Allow public client flows' (Enable mobile and desktop flows) to 'Yes' and Save."
+                )
+            
             raise Exception(f"MSAL Device Flow error: {err}")
         return flow
 
     def acquire_token_by_device_flow(self, flow: Dict[str, Any], account_id: Optional[str] = None) -> ProviderOperationResult:
         """Polls/completes token acquisition via MSAL Device Flow."""
-        app = self._build_msal_app(account_id or "primary")
+        target_account = (account_id or "primary").lower()
+        app = self._build_msal_app(target_account)
         if not app:
             return ProviderOperationResult(
                 success=False,
                 provider="MICROSOFT_GRAPH",
-                account_id=account_id or "unknown",
+                account_id=target_account,
                 operation="AUTHENTICATE",
                 error_code="CLIENT_ID_MISSING",
                 safe_message="Azure Client ID is missing. Configure in settings."
@@ -110,12 +135,18 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         
         result = app.acquire_token_by_device_flow(flow)
         if "access_token" in result:
-            mailbox = self._fetch_user_profile(result["access_token"])
-            resolved_account_id = mailbox.get("email", account_id or "primary").lower()
+            mailbox = self._fetch_user_profile(result["access_token"], default_email=account_id)
+            resolved_account_id = (account_id or mailbox.get("email") or target_account).lower()
             
-            # Re-save cache under canonical account ID
+            # Save cache and token under the requested account ID
             self._save_token_cache(resolved_account_id, app.token_cache)
             set_secret(f"graph_token_{resolved_account_id}", result["access_token"])
+            
+            # If Microsoft returned a distinct primary alias, also populate it
+            profile_email = mailbox.get("email", "").lower()
+            if profile_email and profile_email != resolved_account_id:
+                self._save_token_cache(profile_email, app.token_cache)
+                set_secret(f"graph_token_{profile_email}", result["access_token"])
             
             return ProviderOperationResult(
                 success=True,
@@ -137,14 +168,15 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             retryable=result.get("error") in ["authorization_pending", "slow_down"]
         )
 
-    def exchange_code_for_token(self, code: str, redirect_uri: str = "http://127.0.0.1:8000/api/auth/callback") -> ProviderOperationResult:
+    def exchange_code_for_token(self, code: str, redirect_uri: str = "http://127.0.0.1:8000/api/auth/callback", account_id: Optional[str] = None) -> ProviderOperationResult:
         """Exchanges authorization code for tokens using MSAL."""
-        app = self._build_msal_app("primary")
+        target_account = (account_id or "primary").lower()
+        app = self._build_msal_app(target_account)
         if not app:
             return ProviderOperationResult(
                 success=False,
                 provider="MICROSOFT_GRAPH",
-                account_id="unknown",
+                account_id=target_account,
                 operation="AUTHENTICATE",
                 error_code="CLIENT_ID_MISSING",
                 safe_message="Azure Client ID is missing. Configure in settings."
@@ -157,11 +189,16 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         )
 
         if "access_token" in result:
-            mailbox = self._fetch_user_profile(result["access_token"])
-            resolved_account_id = mailbox.get("email", "primary").lower()
+            mailbox = self._fetch_user_profile(result["access_token"], default_email=account_id)
+            resolved_account_id = (account_id or mailbox.get("email") or target_account).lower()
             
             self._save_token_cache(resolved_account_id, app.token_cache)
             set_secret(f"graph_token_{resolved_account_id}", result["access_token"])
+
+            profile_email = mailbox.get("email", "").lower()
+            if profile_email and profile_email != resolved_account_id:
+                self._save_token_cache(profile_email, app.token_cache)
+                set_secret(f"graph_token_{profile_email}", result["access_token"])
 
             return ProviderOperationResult(
                 success=True,
@@ -176,7 +213,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         return ProviderOperationResult(
             success=False,
             provider="MICROSOFT_GRAPH",
-            account_id="unknown",
+            account_id=account_id or "unknown",
             operation="AUTHENTICATE",
             error_code=result.get("error", "TOKEN_EXCHANGE_FAILED"),
             safe_message=f"Failed to authenticate with Microsoft Graph: {err}"
@@ -201,17 +238,19 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         # Fallback to direct token if stored
         return get_secret(f"graph_token_{account_id.lower()}")
 
-    def _fetch_user_profile(self, access_token: str) -> Dict[str, Any]:
+    def _fetch_user_profile(self, access_token: str, default_email: Optional[str] = None) -> Dict[str, Any]:
         """Queries Microsoft Graph /me to resolve primary address, aliases, and display name."""
         headers = {"Authorization": f"Bearer {access_token}"}
-        profile = {"email": "kinlawb@outlook.com", "display_name": "Microsoft User", "aliases": []}
+        fallback = (default_email or "").lower()
+        profile = {"email": fallback, "display_name": fallback or "Microsoft User", "aliases": []}
         try:
             res = requests.get(f"{GRAPH_API_ENDPOINT}/me", headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 primary_email = data.get("mail") or data.get("userPrincipalName") or ""
-                profile["email"] = primary_email.lower()
-                profile["display_name"] = data.get("displayName") or primary_email
+                if primary_email and "@" in primary_email:
+                    profile["email"] = primary_email.lower()
+                profile["display_name"] = data.get("displayName") or profile["email"]
                 
                 # Check for proxy addresses / aliases if available
                 proxy_addresses = data.get("otherMails", [])
@@ -223,7 +262,11 @@ class MicrosoftGraphProvider(BaseEmailProvider):
 
     def authenticate(self, account_config: Dict[str, Any], auth_payload: Optional[Dict[str, Any]] = None) -> ProviderOperationResult:
         if auth_payload and "code" in auth_payload:
-            return self.exchange_code_for_token(auth_payload["code"], auth_payload.get("redirect_uri", "http://127.0.0.1:8000/api/auth/callback"))
+            return self.exchange_code_for_token(
+                auth_payload["code"], 
+                auth_payload.get("redirect_uri", "http://127.0.0.1:8000/api/auth/callback"),
+                account_id=account_config.get("account_id")
+            )
         return ProviderOperationResult(
             success=False,
             provider="MICROSOFT_GRAPH",

@@ -64,7 +64,7 @@ def migrate_v1_to_v1_1(settings_file: Path, base_dir: Path) -> Dict[str, Any]:
                 "account_id": "brian.kinlaw@outlook.com",
                 "email": "brian.kinlaw@outlook.com",
                 "provider": "MICROSOFT_GRAPH",
-                "display_name": "Brian Kinlaw (Outlook Alias)",
+                "display_name": "Brian Kinlaw (Secondary Outlook)",
                 "enabled": True,
                 "is_primary": False
             },
@@ -99,10 +99,8 @@ def migrate_v1_to_v1_1(settings_file: Path, base_dir: Path) -> Dict[str, Any]:
             {
                 "account_id": "brian@mavencode.com",
                 "email": "brian@mavencode.com",
-                "provider": "IMAP",
-                "display_name": "Brian Kinlaw (MavenCode Advisory)",
-                "imap_server": "mail.mavencode.com",
-                "smtp_server": "mail.mavencode.com",
+                "provider": "GMAIL",
+                "display_name": "Brian Kinlaw (MavenCode Google Workspace)",
                 "enabled": True,
                 "is_primary": False
             }

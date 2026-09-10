@@ -38,8 +38,8 @@ def test_alias_deduplication_and_historical_exclusion():
                 "is_alias": False
             },
             {
-                "account_id": "brian.kinlaw@outlook.com",
-                "email": "brian.kinlaw@outlook.com",
+                "account_id": "test.alias@outlook.com",
+                "email": "test.alias@outlook.com",
                 "provider": "MICROSOFT_GRAPH",
                 "enabled": True,
                 "is_primary": False,
@@ -71,7 +71,7 @@ def test_alias_deduplication_and_historical_exclusion():
                 messages, stats = pm.sync_unified_inbox()
                 
                 # Should call fetch_inbox_messages EXACTLY ONCE for kinlawb@outlook.com
-                # (skipping the alias brian.kinlaw@outlook.com and skipping historical bkinlaw@dxc.com)
+                # (skipping the alias test.alias@outlook.com and skipping historical bkinlaw@dxc.com)
                 assert mock_fetch.call_count == 1
                 assert mock_fetch.call_args[0][0] == "kinlawb@outlook.com"
                 assert len(messages) == 1

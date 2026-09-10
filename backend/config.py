@@ -24,8 +24,7 @@ RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 GRAPH_SCOPES = [
     "User.Read",
     "Mail.ReadWrite",
-    "Mail.Send",
-    "offline_access"
+    "Mail.Send"
 ]
 
 def load_settings() -> Dict[str, Any]:
@@ -52,6 +51,12 @@ def save_settings(settings: Dict[str, Any]):
         if not raw_key.startswith("YOUR_") and len(raw_key) > 10:
             set_secret("gemini_api_key", raw_key)
         clean_settings.pop("gemini_api_key", None)
+    
+    if "google_client_secret" in clean_settings and clean_settings["google_client_secret"]:
+        raw_gsec = clean_settings["google_client_secret"]
+        if len(raw_gsec) > 3:
+            set_secret("google_client_secret", raw_gsec)
+        clean_settings.pop("google_client_secret", None)
     
     if "imap_config" in clean_settings:
         cfg = clean_settings["imap_config"]
