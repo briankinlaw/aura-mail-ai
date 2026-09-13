@@ -745,7 +745,34 @@ def get_dashboard_stats():
         "inbox_cleanliness_score": round((1.0 - (noise_count - cleaned_count) / max(total, 1)) * 100)
     }
 
+# --- Daemon Endpoints ---
+@app.get("/api/daemon/status")
+def get_daemon_status():
+    from backend.daemon import STATE_FILE, PROCESSED_LOG_FILE
+    state = {}
+    if STATE_FILE.is_file():
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        except Exception:
+            pass
+    return {
+        "status": state.get("status", "IDLE"),
+        "last_heartbeat": state.get("last_heartbeat"),
+        "last_summary": state.get("last_summary", {})
+    }
+
+@app.post("/api/daemon/run-now")
+def trigger_daemon_run(dry_run: bool = False):
+    from backend.daemon import run_daemon_cycle
+    summary = run_daemon_cycle(dry_run=dry_run)
+    return {
+        "status": "SUCCESS",
+        "summary": summary
+    }
+
 # --- Static UI Mount ---
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")

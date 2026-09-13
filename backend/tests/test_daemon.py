@@ -1,0 +1,97 @@
+"""
+Unit Tests for Aura Mail AI Autonomous Background Daemon
+"""
+
+import unittest
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+import json
+import tempfile
+
+from backend.daemon import (
+    load_processed_ids,
+    save_processed_id,
+    send_macos_notification,
+    run_daemon_cycle
+)
+from backend.daemon_cli import generate_launchd_plist
+from backend.models import EmailMessage, EmailCategory, ClassificationResult, RecruiterDetails
+from backend.providers.base import ProviderOperationResult
+
+
+class TestAuraDaemon(unittest.TestCase):
+    def test_launchd_plist_generation(self):
+        plist = generate_launchd_plist(interval_seconds=900)
+        self.assertIn("com.briankinlaw.aura-mail-daemon", plist)
+        self.assertIn("<integer>900</integer>", plist)
+        self.assertIn("aura-daemon", plist)
+        self.assertIn("<key>RunAtLoad</key>", plist)
+
+    @patch("subprocess.run")
+    def test_send_macos_notification(self, mock_sub):
+        send_macos_notification("Aura Mail", "New Lead", "Testing notification")
+        self.assertTrue(mock_sub.called)
+        args, kwargs = mock_sub.call_args
+        cmd = args[0]
+        self.assertEqual(cmd[0], "osascript")
+        self.assertIn("Testing notification", cmd[2])
+
+    @patch("backend.daemon.load_processed_ids", return_value=set())
+    @patch("backend.daemon.ProviderManager")
+    @patch("backend.daemon.classify_email_radar")
+    @patch("backend.daemon.send_macos_notification")
+    def test_run_daemon_cycle(self, mock_notify, mock_classify, mock_pm_cls, mock_processed):
+
+        # Mock ProviderManager
+        mock_pm = MagicMock()
+        mock_pm_cls.return_value = mock_pm
+
+        test_msg = EmailMessage(
+            id="daemon_test_msg_01",
+            account_id="kinlawb@outlook.com",
+            sender_name="Recruiter Emma",
+            sender_email="emma@techrecruiting.com",
+            subject="Opportunity: Principal AI & Cloud Architect ($260k-$290k)",
+            body_text="Hi Brian, are you free for a quick call next week to discuss this Principal Architect role?",
+            received_at="2026-09-13 10:00",
+            preview="Hi Brian, are you free...",
+            folder="Jobs"
+        )
+        mock_pm.sync_unified_inbox.return_value = ([test_msg], {"accounts_synced": 1, "accounts_failed": 0, "status": "SUCCESS"})
+        mock_pm.save_draft_reply.return_value = ProviderOperationResult(
+            success=True,
+            provider="GRAPH",
+            account_id="kinlawb@outlook.com",
+            operation="CREATE_DRAFT",
+            safe_message="Draft created successfully",
+            remote_object_id="draft_123"
+        )
+
+
+
+        mock_classify.return_value = ClassificationResult(
+            category=EmailCategory.RESUME_REQUEST,
+            confidence=0.95,
+            reasoning="Recruiter inquiring about Principal AI role",
+            is_noise=False,
+            is_resume_request=True,
+            recruiter_details=RecruiterDetails(
+                recruiter_name="Emma",
+                company_name="NextGen Tech",
+                role_title="Principal AI & Cloud Architect",
+                location="Remote (US)",
+                salary_range="$260k-$290k",
+                required_skills=["Google Cloud", "AI Governance", "Architecture"]
+            ),
+            suggested_action="REPLY"
+        )
+
+        # Run cycle in dry-run mode first
+        summary = run_daemon_cycle(dry_run=True)
+        self.assertEqual(summary["messages_checked"], 1)
+        self.assertEqual(summary["drafts_staged"], 1)
+        self.assertEqual(len(summary["high_fit_opportunities"]), 1)
+        self.assertEqual(summary["high_fit_opportunities"][0]["role_title"], "Principal AI & Cloud Architect")
+
+if __name__ == "__main__":
+    unittest.main()

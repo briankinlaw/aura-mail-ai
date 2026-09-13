@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""
+Aura Mail AI Daemon CLI Executable
+Auto-detects and re-executes inside virtual environment if invoked by system Python.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent
+
+def ensure_venv():
+    # Check if already running in virtual environment
+    if hasattr(sys, "real_prefix") or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix):
+        return
+
+    # Look for candidate venvs
+    candidates = [
+        ROOT_DIR / ".venv" / "bin" / "python3",
+        Path("/Users/briankinlaw/CCS-v211-upload/.venv/bin/python3"),
+        Path("/Users/briankinlaw/2026 Promevo_LOCAL/.venv/bin/python3")
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            if os.environ.get("_AURA_DAEMON_REEXEC") != "1":
+                env = os.environ.copy()
+                env["_AURA_DAEMON_REEXEC"] = "1"
+                env["PYTHONPATH"] = str(ROOT_DIR)
+                os.execve(str(cand), [str(cand), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+ensure_venv()
+
+# Add project root to sys.path
+sys.path.insert(0, str(ROOT_DIR))
+
+from backend.daemon_cli import main
+
+if __name__ == "__main__":
+    main()

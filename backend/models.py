@@ -63,8 +63,11 @@ class ClassificationResult(BaseModel):
 
 class EmailMessage(BaseModel):
     id: str
+    account_id: str = "primary"
+    provider: Optional[str] = None
     conversation_id: Optional[str] = None
     subject: str
+
     sender_name: str
     sender_email: str
     received_at: str
