@@ -19,10 +19,11 @@ from backend.config import RESUMES_DIR
 
 logger = logging.getLogger("canonical_engine")
 
-# Canonical System Paths (with graceful fallback to local RESUMES_DIR when external folders are absent)
-CANONICAL_ACTIVE_DIR = Path(os.getenv("CANONICAL_ACTIVE_DIR", "/Users/briankinlaw/2026 Promevo_LOCAL/Canonical – Active"))
-TARGETED_APPS_DIR = Path(os.getenv("TARGETED_APPS_DIR", "/Users/briankinlaw/2026 Promevo_LOCAL/Targeted Applications"))
+# Canonical System Paths (pointing directly to CCS v2.1 repository with fallback)
+CANONICAL_ACTIVE_DIR = Path(os.getenv("CANONICAL_ACTIVE_DIR", "/Users/briankinlaw/CCS-v211-upload/Canonical – Active"))
+TARGETED_APPS_DIR = Path(os.getenv("TARGETED_APPS_DIR", "/Users/briankinlaw/CCS-v211-upload/Targeted Applications"))
 DOWNLOADS_VARIANTS_DIR = Path(os.getenv("DOWNLOADS_VARIANTS_DIR", "/Users/briankinlaw/Downloads/Resume Variants"))
+
 
 # Lens Archetype Definitions
 LENS_DEFINITIONS = {

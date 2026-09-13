@@ -209,10 +209,23 @@ def test_gmail_validation(mock_get):
         assert res.success is True
         assert res.provider == "GMAIL"
 
+@patch("backend.providers.gmail.requests.get")
 @patch("backend.providers.gmail.requests.post")
-def test_gmail_create_draft(mock_post):
+def test_gmail_create_draft(mock_post, mock_get):
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = {"id": "gmail_draft_999"}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "id": "gmail_thread_111",
+        "threadId": "thread_123",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "Re: Opportunity"},
+                {"name": "From", "value": "recruiter@example.com"},
+                {"name": "Message-ID", "value": "<msg123@example.com>"}
+            ]
+        }
+    }
 
     gmail = GmailProvider(client_id="mock-id", client_secret="mock-sec")
     with patch.object(gmail, "get_access_token", return_value="mock_gmail_token"):
@@ -225,6 +238,7 @@ def test_gmail_create_draft(mock_post):
             )
             assert res.success is True
             assert res.remote_object_id == "gmail_draft_999"
+
 
 def test_gmail_auth_url():
     gmail = GmailProvider(client_id="test-client-id", client_secret="test-secret")
