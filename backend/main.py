@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.models import (
@@ -71,14 +71,13 @@ ALLOWED_ORIGINS = [
     "https://127.0.0.1:3000",
     "https://outlook.office.com",
     "https://outlook.office365.com",
-    "https://appsforoffice.microsoft.com",
-    "null"
+    "https://appsforoffice.microsoft.com"
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["Authorization", "Content-Type", "X-Aura-Session-Token", "X-Aura-Token", "X-Requested-With"],
 )
@@ -180,15 +179,6 @@ def get_safety_policy_endpoint():
             "BACKGROUND EXECUTION -> SEND FORBIDDEN (Daemon, Background Radar, Scheduled Jobs are strictly forbidden from transmitting email)",
             "FAIL-CLOSED -> DRAFT_ONLY (Missing, malformed, or corrupt configuration resolves to DRAFT_ONLY)"
         ]
-    }
-
-@app.get("/api/auth/session")
-def get_auth_session():
-    """Provides session token to legitimate local dashboard and add-in frontends."""
-    return {
-        "status": "SUCCESS",
-        "session_token": get_local_session_token(),
-        "token_type": "Bearer"
     }
 
 @app.get("/api/accounts")
@@ -987,22 +977,38 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
     )
     return res.model_dump()
 
-# --- Static UI Mount ---
+# --- Static UI Mount & Secure Same-Origin Template Delivery ---
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
 ADDIN_DIR = FRONTEND_DIR / "add-in"
-if ADDIN_DIR.exists():
-    app.mount("/add-in", StaticFiles(directory=str(ADDIN_DIR), html=True), name="addin")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def serve_index():
     index_file = FRONTEND_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(str(index_file))
+        content = index_file.read_text(encoding="utf-8")
+        token = get_local_session_token()
+        injection = f'<script>window.__AURA_SESSION_TOKEN__ = "{token}";</script>'
+        content = content.replace("<head>", f"<head>\n    {injection}", 1)
+        return HTMLResponse(content)
     return JSONResponse({"message": "Aura Mail AI v1.1 API Running."})
+
+@app.get("/add-in/taskpane.html")
+def serve_addin_taskpane():
+    taskpane_file = ADDIN_DIR / "taskpane.html"
+    if taskpane_file.exists():
+        content = taskpane_file.read_text(encoding="utf-8")
+        token = get_local_session_token()
+        injection = f'<script>window.__AURA_SESSION_TOKEN__ = "{token}";</script>'
+        content = content.replace("<head>", f"<head>\n    {injection}", 1)
+        return HTMLResponse(content)
+    return JSONResponse({"error": "Taskpane file not found"}, status_code=404)
+
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+if ADDIN_DIR.exists():
+    app.mount("/add-in", StaticFiles(directory=str(ADDIN_DIR), html=True), name="addin")
 
 if __name__ == "__main__":
     import uvicorn

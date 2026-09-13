@@ -1,44 +1,33 @@
 // Aura Mail AI - Frontend Application Controller (v1.1 Cloud Multi-Account)
 
-// --- Authenticated Session Bootstrap ---
-let AURA_SESSION_TOKEN = null;
+// --- Authenticated Session Initialization from Same-Origin Runtime ---
+let AURA_SESSION_TOKEN = window.__AURA_SESSION_TOKEN__ || null;
 
 const _nativeFetch = window.fetch;
 window._nativeFetch = _nativeFetch;
 window.fetch = async function(url, options = {}) {
   options = options || {};
   options.headers = options.headers || {};
-  if (AURA_SESSION_TOKEN) {
+  const token = AURA_SESSION_TOKEN || window.__AURA_SESSION_TOKEN__;
+  if (token) {
     if (options.headers instanceof Headers) {
       if (!options.headers.has('Authorization')) {
-        options.headers.set('Authorization', `Bearer ${AURA_SESSION_TOKEN}`);
+        options.headers.set('Authorization', `Bearer ${token}`);
       }
       if (!options.headers.has('X-Aura-Session-Token')) {
-        options.headers.set('X-Aura-Session-Token', AURA_SESSION_TOKEN);
+        options.headers.set('X-Aura-Session-Token', token);
       }
     } else if (typeof options.headers === 'object') {
       if (!options.headers['Authorization']) {
-        options.headers['Authorization'] = `Bearer ${AURA_SESSION_TOKEN}`;
+        options.headers['Authorization'] = `Bearer ${token}`;
       }
       if (!options.headers['X-Aura-Session-Token']) {
-        options.headers['X-Aura-Session-Token'] = AURA_SESSION_TOKEN;
+        options.headers['X-Aura-Session-Token'] = token;
       }
     }
   }
   return _nativeFetch(url, options);
 };
-
-async function bootstrapAuraSession() {
-  try {
-    const res = await _nativeFetch('/api/auth/session');
-    if (res.ok) {
-      const data = await res.json();
-      AURA_SESSION_TOKEN = data.session_token;
-    }
-  } catch (err) {
-    console.warn('Session bootstrap notice:', err);
-  }
-}
 
 let APP_STATE = {
   emails: [],
@@ -157,7 +146,6 @@ const elements = {
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
-  await bootstrapAuraSession();
   setupTabNavigation();
   setupEventListeners();
   await refreshAll();

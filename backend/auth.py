@@ -1,14 +1,16 @@
 """
 Aura Mail AI - Local API Trust Boundary & Request Authorization (Phase 2).
-Provides cryptographically secure local session token generation, verification,
+Provides cryptographically secure local session token generation, filesystem
+token storage (with strict 0600 user-only permissions), constant-time verification,
 and FastAPI dependencies to protect privileged endpoints from unauthorized or
-cross-origin browser invocation.
+cross-origin invocation.
 """
 
 import os
 import hmac
 import secrets
 import logging
+from pathlib import Path
 from typing import Optional, Dict
 from fastapi import Request, Header, HTTPException, status
 
@@ -16,29 +18,70 @@ logger = logging.getLogger("aura.auth")
 
 # In-memory storage for the active local session token
 _LOCAL_SESSION_TOKEN: Optional[str] = None
+TOKEN_FILE_PATH = Path.home() / ".aura_session_token"
 
 
 def get_local_session_token() -> str:
     """
     Retrieves or initializes the active local session secret token.
-    Uses environment variable AURA_SESSION_TOKEN if provided, otherwise generates
-    a 256-bit cryptographically secure hex token on startup.
+    1. Checks in-memory cache.
+    2. Checks environment variable AURA_SESSION_TOKEN.
+    3. Checks ~/.aura_session_token file (created with 0600 user-only permissions).
+    4. Generates a 256-bit cryptographically secure hex token and saves to file (0600).
     """
     global _LOCAL_SESSION_TOKEN
-    if _LOCAL_SESSION_TOKEN is None:
-        env_token = os.environ.get("AURA_SESSION_TOKEN")
-        if env_token and len(env_token.strip()) >= 32:
-            _LOCAL_SESSION_TOKEN = env_token.strip()
-        else:
-            _LOCAL_SESSION_TOKEN = secrets.token_hex(32)
-        logger.info("Initialized secure local session token.")
+    if _LOCAL_SESSION_TOKEN is not None:
+        return _LOCAL_SESSION_TOKEN
+
+    env_token = os.environ.get("AURA_SESSION_TOKEN")
+    if env_token and len(env_token.strip()) >= 32:
+        _LOCAL_SESSION_TOKEN = env_token.strip()
+        logger.info("Initialized local session token from environment.")
+        return _LOCAL_SESSION_TOKEN
+
+    # Check local filesystem token file
+    try:
+        if TOKEN_FILE_PATH.is_file():
+            saved_token = TOKEN_FILE_PATH.read_text(encoding="utf-8").strip()
+            if len(saved_token) >= 32:
+                _LOCAL_SESSION_TOKEN = saved_token
+                logger.info("Loaded local session token from user token file.")
+                return _LOCAL_SESSION_TOKEN
+    except Exception as e:
+        logger.warning(f"Could not read session token file: {e}")
+
+    # Generate new cryptographically secure 256-bit entropy token
+    new_token = secrets.token_hex(32)
+    _LOCAL_SESSION_TOKEN = new_token
+    try:
+        # Create with strict 0600 permissions (user-read/write only)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        mode = 0o600
+        fd = os.open(str(TOKEN_FILE_PATH), flags, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_token)
+        os.chmod(str(TOKEN_FILE_PATH), 0o600)
+        logger.info("Generated and saved secure local session token to ~/.aura_session_token (0600).")
+    except Exception as e:
+        logger.warning(f"Could not write session token to disk ({e}); keeping in-memory only.")
+
     return _LOCAL_SESSION_TOKEN
 
 
 def reset_local_session_token() -> str:
     """Rotates or resets the local session token (primarily for testing and security rotation)."""
     global _LOCAL_SESSION_TOKEN
-    _LOCAL_SESSION_TOKEN = secrets.token_hex(32)
+    new_token = secrets.token_hex(32)
+    _LOCAL_SESSION_TOKEN = new_token
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        mode = 0o600
+        fd = os.open(str(TOKEN_FILE_PATH), flags, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_token)
+        os.chmod(str(TOKEN_FILE_PATH), 0o600)
+    except Exception:
+        pass
     return _LOCAL_SESSION_TOKEN
 
 

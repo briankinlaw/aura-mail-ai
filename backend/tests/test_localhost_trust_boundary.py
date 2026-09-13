@@ -1,11 +1,19 @@
 """
-Unit and Integration Tests for Localhost API Trust Boundary & Auth Hardening (Phase 2).
-Verifies CORS allowlist enforcement, request authorization requirements on privileged
-endpoints, malformed authorization rejection, and OAuth exemption handling.
+Unit and Integration Tests for Localhost API Trust Boundary & Auth Hardening (Phase 2 Corrective).
+Verifies:
+  - Removal of wildcard CORS and null origin allowlists.
+  - Rejection of unknown and lookalike origins.
+  - Absence of unauthenticated credential disclosure endpoints (/api/auth/session).
+  - Strict enforcement of request authorization on all privileged endpoints with zero side effects.
+  - Proper handling of malformed and invalid tokens.
+  - Same-origin runtime token delivery for legitimate local UI and add-in.
+  - Functional preservation of external OAuth browser redirects.
 """
 
 import pytest
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
+
 from backend.main import app, ALLOWED_ORIGINS
 from backend.auth import (
     get_local_session_token,
@@ -14,33 +22,37 @@ from backend.auth import (
     reset_local_session_token
 )
 
-# Unauthenticated client
 unauth_client = TestClient(app)
-
-# Authenticated client
 auth_client = TestClient(app)
 auth_client.headers.update(get_auth_headers())
 
 
-# --- CORS Security Tests ---
+# --- 1. CORS Security Tests ---
 
-def test_cors_wildcard_removed():
-    """Verifies that allow_origins=['*'] wildcard is completely removed."""
+def test_cors_wildcard_and_null_removed():
+    """
+    CRITICAL SECURITY INVARIANT:
+    Verifies that wildcard '*' and opaque 'null' origins are completely removed from CORS allowlist.
+    """
     assert "*" not in ALLOWED_ORIGINS
+    assert "null" not in ALLOWED_ORIGINS
     assert len(ALLOWED_ORIGINS) > 0
 
 
 def test_cors_approved_origins_accepted():
-    """Verifies that legitimate localhost, 127.0.0.1, and Outlook add-in origins are permitted."""
+    """Verifies that legitimate localhost, 127.0.0.1, and Microsoft Office add-in origins are permitted."""
     approved_origins = [
         "http://localhost:8000",
         "http://127.0.0.1:8000",
+        "https://localhost:8000",
+        "https://127.0.0.1:8000",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://localhost:3000",
+        "https://127.0.0.1:3000",
         "https://outlook.office.com",
         "https://outlook.office365.com",
         "https://appsforoffice.microsoft.com",
-        "null"
     ]
     for origin in approved_origins:
         response = unauth_client.options(
@@ -50,18 +62,39 @@ def test_cors_approved_origins_accepted():
                 "Access-Control-Request-Method": "GET"
             }
         )
-        # FastApi CORSMiddleware returns 200 on preflight for allowed origins
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == origin
 
 
-def test_cors_unknown_origins_rejected():
-    """Verifies that unauthorized or malicious origins are rejected by CORS."""
+def test_cors_null_origin_rejected():
+    """
+    SECURITY INVARIANT:
+    Verifies that requests presenting 'Origin: null' (sandboxed iframes, opaque contexts) are rejected.
+    """
+    response = unauth_client.options(
+        "/api/status",
+        headers={
+            "Origin": "null",
+            "Access-Control-Request-Method": "GET"
+        }
+    )
+    assert response.headers.get("access-control-allow-origin") != "null"
+
+
+def test_cors_unknown_and_lookalike_origins_rejected():
+    """
+    SECURITY INVARIANT:
+    Verifies that arbitrary external origins, lookalikes, and subdomain spoofing are rejected.
+    """
     malicious_origins = [
         "https://evil-attacker.com",
         "http://malicious-site.org",
         "https://phishing-aura.net",
-        "http://attacker.local:9999"
+        "http://localhost.evil.com",
+        "http://localhost:8000.attacker.com",
+        "http://127.0.0.1.attacker.com",
+        "http://localhost:9999",
+        "http://127.0.0.1:8080"
     ]
     for origin in malicious_origins:
         response = unauth_client.options(
@@ -71,11 +104,22 @@ def test_cors_unknown_origins_rejected():
                 "Access-Control-Request-Method": "GET"
             }
         )
-        # Unauthorized origin does not receive Access-Control-Allow-Origin matching its origin
         assert response.headers.get("access-control-allow-origin") != origin
 
 
-# --- Request Authorization on Privileged Endpoints ---
+# --- 2. Absence of Unauthenticated Credential Disclosure ---
+
+def test_no_unauthenticated_session_credential_disclosure_endpoint():
+    """
+    CRITICAL SECURITY INVARIANT (Finding 1 Correction):
+    Verifies that no unauthenticated JSON API endpoint (/api/auth/session) exists
+    to disclose the local bearer token to arbitrary callers.
+    """
+    response = unauth_client.get("/api/auth/session")
+    assert response.status_code in [404, 405]
+
+
+# --- 3. Request Authorization on Privileged Endpoints ---
 
 PRIVILEGED_POST_ENDPOINTS = [
     ("/api/settings", {"demo_mode": True}),
@@ -95,6 +139,7 @@ PRIVILEGED_POST_ENDPOINTS = [
     ("/api/radar/risk-check", {"subject": "Test", "body": "Test", "draft_reply": "Test"}),
     ("/api/canonical/match", {"job_title": "Architect"}),
     ("/api/auth/msal/device-code", {}),
+    ("/api/auth/msal/device-code/poll", {}),
     ("/api/auth/submit-code", {"code": "123"}),
     ("/api/auth/google/submit-code", {"code": "123"}),
     ("/api/auth/imap", {"email": "a@b.com", "imap_server": "mail.example.com"}),
@@ -102,11 +147,11 @@ PRIVILEGED_POST_ENDPOINTS = [
 
 
 @pytest.mark.parametrize("path,payload", PRIVILEGED_POST_ENDPOINTS)
-def test_privileged_endpoints_reject_missing_authorization(path, payload):
+def test_all_privileged_endpoints_reject_unauthenticated_request(path, payload):
     """
     SECURITY INVARIANT:
-    Verifies that state-changing or privileged operations require authorization
-    and reject unauthenticated requests with 401 Unauthorized.
+    Verifies that every privileged, state-changing endpoint rejects unauthenticated
+    requests with 401 Unauthorized.
     """
     response = unauth_client.post(path, json=payload)
     assert response.status_code == 401
@@ -141,9 +186,9 @@ def test_privileged_endpoints_reject_empty_or_whitespace_bearer():
 
 
 def test_privileged_endpoints_reject_invalid_token():
-    """Verifies that incorrect / forged tokens fail with 403 Forbidden."""
+    """Verifies that incorrect or forged tokens fail with 403 Forbidden."""
     fake_token = "0000000000000000000000000000000000000000000000000000000000000000"
-    
+
     # Bearer header
     res1 = unauth_client.post(
         "/api/calendar/availability",
@@ -161,37 +206,84 @@ def test_privileged_endpoints_reject_invalid_token():
     )
     assert res2.status_code == 403
 
+    # X-Aura-Token header
+    res3 = unauth_client.post(
+        "/api/calendar/availability",
+        json={},
+        headers={"X-Aura-Token": fake_token}
+    )
+    assert res3.status_code == 403
 
-def test_session_token_bootstrap_and_authenticated_request_success():
-    """
-    Verifies that the legitimate local frontend / add-in can bootstrap its
-    session token from /api/auth/session and successfully invoke protected endpoints.
-    """
-    # 1. Bootstrap session token
-    session_res = unauth_client.get("/api/auth/session")
-    assert session_res.status_code == 200
-    data = session_res.json()
-    assert data["status"] == "SUCCESS"
-    token = data["session_token"]
-    assert len(token) >= 32
 
-    # 2. Invoke privileged endpoint using Bearer token
-    avail_res = unauth_client.post(
+# --- 4. Side-Effect Prevention Verification ---
+
+def test_unauthenticated_send_reply_executes_no_side_effects():
+    """Verifies that rejected unauthenticated requests to send-reply trigger zero provider actions."""
+    with patch("backend.main.provider_manager.send_reply") as mock_send:
+        res = unauth_client.post("/api/emails/test_id/send-reply", json={"reply_body": "unauthorized"})
+        assert res.status_code == 401
+        assert not mock_send.called
+
+
+def test_unauthenticated_clean_noise_executes_no_side_effects():
+    """Verifies that rejected unauthenticated requests to clean-noise trigger zero provider actions."""
+    with patch("backend.main.provider_manager.move_message") as mock_move:
+        res = unauth_client.post("/api/emails/clean-noise", json={})
+        assert res.status_code == 401
+        assert not mock_move.called
+
+
+def test_unauthenticated_trash_executes_no_side_effects():
+    """Verifies that rejected unauthenticated requests to trash trigger zero provider actions."""
+    with patch("backend.main.provider_manager.delete_message") as mock_delete:
+        res = unauth_client.post("/api/emails/test_id/trash", json={})
+        assert res.status_code == 401
+        assert not mock_delete.called
+
+
+# --- 5. Legitimate Authenticated Access & Same-Origin Delivery ---
+
+def test_authenticated_requests_succeed_with_token():
+    """Verifies that legitimate requests with valid authorization token succeed."""
+    token = get_local_session_token()
+
+    # Via Bearer header
+    res1 = unauth_client.post(
         "/api/calendar/availability",
         json={"days_ahead": 3},
         headers={"Authorization": f"Bearer {token}"}
     )
-    assert avail_res.status_code == 200
-    assert avail_res.json()["status"] == "SUCCESS"
+    assert res1.status_code == 200
+    assert res1.json()["status"] == "SUCCESS"
 
-    # 3. Invoke privileged endpoint using X-Aura-Session-Token
-    avail_res2 = unauth_client.post(
+    # Via X-Aura-Session-Token header
+    res2 = unauth_client.post(
         "/api/calendar/availability",
         json={"days_ahead": 3},
         headers={"X-Aura-Session-Token": token}
     )
-    assert avail_res2.status_code == 200
+    assert res2.status_code == 200
 
+
+def test_server_rendered_html_injects_token_for_same_origin():
+    """
+    Verifies that server-rendered same-origin HTML pages (/ and /add-in/taskpane.html)
+    contain the injected session token runtime configuration.
+    """
+    token = get_local_session_token()
+
+    # Index page
+    index_res = unauth_client.get("/")
+    assert index_res.status_code == 200
+    assert f'window.__AURA_SESSION_TOKEN__ = "{token}";' in index_res.text
+
+    # Add-in taskpane page
+    taskpane_res = unauth_client.get("/add-in/taskpane.html")
+    assert taskpane_res.status_code == 200
+    assert f'window.__AURA_SESSION_TOKEN__ = "{token}";' in taskpane_res.text
+
+
+# --- 6. OAuth Special Endpoints & Public Assets ---
 
 def test_oauth_endpoints_remain_accessible_without_bearer_token():
     """
@@ -200,24 +292,23 @@ def test_oauth_endpoints_remain_accessible_without_bearer_token():
     """
     # MSAL OAuth URL
     msal_url_res = unauth_client.get("/api/auth/msal/url")
-    assert msal_url_res.status_code in [200, 400]  # 400 only if client ID not configured, but NOT 401/403
+    assert msal_url_res.status_code in [200, 400]
 
     # Google OAuth URL
     google_url_res = unauth_client.get("/api/auth/google/url")
-    assert google_url_res.status_code in [200, 400]  # 400 only if client ID not configured, but NOT 401/403
+    assert google_url_res.status_code in [200, 400]
 
     # MSAL OAuth Callback (browser redirect)
     msal_cb_res = unauth_client.get("/api/auth/callback?error=access_denied", follow_redirects=False)
-    assert msal_cb_res.status_code == 307  # Redirects to /?auth_error=access_denied
+    assert msal_cb_res.status_code == 307
 
     # Google OAuth Callback (browser redirect)
     google_cb_res = unauth_client.get("/api/auth/google/callback?error=access_denied", follow_redirects=False)
-    assert google_cb_res.status_code == 307  # Redirects to /?auth_error=access_denied
+    assert google_cb_res.status_code == 307
 
 
-def test_read_only_and_static_routes_remain_accessible():
+def test_public_read_only_and_static_routes_remain_accessible():
     """Verifies that public system status, safety policy, and static assets remain accessible."""
     assert unauth_client.get("/api/status").status_code == 200
     assert unauth_client.get("/api/safety-policy").status_code == 200
-    assert unauth_client.get("/add-in/taskpane.html").status_code == 200
     assert unauth_client.get("/static/icon-64.png").status_code == 200
