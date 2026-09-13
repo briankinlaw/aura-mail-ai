@@ -12,11 +12,15 @@ import subprocess
 import threading
 import webbrowser
 from pathlib import Path
-from datetime import datetime, timedelta
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import rumps
 
 from backend.config import DATA_DIR, load_settings, get_user_profile
+
 from backend.daemon import (
     STATE_FILE,
     PROCESSED_LOG_FILE,
