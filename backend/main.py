@@ -122,6 +122,8 @@ def save_cached_emails():
 
 load_cached_emails()
 
+from backend.safety_policy import get_active_safety_mode, set_safety_mode, MailSafetyMode, ExecutionContext, evaluate_mail_action
+
 # --- System & Multi-Account Endpoints ---
 
 @app.get("/api/status")
@@ -145,7 +147,35 @@ def get_system_status():
         "available_resumes": resumes,
         "cached_emails_count": len(CACHED_EMAILS),
         "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
-        "safety_mode": settings.get("user_profile", {}).get("safety_mode", "SAFE_REVIEW")
+        "safety_mode": get_active_safety_mode().value
+    }
+
+@app.get("/api/safety-policy")
+def get_safety_policy_endpoint():
+    mode = get_active_safety_mode()
+    return {
+        "status": "SUCCESS",
+        "active_mode": mode.value,
+        "is_draft_only": mode == MailSafetyMode.DRAFT_ONLY,
+        "is_manual_send_only": mode == MailSafetyMode.MANUAL_SEND_ONLY,
+        "permanent_invariants": [
+            "BACKGROUND EXECUTION -> SEND FORBIDDEN (Daemon, Background Radar, Scheduled Jobs are strictly forbidden from transmitting email)",
+            "FAIL-CLOSED -> DRAFT_ONLY (Missing, malformed, or corrupt configuration resolves to DRAFT_ONLY)"
+        ]
+    }
+
+@app.post("/api/safety-policy")
+def update_safety_policy_endpoint(payload: Dict[str, Any]):
+    new_mode_raw = payload.get("safety_mode", "")
+    new_mode = MailSafetyMode(new_mode_raw) if new_mode_raw in MailSafetyMode.__members__ else MailSafetyMode.DRAFT_ONLY
+
+    # Trust boundary check: must be interactive user context
+    actor_context = ExecutionContext.DASHBOARD_INTERACTIVE_USER
+    updated = set_safety_mode(new_mode, actor_context)
+    return {
+        "status": "SUCCESS",
+        "safety_mode": updated.value,
+        "message": f"Mail Safety Policy updated to {updated.value}."
     }
 
 @app.get("/api/accounts")

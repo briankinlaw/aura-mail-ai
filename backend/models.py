@@ -129,7 +129,7 @@ class UserProfile(BaseModel):
         "Explicitly mention that my updated resume is attached. Invite them to schedule a brief intro discussion."
     )
     cloud_ai_enabled: bool = False
-    safety_mode: str = "SAFE_REVIEW"  # SAFE_REVIEW (drafts only) vs AUTONOMOUS (auto-send verified)
+    safety_mode: str = "DRAFT_ONLY"  # DRAFT_ONLY (fail-closed default) vs MANUAL_SEND_ONLY
     noise_handling: str = "MOVE_TO_CLEANED_FOLDER"  # MOVE_TO_CLEANED_FOLDER vs DELETE_PERMANENTLY
 
 class ReplyDraftRequest(BaseModel):
