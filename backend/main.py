@@ -771,11 +771,160 @@ def trigger_daemon_run(dry_run: bool = False):
         "summary": summary
     }
 
+# --- Opportunity Radar & Outlook Add-in Endpoints ---
+
+from backend.radar.triage_service import classify_email_radar, calculate_opportunity_fit_score, extract_recruiter_details
+from backend.radar.scribe_service import generate_executive_reply
+from backend.calendar_broker.availability_service import calculate_optimal_booking_windows
+from backend.calendar_broker.models import FreeBusyRequest
+
+@app.post("/api/radar/triage")
+def radar_triage_endpoint(payload: Dict[str, Any]):
+    subject = payload.get("subject", "")
+    body = payload.get("body", "")
+    sender_name = payload.get("sender_name", "")
+    sender_email = payload.get("sender_email", "")
+
+    msg = EmailMessage(
+        id="addin-temp",
+        subject=subject,
+        sender_name=sender_name,
+        sender_email=sender_email,
+        body_text=body
+    )
+    
+    classification = classify_email_radar(msg)
+    recruiter = classification.recruiter_details or extract_recruiter_details(msg)
+    fit_analysis = calculate_opportunity_fit_score(
+        role_title=recruiter.role_title or subject,
+        body_text=body,
+        required_skills=recruiter.required_skills
+    )
+    
+    suggested_resume = "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx"
+    suggested_lens = "Advisor"
+    if classification.resume_match:
+        if classification.resume_match.selected_resume:
+            suggested_resume = classification.resume_match.selected_resume
+        if classification.resume_match.matching_lens:
+            suggested_lens = classification.resume_match.matching_lens
+
+    return {
+        "status": "SUCCESS",
+        "category": classification.category.value,
+        "fit_score": fit_analysis["fit_score"],
+        "verdict": fit_analysis["fit_tier"] + " FIT",
+        "is_recruiter": classification.is_resume_request,
+        "role": recruiter.role_title,
+        "company": recruiter.company_name,
+        "salary": recruiter.salary_range or "Senior / Executive Target",
+        "key_points": fit_analysis["alignment_reasons"] or recruiter.required_skills[:3],
+        "suggested_lens": suggested_lens,
+        "suggested_resume": suggested_resume,
+        "confidence": classification.confidence
+    }
+
+@app.post("/api/radar/draft")
+def radar_draft_endpoint(payload: Dict[str, Any]):
+    from datetime import date, timedelta
+    subject = payload.get("subject", "")
+    body = payload.get("body", "")
+    sender_name = payload.get("sender_name", "")
+    sender_email = payload.get("sender_email", "")
+    lens = payload.get("lens", "Advisor")
+    tone = payload.get("tone", "Professional & Warm")
+    include_availability = payload.get("include_availability", True)
+    selected_resume = payload.get("selected_resume", "")
+
+    user_profile = get_user_profile()
+    if selected_resume:
+        user_profile.active_resume_file = selected_resume
+
+    msg = EmailMessage(
+        id="addin-draft-temp",
+        subject=subject,
+        sender_name=sender_name,
+        sender_email=sender_email,
+        body_text=body
+    )
+    msg.classification = classify_email_radar(msg)
+
+    req_params = ReplyDraftRequest(
+        tone=tone,
+        selected_resume=selected_resume or user_profile.active_resume_file,
+        custom_instructions=payload.get("custom_instructions", "")
+    )
+
+    draft = generate_executive_reply(msg, user_profile, req_params)
+
+    if include_availability:
+        start_d = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+        end_d = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+        avail_req = FreeBusyRequest(
+            start_date=start_d,
+            end_date=end_d,
+            timezone=payload.get("timezone", "America/Chicago")
+        )
+        avail_res = calculate_optimal_booking_windows([], avail_req)
+        
+        if "available for a brief" not in draft and "• " not in draft:
+            slot_bullets = "\n".join([f"• {opt.formatted_display}" for opt in avail_res.available_windows[:3]])
+            insertion = f"\n\nHere are a few times I am available for a brief introductory conversation next week:\n{slot_bullets}\n"
+            
+            if "Best regards," in draft:
+                parts = draft.split("Best regards,")
+                draft = parts[0].rstrip() + insertion + "\nBest regards," + parts[1]
+            elif "Sincerely," in draft:
+                parts = draft.split("Sincerely,")
+                draft = parts[0].rstrip() + insertion + "\nSincerely," + parts[1]
+            else:
+                draft = draft + insertion
+
+    return {
+        "status": "SUCCESS",
+        "draft_reply": draft,
+        "selected_resume": selected_resume or user_profile.active_resume_file,
+        "lens": lens,
+        "tone": tone
+    }
+
+@app.post("/api/calendar/availability")
+def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
+    from datetime import date, timedelta
+    p = payload or {}
+    days = p.get("days_ahead", 7)
+    tz_str = p.get("timezone", "America/Chicago")
+    duration = p.get("duration_minutes", 30)
+
+    start_d = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_d = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    req = FreeBusyRequest(
+        start_date=start_d,
+        end_date=end_d,
+        meeting_duration_minutes=duration,
+        timezone=tz_str
+    )
+
+    busy_slots = []
+    res = calculate_optimal_booking_windows(busy_slots, req)
+
+    return {
+        "status": "SUCCESS",
+        "timezone": res.timezone,
+        "formatted_summary": res.formatted_summary,
+        "slots": [opt.model_dump() for opt in res.available_windows]
+    }
+
 # --- Static UI Mount ---
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+ADDIN_DIR = FRONTEND_DIR / "add-in"
+if ADDIN_DIR.exists():
+    app.mount("/add-in", StaticFiles(directory=str(ADDIN_DIR), html=True), name="addin")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def serve_index():

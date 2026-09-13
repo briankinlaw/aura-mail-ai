@@ -25,6 +25,8 @@ data/analytics.db-journal
 data/*.db
 data/*.sqlite*
 data/token_cache*
+data/daemon_state.json
+data/daemon_processed.json
 
 # Distributable archives & temporary bundles
 *.zip

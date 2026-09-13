@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aura Mail AI — Opportunity Radar & Scribe</title>
+    <!-- Office.js library -->
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="taskpane.css">
+</head>
+<body class="aura-taskpane">
+    <div class="taskpane-container">
+        <!-- Header -->
+        <header class="aura-header">
+            <div class="brand-group">
+                <div class="brand-logo-wrapper">
+                    <div class="brand-logo">A</div>
+                    <div class="pulse-indicator"></div>
+                </div>
+                <div class="brand-text">
+                    <h1>Aura Mail AI</h1>
+                    <span class="brand-sub">Opportunity Radar &amp; Scribe</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <span class="status-pill live" id="connectionStatus">Connected</span>
+                <button id="btnRescan" class="btn-icon" title="Rescan Email">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Loading State -->
+        <div id="loadingView" class="loading-state hidden">
+            <div class="spinner"></div>
+            <p id="loadingMessage">Analyzing opportunity radar signals...</p>
+        </div>
+
+        <!-- Main Content -->
+        <main id="mainView" class="taskpane-content">
+            <!-- Active Email Context Card -->
+            <section class="card context-card" id="contextSection">
+                <div class="context-meta">
+                    <span class="badge" id="categoryBadge">RESUME REQUEST</span>
+                    <span class="timestamp" id="emailTime">Just now</span>
+                </div>
+                <h2 class="email-subject" id="emailSubject">Loading subject...</h2>
+                <div class="sender-info">
+                    <span class="sender-icon">👤</span>
+                    <span class="sender-name" id="senderName">Recruiter Name</span>
+                    <span class="sender-email" id="senderEmail">&lt;recruiter@company.com&gt;</span>
+                </div>
+            </section>
+
+            <!-- Opportunity Radar Score Card -->
+            <section class="card radar-card" id="radarSection">
+                <div class="card-header">
+                    <div class="section-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="m4.93 4.93 4.24 4.24M14.83 9.17l4.24-4.24M14.83 14.83l4.24 4.24M9.17 14.83l-4.24 4.24"/>
+                            <circle cx="12" cy="12" r="2"/>
+                        </svg>
+                        <span>Opportunity Radar</span>
+                    </div>
+                    <span class="fit-tier-badge high" id="fitTierBadge">HIGH FIT</span>
+                </div>
+
+                <div class="radar-metrics">
+                    <div class="score-circle-container">
+                        <div class="score-circle" id="scoreCircle">
+                            <span class="score-val" id="fitScoreVal">88</span>
+                            <span class="score-pct">%</span>
+                        </div>
+                        <span class="score-label">Alignment</span>
+                    </div>
+                    <div class="radar-details">
+                        <div class="detail-row">
+                            <span class="label">Target Role:</span>
+                            <strong class="value" id="detectedRole">Solutions Architecture Lead</strong>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Organization:</span>
+                            <strong class="value" id="detectedCompany">Enterprise Client</strong>
+                        </div>
+                        <div class="detail-row" id="salaryRow">
+                            <span class="label">Comp Target:</span>
+                            <strong class="value highlight" id="detectedSalary">Competitive / Senior</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Matched Alignment Signals -->
+                <div class="signal-tags" id="signalTagsContainer">
+                    <span class="tag">Google Cloud</span>
+                    <span class="tag">Enterprise Arch</span>
+                    <span class="tag">AI Governance</span>
+                </div>
+            </section>
+
+            <!-- Canonical Resume Lens Selection -->
+            <section class="card lens-card">
+                <div class="card-header">
+                    <div class="section-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                        <span>Canonical Lens &amp; Resume</span>
+                    </div>
+                </div>
+                <div class="lens-selector-group">
+                    <label for="lensSelect" class="input-label">Strategic Profile Lens</label>
+                    <select id="lensSelect" class="form-select">
+                        <option value="Advisor" selected>Advisory / Executive (Advisor Lens)</option>
+                        <option value="SME">Technical SME &amp; Cloud Architecture</option>
+                        <option value="Leadership">VP / Director of Architecture</option>
+                        <option value="Consulting">Enterprise Solutions Practice Lead</option>
+                    </select>
+                </div>
+                <div class="active-resume-badge" id="activeResumeBadge">
+                    <span class="file-icon">📄</span>
+                    <span class="file-name" id="activeResumeFilename">Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx</span>
+                </div>
+            </section>
+
+            <!-- Response Scribe Card -->
+            <section class="card scribe-card">
+                <div class="card-header">
+                    <div class="section-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 20h9"/>
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                        </svg>
+                        <span>Grounded Reply Scribe</span>
+                    </div>
+                    <button id="btnRegenerate" class="btn-text">Regenerate</button>
+                </div>
+
+                <div class="scribe-controls">
+                    <div class="tone-picker">
+                        <button class="btn-tone active" data-tone="Professional & Warm">Warm &amp; Exec</button>
+                        <button class="btn-tone" data-tone="Direct & Executive">Direct</button>
+                        <button class="btn-tone" data-tone="Availability Focused">Calendar Focus</button>
+                    </div>
+
+                    <div class="availability-toggle-row">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="chkIncludeAvailability" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label">Include 3 Non-Conflicting Booking Windows</span>
+                    </div>
+                </div>
+
+                <!-- Draft Text Box -->
+                <div class="draft-container">
+                    <textarea id="draftReplyText" class="draft-textarea" rows="9" placeholder="Draft will appear here..."></textarea>
+                </div>
+
+                <!-- 1-Click Action Buttons -->
+                <div class="action-buttons-grid">
+                    <button id="btnInsertReply" class="btn-primary" title="Insert directly into active Outlook reply window">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="9 14 4 9 9 4"/>
+                            <path d="M20 20v-7a4 4 0 0 0-4-4H4"/>
+                        </svg>
+                        <span>Insert into Outlook Reply</span>
+                    </button>
+                    <button id="btnStageDraft" class="btn-secondary" title="Save draft in your Cloud Mailbox with resume attached">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                            <polyline points="17 21 17 13 7 13 7 21"/>
+                            <polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                        <span>Stage in Cloud Drafts</span>
+                    </button>
+                    <button id="btnCopyClipboard" class="btn-tertiary" title="Copy reply to clipboard">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                        <span>Copy</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Calendar Availability Quick Peek -->
+            <section class="card calendar-card">
+                <div class="card-header">
+                    <div class="section-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="16" y1="2" x2="16" y2="6"/>
+                            <line x1="8" y1="2" x2="8" y2="6"/>
+                            <line x1="3" y1="10" x2="21" y2="10"/>
+                        </svg>
+                        <span>Optimal Availability Broker</span>
+                    </div>
+                    <button id="btnCopySlots" class="btn-text">Copy Slots</button>
+                </div>
+                <ul class="slots-list" id="slotsList">
+                    <li class="slot-item">Loading next week's recommended windows...</li>
+                </ul>
+            </section>
+        </main>
+
+        <!-- Toast Notification -->
+        <div id="toast" class="toast hidden">
+            <span id="toastMessage">Success!</span>
+        </div>
+
+        <!-- Grounding Footer -->
+        <footer class="aura-footer">
+            <div class="footer-guarantee">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5zm-2 16l-4-4 1.41-1.41L10 15.17l6.59-6.59L18 10l-8 8z"/>
+                </svg>
+                <span>Grounding: CCS v2.1 Accomplishment Ledger &bull; Draft-First Policy</span>
+            </div>
+        </footer>
+    </div>
+
+    <script src="taskpane.js"></script>
+</body>
+</html>

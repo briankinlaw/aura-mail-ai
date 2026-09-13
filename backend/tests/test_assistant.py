@@ -92,11 +92,14 @@ def test_list_and_triage_endpoints():
     assert isinstance(emails, list)
 
 def test_clean_noise_batch_endpoint():
-    response = client.post("/api/emails/clean-noise")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] in ["SUCCESS", "PARTIAL_SUCCESS"]
-    assert "cleaned_count" in data
+    from unittest.mock import patch, MagicMock
+    with patch("backend.main.provider_manager.move_message") as mock_move:
+        mock_move.return_value = MagicMock(success=True, safe_message="Moved")
+        response = client.post("/api/emails/clean-noise")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] in ["SUCCESS", "PARTIAL_SUCCESS"]
+        assert "cleaned_count" in data
 
 def test_stats_endpoint():
     response = client.get("/api/stats")

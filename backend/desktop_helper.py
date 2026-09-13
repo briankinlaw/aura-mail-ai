@@ -14,10 +14,10 @@ def is_outlook_desktop_running() -> bool:
     """Checks if Microsoft Outlook process is running locally on macOS."""
     try:
         res = subprocess.run(
-            ["osascript", "-e", 'tell application "System Events" to (name of processes) contains "Microsoft Outlook"'],
-            capture_output=True, text=True, timeout=3
+            ["pgrep", "-if", "Microsoft Outlook"],
+            capture_output=True, text=True, timeout=1
         )
-        return "true" in res.stdout.lower()
+        return res.returncode == 0
     except Exception:
         return False
 

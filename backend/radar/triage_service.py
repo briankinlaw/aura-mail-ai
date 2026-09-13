@@ -262,14 +262,15 @@ def _classify_heuristics_radar(email: EmailMessage) -> ClassificationResult:
     full_text = f"{subject_lower} {body_lower} {sender_lower}"
     
     recruiter_signals = [
-        "recruiter", "talent", "headhunter", "hiring", "staffing", "career opportunity", 
-        "open role", "job opportunity", "send your resume", "attached resume", "resume",
-        "inmail-hit-reply", "job alert", "solutions architect", "technical sme", "director",
-        "opportunity", "position", "candidate", "capgemini"
+        "recruiter", "recruit", "talent", "headhunter", "hiring", "staffing", "career opportunity", 
+        "open role", "job opportunity", "send your resume", "attached resume", "resume", "cv",
+        "inmail-hit-reply", "inmail", "job alert", "solutions architect", "technical sme", "director",
+        "opportunity", "position", "candidate", "capgemini", "executive search", "reaching out regarding",
+        "role at", "intro chat", "brief chat", "salary", "compensation", "hourly rate"
     ]
     recruiter_score = sum(1 for s in recruiter_signals if s in full_text)
     
-    if (recruiter_score >= 2 or ("inmail" in sender_lower) or ("job alert" in sender_lower) or ("resume" in full_text and ("role" in full_text or "opportunity" in full_text or "position" in full_text))):
+    if (recruiter_score >= 2 or ("inmail" in sender_lower) or ("job alert" in sender_lower) or ("recruit" in sender_lower) or ("resume" in full_text and ("role" in full_text or "opportunity" in full_text or "position" in full_text))):
         recruiter_details = extract_recruiter_details(email)
         match_data = find_best_resume_match(
             job_title=recruiter_details.role_title or email.subject,

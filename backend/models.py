@@ -67,11 +67,10 @@ class EmailMessage(BaseModel):
     provider: Optional[str] = None
     conversation_id: Optional[str] = None
     subject: str
-
     sender_name: str
     sender_email: str
-    received_at: str
-    preview: str
+    received_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    preview: str = ""
     body_text: str
     body_html: Optional[str] = None
     is_read: bool = False

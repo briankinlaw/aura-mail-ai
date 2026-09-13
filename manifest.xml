@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp 
+    xmlns="http://schemas.microsoft.com/office/appforoffice/1.1" 
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+    xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0" 
+    xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0" 
+    xsi:type="MailApp">
+    
+    <Id>a9c2409b-7e61-4608-8e6d-9270e5fae1a0</Id>
+    <Version>1.1.0</Version>
+    <ProviderName>Brian Kinlaw</ProviderName>
+    <DefaultLocale>en-US</DefaultLocale>
+    <DisplayName DefaultValue="Aura Mail AI — Opportunity Radar &amp; Scribe"/>
+    <Description DefaultValue="Executive recruiter email triage, opportunity fit scoring, calendar availability broker, and Canonical Career System grounded reply generator."/>
+    <IconUrl DefaultValue="https://localhost:8000/static/icon-64.png"/>
+    <HighResolutionIconUrl DefaultValue="https://localhost:8000/static/icon-128.png"/>
+    <SupportUrl DefaultValue="https://github.com/briankinlaw/aura-mail-ai"/>
+    
+    <Hosts>
+        <Host Name="Mailbox"/>
+    </Hosts>
+    
+    <Requirements>
+        <Sets>
+            <Set Name="Mailbox" MinVersion="1.5"/>
+        </Sets>
+    </Requirements>
+    
+    <FormSettings>
+        <Form xsi:type="ItemRead">
+            <DesktopSettings>
+                <SourceLocation DefaultValue="https://localhost:8000/add-in/taskpane.html"/>
+                <RequestedHeight>450</RequestedHeight>
+            </DesktopSettings>
+        </Form>
+        <Form xsi:type="ItemEdit">
+            <DesktopSettings>
+                <SourceLocation DefaultValue="https://localhost:8000/add-in/taskpane.html"/>
+            </DesktopSettings>
+        </Form>
+    </FormSettings>
+    
+    <Permissions>ReadWriteItem</Permissions>
+    <Rule xsi:type="RuleCollection" Mode="Or">
+        <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
+        <Rule xsi:type="ItemIs" ItemType="Message" FormType="Edit"/>
+    </Rule>
+    <DisableEntityHighlighting>false</DisableEntityHighlighting>
+
+    <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.0" xsi:type="VersionOverridesV1_0">
+        <Hosts>
+            <Host xsi:type="MailHost">
+                <DesktopFormFactor>
+                    <ExtensionPoint xsi:type="MessageReadCommandSurface">
+                        <OfficeTab id="TabDefault">
+                            <Group id="msgReadGroup">
+                                <Label resid="groupLabel"/>
+                                <Control xsi:type="Button" id="msgReadOpenPaneButton">
+                                    <Label resid="paneButtonLabel"/>
+                                    <Supertip>
+                                        <Title resid="paneButtonTitle"/>
+                                        <Description resid="paneButtonDesc"/>
+                                    </Supertip>
+                                    <Icon>
+                                        <bt:Image size="16" resid="icon16"/>
+                                        <bt:Image size="32" resid="icon32"/>
+                                        <bt:Image size="80" resid="icon80"/>
+                                    </Icon>
+                                    <Action xsi:type="ShowTaskpane">
+                                        <SourceLocation resid="taskpaneUrl"/>
+                                    </Action>
+                                </Control>
+                            </Group>
+                        </OfficeTab>
+                    </ExtensionPoint>
+
+                    <ExtensionPoint xsi:type="MessageComposeCommandSurface">
+                        <OfficeTab id="TabDefault">
+                            <Group id="msgComposeGroup">
+                                <Label resid="groupLabel"/>
+                                <Control xsi:type="Button" id="msgComposeOpenPaneButton">
+                                    <Label resid="paneButtonLabel"/>
+                                    <Supertip>
+                                        <Title resid="paneButtonTitle"/>
+                                        <Description resid="paneButtonDesc"/>
+                                    </Supertip>
+                                    <Icon>
+                                        <bt:Image size="16" resid="icon16"/>
+                                        <bt:Image size="32" resid="icon32"/>
+                                        <bt:Image size="80" resid="icon80"/>
+                                    </Icon>
+                                    <Action xsi:type="ShowTaskpane">
+                                        <SourceLocation resid="taskpaneUrl"/>
+                                    </Action>
+                                </Control>
+                            </Group>
+                        </OfficeTab>
+                    </ExtensionPoint>
+                </DesktopFormFactor>
+            </Host>
+        </Hosts>
+
+        <Resources>
+            <bt:Images>
+                <bt:Image id="icon16" DefaultValue="https://localhost:8000/static/icon-16.png"/>
+                <bt:Image id="icon32" DefaultValue="https://localhost:8000/static/icon-32.png"/>
+                <bt:Image id="icon80" DefaultValue="https://localhost:8000/static/icon-80.png"/>
+            </bt:Images>
+            <bt:Urls>
+                <bt:Url id="taskpaneUrl" DefaultValue="https://localhost:8000/add-in/taskpane.html"/>
+            </bt:Urls>
+            <bt:ShortStrings>
+                <bt:String id="groupLabel" DefaultValue="Aura AI"/>
+                <bt:String id="paneButtonLabel" DefaultValue="Aura Radar"/>
+                <bt:String id="paneButtonTitle" DefaultValue="Aura Opportunity Radar"/>
+            </bt:ShortStrings>
+            <bt:LongStrings>
+                <bt:String id="paneButtonDesc" DefaultValue="Evaluate recruiter opportunity fit, calculate calendar availability, and stage grounded responses."/>
+            </bt:LongStrings>
+        </Resources>
+    </VersionOverrides>
+</OfficeApp>
