@@ -533,6 +533,75 @@ input:checked + .toggle-slider:before {
     color: var(--text-muted);
 }
 
+/* Gemini Second Opinion / Risk Sentinel Banner */
+.risk-sentinel-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    transition: all 0.3s ease;
+}
+
+.risk-sentinel-banner.safe {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.risk-sentinel-banner.caution {
+    background: rgba(245, 158, 11, 0.15);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.risk-sentinel-banner.high-risk {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.sentinel-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sentinel-title {
+    font-weight: 600;
+    color: var(--text-main);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.sentinel-status-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+}
+
+.sentinel-status-badge.safe {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+}
+
+.sentinel-status-badge.caution {
+    background: rgba(245, 158, 11, 0.25);
+    color: #fbbf24;
+}
+
+.sentinel-status-badge.high-risk {
+    background: rgba(239, 68, 68, 0.25);
+    color: #f87171;
+}
+
+.sentinel-summary {
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.35;
+}
+
 .draft-textarea {
     width: 100%;
     background: var(--bg-input);

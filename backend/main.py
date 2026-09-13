@@ -916,6 +916,34 @@ def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
         "slots": [opt.model_dump() for opt in res.available_windows]
     }
 
+from backend.radar.risk_evaluator import evaluate_second_opinion_risk
+
+@app.post("/api/radar/risk-check")
+def radar_risk_check_endpoint(payload: Dict[str, Any]):
+    subject = payload.get("subject", "")
+    body = payload.get("body", "")
+    sender_name = payload.get("sender_name", "")
+    sender_email = payload.get("sender_email", "")
+    draft_reply = payload.get("draft_reply", "")
+    proposed_action = payload.get("proposed_action", "DRAFT")
+
+    msg = EmailMessage(
+        id="addin-risk-temp",
+        subject=subject,
+        sender_name=sender_name,
+        sender_email=sender_email,
+        body_text=body,
+        draft_reply=draft_reply
+    )
+    user_profile = get_user_profile()
+    res = evaluate_second_opinion_risk(
+        email=msg,
+        draft_reply=draft_reply,
+        proposed_action=proposed_action,
+        user_profile=user_profile
+    )
+    return res.model_dump()
+
 # --- Static UI Mount ---
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"

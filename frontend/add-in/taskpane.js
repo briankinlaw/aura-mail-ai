@@ -60,6 +60,12 @@ const el = {
     slotsList: document.getElementById("slotsList"),
     btnCopySlots: document.getElementById("btnCopySlots"),
     
+    // Risk Sentinel (Second Opinion)
+    riskSentinelBanner: document.getElementById("riskSentinelBanner"),
+    sentinelIcon: document.getElementById("sentinelIcon"),
+    sentinelStatusBadge: document.getElementById("sentinelStatusBadge"),
+    sentinelSummary: document.getElementById("sentinelSummary"),
+
     // Toast
     toast: document.getElementById("toast"),
     toastMessage: document.getElementById("toastMessage")
@@ -259,6 +265,7 @@ async function generateDraft() {
             const data = await res.json();
             currentDraft = data.draft_reply || "";
             el.draftReplyText.value = currentDraft;
+            runRiskAudit(currentDraft);
         } else {
             fallbackDraft(lens, includeAvailability);
         }
@@ -284,6 +291,52 @@ function fallbackDraft(lens, includeAvailability) {
         `Please feel free to suggest a time that suits your schedule or share a calendar link.\n\n` +
         `Best regards,\nBrian Kinlaw\nStrategic Advisor, Data & AI | Solutions Architecture\n(210) 717-5305 | linkedin.com/in/briankinlaw`;
     el.draftReplyText.value = currentDraft;
+    runRiskAudit(currentDraft);
+}
+
+/**
+ * Gemini Risk Sentinel (Second Opinion)
+ */
+async function runRiskAudit(draftText) {
+    if (!el.riskSentinelBanner) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/radar/risk-check`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                subject: currentEmailData.subject,
+                body: currentEmailData.bodyText,
+                sender_name: currentEmailData.senderName,
+                sender_email: currentEmailData.senderEmail,
+                draft_reply: draftText,
+                proposed_action: "DRAFT"
+            })
+        });
+
+        if (res.ok) {
+            const audit = await res.json();
+            const sev = (audit.severity || "SAFE").toLowerCase().replace("_", "-");
+            el.riskSentinelBanner.className = `risk-sentinel-banner ${sev}`;
+            
+            if (sev === "safe") {
+                el.sentinelIcon.textContent = "🛡️";
+                el.sentinelStatusBadge.textContent = "VERIFIED SAFE";
+                el.sentinelStatusBadge.className = "sentinel-status-badge safe";
+            } else if (sev === "caution") {
+                el.sentinelIcon.textContent = "⚠️";
+                el.sentinelStatusBadge.textContent = "CAUTION REQUIRED";
+                el.sentinelStatusBadge.className = "sentinel-status-badge caution";
+            } else {
+                el.sentinelIcon.textContent = "🚨";
+                el.sentinelStatusBadge.textContent = "BLOCKED / HIGH RISK";
+                el.sentinelStatusBadge.className = "sentinel-status-badge high-risk";
+            }
+
+            el.sentinelSummary.textContent = audit.second_opinion_summary || "Grounding verified against Accomplishment Ledger.";
+        }
+    } catch (err) {
+        console.warn("[Aura Add-in] Risk audit check error:", err);
+    }
 }
 
 /**
