@@ -17,9 +17,29 @@ The Aura Mail AI Outlook Add-in embeds the **Opportunity Radar**, **Canonical Ca
 
 ---
 
-## 🛠️ Step 1: Start the Aura Mail AI Backend Server
+## 🛠️ Step 1: Set Up Local Development TLS Certificate (Phase 2.1)
 
-The Outlook Add-in communicates securely with the local Aura Mail AI backend server.
+Office.js add-ins embedded in New Outlook for Mac and Outlook on the Web require a trusted HTTPS origin (`https://localhost:8000`).
+
+To generate a locally trusted development TLS certificate using `mkcert`:
+
+```bash
+# 1. Install mkcert (if not already installed)
+brew install mkcert
+
+# 2. Install local CA in system trust stores
+mkcert -install
+
+# 3. Create local certificate directory and generate certificate
+mkdir -p ~/.aura_certs
+mkcert -key-file ~/.aura_certs/localhost-key.pem -cert-file ~/.aura_certs/localhost.pem localhost 127.0.0.1
+```
+
+> **Security Note**: Never commit TLS private keys (`.pem` or `.key`) to the repository. The `.aura_certs` directory is stored in your user home directory.
+
+---
+
+## 🚀 Step 2: Start the Aura Mail AI Backend Server
 
 From your terminal in the `aura-mail-ai` repository:
 
@@ -30,10 +50,11 @@ cd /Users/briankinlaw/aura-mail-ai
 
 Or start with `uvicorn`:
 ```bash
-.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --ssl-certfile ~/.aura_certs/localhost.pem --ssl-keyfile ~/.aura_certs/localhost-key.pem --reload
 ```
 
-> **Note**: The taskpane UI is accessible at `http://127.0.0.1:8000/add-in/taskpane.html` (or `https://localhost:8000/add-in/taskpane.html`).
+The taskpane UI is accessible at `https://localhost:8000/add-in/taskpane.html`.
+
 
 ---
 

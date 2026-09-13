@@ -208,13 +208,26 @@ async function fetchStatus() {
       }
     }
     
-    // Advisory Mac Desktop App Status
-    if (data.desktop_outlook_app && data.desktop_outlook_app.is_running) {
+    // Authoritative Microsoft Graph Provider Status (Phase 2.1)
+    if (data.graph_connection) {
+      const gConn = data.graph_connection;
+      elements.desktopStatusText.textContent = gConn.display_text || `Microsoft Graph: ${gConn.status}`;
+      elements.desktopDot.className = 'status-dot';
+      if (gConn.status === 'CONNECTED') {
+        elements.desktopDot.style.background = '#10b981';
+      } else if (gConn.status === 'AUTH_REQUIRED') {
+        elements.desktopDot.style.background = '#f59e0b';
+      } else if (gConn.status === 'DEMO') {
+        elements.desktopDot.style.background = '#eab308';
+      } else {
+        elements.desktopDot.style.background = '#94a3b8';
+      }
+    } else if (data.desktop_outlook_app && data.desktop_outlook_app.is_running) {
       elements.desktopStatusText.textContent = 'Mac Outlook: Running';
       elements.desktopDot.className = 'status-dot';
       elements.desktopDot.style.background = '#10b981';
     } else {
-      elements.desktopStatusText.textContent = 'Mac Outlook: Offline (Cloud Active)';
+      elements.desktopStatusText.textContent = 'Microsoft Graph: Disconnected';
       elements.desktopDot.className = 'status-dot';
       elements.desktopDot.style.background = '#94a3b8';
     }

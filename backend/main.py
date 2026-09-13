@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from pydantic import BaseModel, Field
 from backend.models import (
     EmailMessage,
     EmailCategory,
@@ -30,8 +31,12 @@ from backend.config import (
     get_user_profile,
     update_user_profile,
     RESUMES_DIR,
-    EMAILS_CACHE_FILE
+    EMAILS_CACHE_FILE,
+    CANONICAL_ORIGIN,
+    get_ssl_context_paths
 )
+from backend.providers.base import decode_composite_id
+
 from backend.security import get_secret, set_secret, mask_secret
 from backend.ai_agent import classify_email, generate_personalized_reply
 from backend.provider_manager import provider_manager
@@ -145,6 +150,33 @@ def get_system_status():
     has_gemini = bool(get_secret("gemini_api_key", "GEMINI_API_KEY"))
     resumes = [f.name for f in RESUMES_DIR.glob("*") if f.is_file()]
 
+    # Authoritative Microsoft Graph Connection State (Phase 2.1)
+    if settings.get("demo_mode", False):
+        graph_status = "DEMO"
+        graph_display = "Demo Mode (Offline Sandbox)"
+        primary_graph_acc = "demo@auramail.local"
+    else:
+        azure_client_id = settings.get("azure_client_id", "")
+        graph_accounts = [a for a in settings.get("configured_accounts", []) if a.get("provider") == "MICROSOFT_GRAPH"]
+        if not azure_client_id:
+            graph_status = "NOT_CONFIGURED"
+            graph_display = "Microsoft Graph: Azure Client ID Required"
+            primary_graph_acc = None
+        elif not graph_accounts:
+            graph_status = "READY_TO_CONNECT"
+            graph_display = "Microsoft Graph: Ready to Connect"
+            primary_graph_acc = None
+        else:
+            primary_graph_acc = next((a.get("account_id") for a in graph_accounts if a.get("is_primary")), graph_accounts[0].get("account_id"))
+            # Authoritative token cache check via MSAL
+            token = provider_manager.graph_provider.get_access_token(primary_graph_acc)
+            if token:
+                graph_status = "CONNECTED"
+                graph_display = f"Microsoft Graph: Connected ({primary_graph_acc})"
+            else:
+                graph_status = "AUTH_REQUIRED"
+                graph_display = f"Microsoft Graph: Authentication Required ({primary_graph_acc})"
+
     return {
         "status": "ONLINE",
         "version": "1.1.0",
@@ -152,6 +184,11 @@ def get_system_status():
         "total_accounts": len(accounts),
         "connected_accounts": connected_count,
         "desktop_outlook_app": desktop_status,
+        "graph_connection": {
+            "status": graph_status,
+            "display_text": graph_display,
+            "account_id": primary_graph_acc
+        },
         "gemini_configured": has_gemini,
         "active_resume": settings.get("user_profile", {}).get("active_resume_file", "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx"),
         "available_resumes": resumes,
@@ -159,6 +196,7 @@ def get_system_status():
         "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
         "safety_mode": get_active_safety_mode().value
     }
+
 
 @app.get("/api/safety-policy")
 def get_safety_policy_endpoint():
@@ -253,7 +291,7 @@ def update_settings_endpoint(payload: Dict[str, Any]):
 def get_msal_auth_url(redirect_uri: Optional[str] = None, account_id: Optional[str] = None, login_hint: Optional[str] = None):
     hint = login_hint or account_id or None
     url = provider_manager.graph_provider.get_auth_url(
-        redirect_uri=redirect_uri or "http://127.0.0.1:8000/api/auth/callback",
+        redirect_uri=redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/callback",
         login_hint=hint,
         state=hint
     )
@@ -341,7 +379,7 @@ def submit_auth_code(payload: Dict[str, str]):
 @app.get("/api/auth/google/url")
 def get_google_auth_url(redirect_uri: Optional[str] = None):
     url = provider_manager.gmail_provider.get_auth_url(
-        redirect_uri=redirect_uri or "http://127.0.0.1:8000/api/auth/google/callback"
+        redirect_uri=redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/google/callback"
     )
     if not url:
         raise HTTPException(
@@ -373,7 +411,8 @@ def google_auth_callback(code: Optional[str] = None, error: Optional[str] = None
 def submit_google_auth_code(payload: Dict[str, str]):
     code_raw = payload.get("code", "").strip()
     account_id = payload.get("account_id", "").strip() or None
-    redirect_uri = payload.get("redirect_uri", "http://127.0.0.1:8000/api/auth/google/callback")
+    redirect_uri = payload.get("redirect_uri", f"{CANONICAL_ORIGIN}/api/auth/google/callback")
+
     if not code_raw:
         raise HTTPException(status_code=400, detail="Authorization code or URL required.")
     
@@ -509,6 +548,11 @@ async def upload_resume(file: UploadFile = File(...)):
 
 # --- Email Sync & Triage Endpoints ---
 
+class ResolveItemRequest(BaseModel):
+    provider: str = Field(default="MICROSOFT_GRAPH")
+    account_id: Optional[str] = None
+    item_id: str
+
 @app.get("/api/emails")
 def list_emails(category: Optional[str] = None):
     results = list(CACHED_EMAILS.values())
@@ -522,6 +566,51 @@ def list_emails(category: Optional[str] = None):
             results = [e for e in results if e.classification and not e.classification.is_noise and not e.classification.is_resume_request]
     
     return results
+
+@app.post("/api/emails/resolve-item", dependencies=[Depends(require_local_auth)])
+def resolve_email_item(payload: ResolveItemRequest):
+    """
+    Unified Outlook Item Resolver (Phase 2.1).
+    Maps normalized Microsoft Graph REST item IDs to Aura cached/composite message IDs.
+    Fails closed on missing auth (401), invalid origin/token (403), empty ID (400),
+    unknown item (404), or ambiguous matches across accounts (409).
+    """
+    raw_item_id = payload.item_id.strip()
+    if not raw_item_id:
+        raise HTTPException(status_code=400, detail="Item ID is required for resolution.")
+
+    target_provider = payload.provider.strip().upper()
+    target_account = payload.account_id.strip().lower() if payload.account_id else None
+
+    matched_emails = []
+    for email_id, email_msg in CACHED_EMAILS.items():
+        msg_prov, msg_acc, msg_native = decode_composite_id(email_id)
+        if msg_prov == target_provider or (target_provider == "MICROSOFT_GRAPH" and msg_prov in ["MICROSOFT_GRAPH", "GRAPH"]):
+            if target_account and msg_acc and msg_acc.lower() != target_account:
+                continue
+            if msg_native == raw_item_id or email_id == raw_item_id:
+                matched_emails.append(email_msg)
+
+    if len(matched_emails) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ambiguous item resolution: multiple items match '{raw_item_id}' across accounts."
+        )
+
+    if not matched_emails:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Item '{raw_item_id}' not found in local cache."
+        )
+
+    resolved_msg = matched_emails[0]
+    return {
+        "status": "SUCCESS",
+        "found": True,
+        "composite_id": resolved_msg.id,
+        "email": resolved_msg.model_dump()
+    }
+
 
 @app.post("/api/emails/sync", dependencies=[Depends(require_local_auth)])
 def sync_and_triage_inbox(force_refresh: bool = False):
@@ -995,7 +1084,10 @@ def serve_addin_taskpane():
         token = get_local_session_token()
         injection = f'<script>window.__AURA_SESSION_TOKEN__ = "{token}";</script>'
         content = content.replace("<head>", f"<head>\n    {injection}", 1)
-        return HTMLResponse(content)
+        headers = {
+            "Content-Security-Policy": "frame-ancestors 'self' https://outlook.office.com https://outlook.office365.com https://*.office.com https://*.office365.com https://*.live.com;"
+        }
+        return HTMLResponse(content, headers=headers)
     return JSONResponse({"error": "Taskpane file not found"}, status_code=404)
 
 if FRONTEND_DIR.exists():
@@ -1006,4 +1098,14 @@ if ADDIN_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
+    cert_file, key_file = get_ssl_context_paths()
+    uvicorn_kwargs = {
+        "app": "backend.main:app",
+        "host": "127.0.0.1",
+        "port": 8000,
+        "reload": True
+    }
+    if cert_file and key_file:
+        uvicorn_kwargs["ssl_certfile"] = str(cert_file)
+        uvicorn_kwargs["ssl_keyfile"] = str(key_file)
+    uvicorn.run(**uvicorn_kwargs)

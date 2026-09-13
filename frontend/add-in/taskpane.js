@@ -113,11 +113,63 @@ Office.onReady((info) => {
 });
 
 /**
- * Initialize with live Outlook context item
+ * Initialize with live Outlook context item (Phase 2.1 Unified Item Resolution)
  */
-function initOutlookItem() {
+async function initOutlookItem() {
     const item = Office.context.mailbox.item;
     
+    // Acquire Office.js item ID and normalize to Graph REST ID
+    let rawItemId = item.itemId;
+    let normalizedRestId = rawItemId;
+    if (rawItemId && Office.context.mailbox.convertToRestId && Office.MailboxEnums && Office.MailboxEnums.RestVersion) {
+        try {
+            normalizedRestId = Office.context.mailbox.convertToRestId(rawItemId, Office.MailboxEnums.RestVersion.v2_0);
+        } catch (e) {
+            console.warn("[Aura Add-in] convertToRestId conversion error:", e);
+        }
+    }
+
+    const userEmail = (Office.context.mailbox.userProfile && Office.context.mailbox.userProfile.emailAddress)
+        ? Office.context.mailbox.userProfile.emailAddress.toLowerCase()
+        : null;
+
+    // Check if the item can be positively resolved in Aura's cache
+    if (normalizedRestId) {
+        try {
+            const resolveRes = await fetch(`${API_BASE}/api/emails/resolve-item`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    provider: "MICROSOFT_GRAPH",
+                    account_id: userEmail,
+                    item_id: normalizedRestId
+                })
+            });
+
+            if (resolveRes.ok) {
+                const resolvedData = await resolveRes.json();
+                if (resolvedData.found && resolvedData.email) {
+                    const cachedEmail = resolvedData.email;
+                    currentEmailData = {
+                        id: resolvedData.composite_id,
+                        subject: cachedEmail.subject || item.subject || "No Subject",
+                        senderName: cachedEmail.sender_name || (item.from ? item.from.displayName : "Recruiter"),
+                        senderEmail: cachedEmail.sender_email || (item.from ? item.from.emailAddress : ""),
+                        bodyText: cachedEmail.body_text || "",
+                        date: new Date(cachedEmail.received_at || item.dateTimeCreated || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    };
+                    runAnalysisPipeline();
+                    return;
+                }
+            } else if (resolveRes.status === 404) {
+                console.log("[Aura Add-in] Item not in local cache; reading directly from active Office.js item.");
+            }
+        } catch (err) {
+            console.warn("[Aura Add-in] Item resolution error:", err);
+        }
+    }
+
+    // Direct read from open Outlook item
     currentEmailData.subject = item.subject || "No Subject";
     
     if (item.from) {
@@ -133,15 +185,19 @@ function initOutlookItem() {
     }
 
     // Read email body text
-    item.body.getAsync(Office.CoercionType.Text, (result) => {
-        if (result.status === Office.AsyncResultStatus.Succeeded) {
-            currentEmailData.bodyText = result.value || "";
-            runAnalysisPipeline();
-        } else {
-            console.warn("[Aura Add-in] Could not get body text:", result.error);
-            runAnalysisPipeline();
-        }
-    });
+    if (item.body && typeof item.body.getAsync === "function") {
+        item.body.getAsync(Office.CoercionType.Text, (result) => {
+            if (result.status === Office.AsyncResultStatus.Succeeded) {
+                currentEmailData.bodyText = result.value || "";
+                runAnalysisPipeline();
+            } else {
+                console.warn("[Aura Add-in] Could not get body text:", result.error);
+                runAnalysisPipeline();
+            }
+        });
+    } else {
+        runAnalysisPipeline();
+    }
 }
 
 /**

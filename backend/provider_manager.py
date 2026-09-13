@@ -15,7 +15,7 @@ from backend.models import (
     QuarantineMessageResult,
     QuarantineBatchResult
 )
-from backend.config import load_settings, save_settings
+from backend.config import load_settings, save_settings, get_secret
 from backend.providers.base import (
     BaseEmailProvider,
     ProviderType,
@@ -127,7 +127,7 @@ class ProviderManager:
 
         return provider, account_id, native_id, None
 
-    def list_all_accounts(self) -> List[AccountIdentity]:
+    def list_all_accounts(self, validate_remote: bool = False) -> List[AccountIdentity]:
         """Returns all configured accounts with validated connection statuses and capabilities."""
         if self.is_demo_mode():
             return self.demo_provider.list_accounts()
@@ -149,13 +149,23 @@ class ProviderManager:
             alias_of = acc.get("alias_of")
             
             if is_alias and alias_of:
-                parent_res = provider.validate_connection(alias_of)
+                is_connected = False
+                if validate_remote:
+                    parent_res = provider.validate_connection(alias_of)
+                    is_connected = parent_res.success
+                elif p_type == "MICROSOFT_GRAPH":
+                    is_connected = bool(self.graph_provider.get_access_token(alias_of))
+                elif p_type == "GMAIL":
+                    is_connected = bool(self.gmail_provider.get_access_token(alias_of))
+                elif p_type == "IMAP":
+                    is_connected = bool(get_secret(f"imap_password_{alias_of}"))
+
                 all_identities.append(AccountIdentity(
                     account_id=acc_id,
                     email_address=acc.get("email", acc_id),
                     provider=ProviderType(p_type),
                     display_name=acc.get("display_name", f"{acc_id} (Alias)"),
-                    is_connected=parent_res.success,
+                    is_connected=is_connected,
                     is_primary=False,
                     is_alias=True,
                     alias_of=alias_of,
@@ -163,17 +173,29 @@ class ProviderManager:
                     capabilities=acc.get("capabilities", ["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
                 ))
             else:
-                val_res = provider.validate_connection(acc_id)
+                is_connected = False
+                last_error = None
+                if validate_remote:
+                    val_res = provider.validate_connection(acc_id)
+                    is_connected = val_res.success
+                    last_error = val_res.safe_message if not val_res.success else None
+                elif p_type == "MICROSOFT_GRAPH":
+                    is_connected = bool(self.graph_provider.get_access_token(acc_id))
+                elif p_type == "GMAIL":
+                    is_connected = bool(self.gmail_provider.get_access_token(acc_id))
+                elif p_type == "IMAP":
+                    is_connected = bool(get_secret(f"imap_password_{acc_id}"))
+
                 all_identities.append(AccountIdentity(
                     account_id=acc_id,
                     email_address=acc.get("email", acc_id),
                     provider=ProviderType(p_type),
                     display_name=acc.get("display_name", acc_id),
-                    is_connected=val_res.success,
+                    is_connected=is_connected,
                     is_primary=acc.get("is_primary", False),
                     is_alias=False,
                     last_sync_time=acc.get("last_sync_time"),
-                    last_error=val_res.safe_message if not val_res.success else None,
+                    last_error=last_error,
                     capabilities=acc.get("capabilities", ["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
                 ))
 

@@ -78,5 +78,30 @@ def update_user_profile(profile: UserProfile):
     settings["user_profile"] = profile.model_dump()
     save_settings(settings)
 
+# Canonical HTTPS Origin for Aura Mail AI (Phase 2.1)
+CANONICAL_ORIGIN = "https://localhost:8000"
+
+def get_ssl_context_paths() -> tuple:
+    """
+    Resolves locally trusted development TLS certificate and private key paths.
+    1. Checks environment variables AURA_SSL_CERT and AURA_SSL_KEY.
+    2. Checks standard user directory ~/.aura_certs/localhost.pem and localhost-key.pem.
+    Returns (cert_path, key_path) if both exist, else (None, None).
+    """
+    cert_env = os.getenv("AURA_SSL_CERT")
+    key_env = os.getenv("AURA_SSL_KEY")
+    if cert_env and key_env:
+        cert_p, key_p = Path(cert_env), Path(key_env)
+        if cert_p.is_file() and key_p.is_file():
+            return cert_p, key_p
+
+    default_dir = Path.home() / ".aura_certs"
+    default_cert = default_dir / "localhost.pem"
+    default_key = default_dir / "localhost-key.pem"
+    if default_cert.is_file() and default_key.is_file():
+        return default_cert, default_key
+
+    return None, None
+
 # Execute startup security check
 startup_security_audit(BASE_DIR)

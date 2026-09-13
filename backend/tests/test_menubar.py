@@ -13,7 +13,7 @@ class TestMenuBarApp(unittest.TestCase):
         self.assertIn("📅 Copy Available Booking Slots (CST)", app.menu)
         self.assertIn("📂 Open Canonical Career Vault", app.menu)
         self.assertIn("⚡ Run Triage Scan Now", app.menu)
-        self.assertIn("🌐 Open Web Cockpit (localhost:8000)", app.menu)
+        self.assertIn("🌐 Open Web Cockpit (https://localhost:8000)", app.menu)
 
     @patch("backend.menubar_app.copy_to_clipboard")
     @patch("backend.menubar_app.rumps.notification")

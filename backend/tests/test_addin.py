@@ -141,3 +141,132 @@ def test_calendar_availability_api():
     assert "America/Chicago" in data["timezone"]
     assert len(data["slots"]) > 0
     assert "formatted_display" in data["slots"][0]
+
+
+# --- Phase 2.1 Item Resolver & Graph Status Tests ---
+
+def test_resolve_email_item_success():
+    """
+    PHASE 2.1 RESOLVER CONTRACT:
+    Tests that a normalized Graph REST item ID positively resolves to Aura's composite message ID.
+    """
+    from backend.main import CACHED_EMAILS
+    from backend.models import EmailMessage
+    from backend.providers.base import encode_composite_id
+
+    native_id = "AAMkAGI2AAA="
+    acc = "kinlawb@outlook.com"
+    comp_id = encode_composite_id("MICROSOFT_GRAPH", acc, native_id)
+
+    test_msg = EmailMessage(
+        id=comp_id,
+        subject="Senior Cloud Architect Reachout",
+        sender_name="Recruiter Jane",
+        sender_email="jane@recruiting.com",
+        body_text="Hello Brian, we have an executive architect role."
+    )
+    CACHED_EMAILS[comp_id] = test_msg
+
+    res = client.post("/api/emails/resolve-item", json={
+        "provider": "MICROSOFT_GRAPH",
+        "account_id": acc,
+        "item_id": native_id
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "SUCCESS"
+    assert data["found"] is True
+    assert data["composite_id"] == comp_id
+    assert data["email"]["subject"] == "Senior Cloud Architect Reachout"
+
+
+def test_resolve_email_item_account_scoping():
+    """
+    PHASE 2.1 SCOPING SECURITY:
+    Verifies that item resolution is strictly scoped to the specified account, failing closed (404)
+    if the ID belongs to another account.
+    """
+    from backend.main import CACHED_EMAILS
+    from backend.models import EmailMessage
+    from backend.providers.base import encode_composite_id
+
+    native_id = "AAMkAGI3AAA="
+    acc1 = "kinlawb@outlook.com"
+    comp_id = encode_composite_id("MICROSOFT_GRAPH", acc1, native_id)
+
+    CACHED_EMAILS[comp_id] = EmailMessage(
+        id=comp_id,
+        subject="Account 1 Email",
+        sender_name="Sender",
+        sender_email="sender@domain.com",
+        body_text="Account 1 body"
+    )
+
+    # Attempt lookup with different account_id
+    res = client.post("/api/emails/resolve-item", json={
+        "provider": "MICROSOFT_GRAPH",
+        "account_id": "other.user@outlook.com",
+        "item_id": native_id
+    })
+    assert res.status_code == 404
+    assert "not found" in res.json().get("detail", "").lower()
+
+
+def test_resolve_email_item_unknown_not_found():
+    """Verifies that an unknown item ID returns 404 Not Found (fail closed)."""
+    res = client.post("/api/emails/resolve-item", json={
+        "provider": "MICROSOFT_GRAPH",
+        "account_id": "kinlawb@outlook.com",
+        "item_id": "NON_EXISTENT_ID_999"
+    })
+    assert res.status_code == 404
+
+
+def test_resolve_email_item_empty_bad_request():
+    """Verifies that empty item ID returns 400 Bad Request."""
+    res = client.post("/api/emails/resolve-item", json={
+        "provider": "MICROSOFT_GRAPH",
+        "item_id": "   "
+    })
+    assert res.status_code == 400
+
+
+def test_resolve_email_item_ambiguous_conflict():
+    """
+    PHASE 2.1 AMBIGUITY SAFETY:
+    Verifies that if multiple items match across accounts and no account_id is provided,
+    the resolver fails closed with 409 Conflict rather than guessing.
+    """
+    from backend.main import CACHED_EMAILS
+    from backend.models import EmailMessage
+    from backend.providers.base import encode_composite_id
+
+    shared_native_id = "SHARED_NATIVE_123"
+    comp1 = encode_composite_id("MICROSOFT_GRAPH", "acc1@outlook.com", shared_native_id)
+    comp2 = encode_composite_id("MICROSOFT_GRAPH", "acc2@outlook.com", shared_native_id)
+
+    CACHED_EMAILS[comp1] = EmailMessage(id=comp1, subject="Email 1", sender_name="S1", sender_email="s1@d.com", body_text="Body 1")
+    CACHED_EMAILS[comp2] = EmailMessage(id=comp2, subject="Email 2", sender_name="S2", sender_email="s2@d.com", body_text="Body 2")
+
+
+    res = client.post("/api/emails/resolve-item", json={
+        "provider": "MICROSOFT_GRAPH",
+        "item_id": shared_native_id
+    })
+    assert res.status_code == 409
+    assert "Ambiguous item resolution" in res.json().get("detail", "")
+
+
+def test_authoritative_graph_status_indicator():
+    """
+    PHASE 2.1 STATUS INDICATOR TEST:
+    Verifies that /api/status returns authoritative graph_connection status dictionary.
+    """
+    res = client.get("/api/status")
+    assert res.status_code == 200
+    data = res.json()
+    assert "graph_connection" in data
+    g_conn = data["graph_connection"]
+    assert "status" in g_conn
+    assert "display_text" in g_conn
+    assert g_conn["status"] in ["CONNECTED", "AUTH_REQUIRED", "NOT_CONFIGURED", "DEMO", "READY_TO_CONNECT"]

@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import rumps
 
-from backend.config import DATA_DIR, load_settings, get_user_profile
+from backend.config import DATA_DIR, load_settings, get_user_profile, CANONICAL_ORIGIN, get_ssl_context_paths
 
 from backend.daemon import (
     STATE_FILE,
@@ -63,6 +63,10 @@ def ensure_server_running():
     root_dir = str(Path(__file__).resolve().parent.parent)
     python_bin = sys.executable
     cmd = [python_bin, "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "8000"]
+    cert_p, key_p = get_ssl_context_paths()
+    if cert_p and key_p:
+        cmd.extend(["--ssl-certfile", str(cert_p), "--ssl-keyfile", str(key_p)])
+
     SERVER_PROCESS = subprocess.Popen(
         cmd,
         cwd=root_dir,
@@ -70,6 +74,7 @@ def ensure_server_running():
         stderr=subprocess.DEVNULL
     )
     time.sleep(1.0)
+
 
 class AuraMailMenuBarApp(rumps.App):
     def __init__(self):
@@ -83,7 +88,8 @@ class AuraMailMenuBarApp(rumps.App):
             rumps.MenuItem("📂 Open Canonical Career Vault", callback=self.on_open_canonical_vault),
             None,
             rumps.MenuItem("⚡ Run Triage Scan Now", callback=self.on_run_scan_now),
-            rumps.MenuItem("🌐 Open Web Cockpit (localhost:8000)", callback=self.on_open_cockpit),
+            rumps.MenuItem(f"🌐 Open Web Cockpit (https://localhost:8000)", callback=self.on_open_cockpit),
+
             rumps.MenuItem("⚙️ Background Daemon Service", callback=self.on_toggle_daemon),
             None,
             rumps.MenuItem("🚪 Quit Aura Companion", callback=self.on_quit)
@@ -192,7 +198,8 @@ class AuraMailMenuBarApp(rumps.App):
     def on_open_cockpit(self, sender):
         """Launches the web cockpit in the default browser."""
         ensure_server_running()
-        webbrowser.open("http://localhost:8000")
+        webbrowser.open(CANONICAL_ORIGIN)
+
 
     def on_open_outlook(self, sender):
         """Opens Microsoft Outlook on macOS."""

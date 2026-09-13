@@ -21,17 +21,25 @@ from fastapi import Request, Header, HTTPException, status
 
 logger = logging.getLogger("aura.auth")
 
-# Canonical CORS and Origin Allowlist for Local Desktop & Office.js Webview
+# Canonical CORS and Origin Allowlist for Local Desktop & Office.js Webview (Phase 2.1)
+# Note: Office.js taskpane executes from same-origin https://localhost:8000/add-in/taskpane.html
+# Parent framing domains (e.g. outlook.office.com) are controlled separately via CSP frame-ancestors.
 ALLOWED_ORIGINS: List[str] = [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
     "https://localhost:8000",
     "https://127.0.0.1:8000",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://localhost:3000",
-    "https://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
 ]
+
+# Allow optional development origins on port 3000 only when explicitly configured
+if os.environ.get("AURA_DEV_MODE") == "1" or os.environ.get("AURA_ALLOW_PORT_3000") == "1":
+    ALLOWED_ORIGINS.extend([
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://localhost:3000",
+        "https://127.0.0.1:3000",
+    ])
+
 
 # In-memory storage for the active local session token
 _LOCAL_SESSION_TOKEN: Optional[str] = None

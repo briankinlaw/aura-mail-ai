@@ -196,7 +196,9 @@ PRIVILEGED_POST_ENDPOINTS = [
     ("/api/auth/submit-code", {"code": "123"}),
     ("/api/auth/google/submit-code", {"code": "123"}),
     ("/api/auth/imap", {"email": "a@b.com", "imap_server": "mail.example.com"}),
+    ("/api/emails/resolve-item", {"item_id": "test_item_id"}),
 ]
+
 
 
 @pytest.mark.parametrize("path,payload", PRIVILEGED_POST_ENDPOINTS)
@@ -385,11 +387,13 @@ def test_session_token_not_exposed_in_unrelated_api_responses_or_static_assets()
         "/api/daemon/status",
         "/static/icon-64.png",
     ]
-    for endpoint in public_endpoints:
-        res = unauth_client.get(endpoint)
-        assert res.status_code == 200, f"Public endpoint {endpoint} failed to return 200"
-        assert token not in res.text, f"Token disclosed in response from {endpoint}!"
-        assert "AURA_SESSION_TOKEN" not in res.text
+    with patch("backend.provider_manager.provider_manager.list_all_accounts", return_value=[]):
+        for endpoint in public_endpoints:
+            res = unauth_client.get(endpoint)
+            assert res.status_code == 200, f"Public endpoint {endpoint} failed to return 200"
+            assert token not in res.text, f"Token disclosed in response from {endpoint}!"
+            assert "AURA_SESSION_TOKEN" not in res.text
+
 
 
 # --- 9. OAuth Special Endpoints & Public Assets ---
@@ -422,3 +426,67 @@ def test_public_read_only_and_static_routes_remain_accessible():
     assert unauth_client.get("/api/safety-policy").status_code == 200
     assert unauth_client.get("/static/icon-64.png").status_code == 200
 
+
+# --- 10. Phase 2.1 Integration Hardening Security Invariants ---
+
+def test_microsoft_parent_origins_not_granted_api_cors():
+    """
+    PHASE 2.1 REGRESSION TEST:
+    Verifies that Microsoft parent host domains (e.g. outlook.office.com, appsforoffice.microsoft.com)
+    are NOT included in API CORS allowlist.
+    Iframe/webview framing is handled separately via CSP frame-ancestors.
+    """
+    microsoft_origins = [
+        "https://outlook.office.com",
+        "https://appsforoffice.microsoft.com",
+        "https://outlook.office365.com",
+        "https://outlook.live.com",
+    ]
+    for ms_origin in microsoft_origins:
+        assert ms_origin not in ALLOWED_ORIGINS
+        # Preflight check rejected
+        res = unauth_client.options(
+            "/api/status",
+            headers={
+                "Origin": ms_origin,
+                "Access-Control-Request-Method": "GET"
+            }
+        )
+        assert res.headers.get("access-control-allow-origin") != ms_origin
+
+
+def test_taskpane_csp_frame_ancestors_configured():
+    """
+    PHASE 2.1 FRAMING SECURITY:
+    Verifies that /add-in/taskpane.html serves a Content-Security-Policy with frame-ancestors
+    permitting Outlook web embedding without widening API CORS.
+    """
+    res = unauth_client.get("/add-in/taskpane.html")
+    assert res.status_code == 200
+    csp = res.headers.get("content-security-policy", "")
+    assert "frame-ancestors" in csp
+    assert "https://outlook.office.com" in csp
+    assert "https://outlook.office365.com" in csp
+
+
+def test_local_tls_context_discovery(tmp_path, monkeypatch):
+    """
+    PHASE 2.1 TLS CONFIGURATION TEST:
+    Verifies local development TLS cert/key discovery via env vars and standard path.
+    """
+    from backend.config import get_ssl_context_paths, CANONICAL_ORIGIN
+    assert CANONICAL_ORIGIN == "https://localhost:8000"
+
+    fake_cert = tmp_path / "test.pem"
+    fake_key = tmp_path / "test-key.pem"
+    fake_cert.write_text("CERT")
+    fake_key.write_text("KEY")
+
+    monkeypatch.setenv("AURA_SSL_CERT", str(fake_cert))
+    monkeypatch.setenv("AURA_SSL_KEY", str(fake_key))
+    cert_p, key_p = get_ssl_context_paths()
+    assert cert_p == fake_cert
+    assert key_p == fake_key
+
+    monkeypatch.delenv("AURA_SSL_CERT", raising=False)
+    monkeypatch.delenv("AURA_SSL_KEY", raising=False)
