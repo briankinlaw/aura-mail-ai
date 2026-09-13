@@ -7,8 +7,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from backend.main import app
+from backend.auth import get_auth_headers
 
 client = TestClient(app)
+client.headers.update(get_auth_headers())
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MANIFEST_PATH = PROJECT_ROOT / "manifest.xml"

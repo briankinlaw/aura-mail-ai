@@ -58,12 +58,29 @@ app = FastAPI(
     version="1.1.0"
 )
 
+from backend.auth import require_local_auth, get_local_session_token
+
+ALLOWED_ORIGINS = [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "https://localhost:8000",
+    "https://127.0.0.1:8000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://localhost:3000",
+    "https://127.0.0.1:3000",
+    "https://outlook.office.com",
+    "https://outlook.office365.com",
+    "https://appsforoffice.microsoft.com",
+    "null"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["Authorization", "Content-Type", "X-Aura-Session-Token", "X-Aura-Token", "X-Requested-With"],
 )
 
 # In-Memory Email Cache & State
@@ -165,19 +182,28 @@ def get_safety_policy_endpoint():
         ]
     }
 
+@app.get("/api/auth/session")
+def get_auth_session():
+    """Provides session token to legitimate local dashboard and add-in frontends."""
+    return {
+        "status": "SUCCESS",
+        "session_token": get_local_session_token(),
+        "token_type": "Bearer"
+    }
+
 @app.get("/api/accounts")
 def list_accounts_endpoint():
     """Returns all configured accounts with validated connection statuses and capabilities."""
     accounts = provider_manager.list_all_accounts()
     return [a.model_dump() for a in accounts]
 
-@app.post("/api/accounts/{account_id}/test")
+@app.post("/api/accounts/{account_id}/test", dependencies=[Depends(require_local_auth)])
 def test_account_connection(account_id: str):
     provider, _ = provider_manager.get_provider_for_account(account_id)
     res = provider.validate_connection(account_id)
     return res.model_dump()
 
-@app.post("/api/accounts/{account_id}/disconnect")
+@app.post("/api/accounts/{account_id}/disconnect", dependencies=[Depends(require_local_auth)])
 def disconnect_account(account_id: str):
     provider, _ = provider_manager.get_provider_for_account(account_id)
     res = provider.logout(account_id)
@@ -204,7 +230,7 @@ def get_settings():
         "configured_accounts": settings.get("configured_accounts", [])
     }
 
-@app.post("/api/settings")
+@app.post("/api/settings", dependencies=[Depends(require_local_auth)])
 def update_settings_endpoint(payload: Dict[str, Any]):
     settings = load_settings()
     
@@ -254,7 +280,7 @@ def get_msal_auth_url(redirect_uri: Optional[str] = None, account_id: Optional[s
         )
     return {"status": "SUCCESS", "auth_url": url}
 
-@app.post("/api/auth/msal/device-code")
+@app.post("/api/auth/msal/device-code", dependencies=[Depends(require_local_auth)])
 def initiate_msal_device_code():
     global _PENDING_DEVICE_FLOW
     try:
@@ -270,7 +296,7 @@ def initiate_msal_device_code():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/auth/msal/device-code/poll")
+@app.post("/api/auth/msal/device-code/poll", dependencies=[Depends(require_local_auth)])
 def poll_msal_device_code(payload: Optional[Dict[str, Any]] = None):
     global _PENDING_DEVICE_FLOW
     if not _PENDING_DEVICE_FLOW:
@@ -304,7 +330,7 @@ def auth_callback(code: Optional[str] = None, error: Optional[str] = None, error
         logger.error(f"Auth token exchange failed: {ex}")
         return RedirectResponse(f"/?auth_error={str(ex)}")
 
-@app.post("/api/auth/submit-code")
+@app.post("/api/auth/submit-code", dependencies=[Depends(require_local_auth)])
 def submit_auth_code(payload: Dict[str, str]):
     code_raw = payload.get("code", "").strip()
     account_id = payload.get("account_id", "").strip() or None
@@ -359,7 +385,7 @@ def google_auth_callback(code: Optional[str] = None, error: Optional[str] = None
         logger.error(f"Google Auth token exchange failed: {ex}")
         return RedirectResponse(f"/?auth_error={str(ex)}")
 
-@app.post("/api/auth/google/submit-code")
+@app.post("/api/auth/google/submit-code", dependencies=[Depends(require_local_auth)])
 def submit_google_auth_code(payload: Dict[str, str]):
     code_raw = payload.get("code", "").strip()
     account_id = payload.get("account_id", "").strip() or None
@@ -382,7 +408,7 @@ def submit_google_auth_code(payload: Dict[str, str]):
         return res.model_dump()
     raise HTTPException(status_code=400, detail=res.safe_message)
 
-@app.post("/api/auth/imap")
+@app.post("/api/auth/imap", dependencies=[Depends(require_local_auth)])
 def auth_imap(payload: Dict[str, str]):
     email_addr = payload.get("email", "").strip().lower()
     password = payload.get("password", "").strip()
@@ -446,7 +472,7 @@ from backend.canonical_engine import (
 def get_profile():
     return get_user_profile()
 
-@app.post("/api/profile")
+@app.post("/api/profile", dependencies=[Depends(require_local_auth)])
 def update_profile(profile: UserProfile):
     update_user_profile(profile)
     return {"status": "SUCCESS", "profile": profile}
@@ -456,7 +482,7 @@ def update_profile(profile: UserProfile):
 def get_canonical_resumes(refresh: bool = False):
     return scan_canonical_system(force_refresh=refresh)
 
-@app.post("/api/canonical/match")
+@app.post("/api/canonical/match", dependencies=[Depends(require_local_auth)])
 def match_canonical_resume(payload: Dict[str, Any]):
     job_title = payload.get("job_title", "")
     job_description = payload.get("job_description", "")
@@ -481,7 +507,7 @@ def list_resumes():
         "lenses": LENS_DEFINITIONS
     }
 
-@app.post("/api/profile/upload-resume")
+@app.post("/api/profile/upload-resume", dependencies=[Depends(require_local_auth)])
 async def upload_resume(file: UploadFile = File(...)):
     dest_path = RESUMES_DIR / file.filename
     with open(dest_path, "wb") as buffer:
@@ -513,7 +539,7 @@ def list_emails(category: Optional[str] = None):
     
     return results
 
-@app.post("/api/emails/sync")
+@app.post("/api/emails/sync", dependencies=[Depends(require_local_auth)])
 def sync_and_triage_inbox(force_refresh: bool = False):
     emails, sync_stats = provider_manager.sync_unified_inbox(limit_per_account=50)
     user_profile = get_user_profile()
@@ -578,7 +604,7 @@ def sync_and_triage_inbox(force_refresh: bool = False):
         "sync_stats": sync_stats
     }
 
-@app.post("/api/emails/{email_id}/generate-reply")
+@app.post("/api/emails/{email_id}/generate-reply", dependencies=[Depends(require_local_auth)])
 def generate_reply_for_email(email_id: str, request_params: ReplyDraftRequest):
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
@@ -602,7 +628,7 @@ def generate_reply_for_email(email_id: str, request_params: ReplyDraftRequest):
         "draft_reply": draft
     }
 
-@app.post("/api/emails/{email_id}/save-draft")
+@app.post("/api/emails/{email_id}/save-draft", dependencies=[Depends(require_local_auth)])
 def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
@@ -635,7 +661,7 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
 
     return result.model_dump()
 
-@app.post("/api/emails/{email_id}/send-reply")
+@app.post("/api/emails/{email_id}/send-reply", dependencies=[Depends(require_local_auth)])
 def send_email_reply(email_id: str, payload: SendReplyRequest):
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
@@ -675,7 +701,7 @@ def send_email_reply(email_id: str, payload: SendReplyRequest):
     
     return result.model_dump()
 
-@app.post("/api/emails/clean-noise")
+@app.post("/api/emails/clean-noise", dependencies=[Depends(require_local_auth)])
 def clean_all_noise_endpoint():
     settings = load_settings()
     folder_name = settings.get("safe_folder_name", "AI Cleaned - Noise")
@@ -703,7 +729,7 @@ def clean_all_noise_endpoint():
         "message": f"Cleaned {len(cleaned_ids)} noise emails to '{folder_name}'."
     }
 
-@app.post("/api/emails/{email_id}/trash")
+@app.post("/api/emails/{email_id}/trash", dependencies=[Depends(require_local_auth)])
 def trash_single_email(email_id: str):
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
@@ -779,7 +805,7 @@ def get_daemon_status():
         "last_summary": state.get("last_summary", {})
     }
 
-@app.post("/api/daemon/run-now")
+@app.post("/api/daemon/run-now", dependencies=[Depends(require_local_auth)])
 def trigger_daemon_run(dry_run: bool = False):
     from backend.daemon import run_daemon_cycle
     summary = run_daemon_cycle(dry_run=dry_run)
@@ -795,7 +821,7 @@ from backend.radar.scribe_service import generate_executive_reply
 from backend.calendar_broker.availability_service import calculate_optimal_booking_windows
 from backend.calendar_broker.models import FreeBusyRequest
 
-@app.post("/api/radar/triage")
+@app.post("/api/radar/triage", dependencies=[Depends(require_local_auth)])
 def radar_triage_endpoint(payload: Dict[str, Any]):
     subject = payload.get("subject", "")
     body = payload.get("body", "")
@@ -841,7 +867,7 @@ def radar_triage_endpoint(payload: Dict[str, Any]):
         "confidence": classification.confidence
     }
 
-@app.post("/api/radar/draft")
+@app.post("/api/radar/draft", dependencies=[Depends(require_local_auth)])
 def radar_draft_endpoint(payload: Dict[str, Any]):
     from datetime import date, timedelta
     subject = payload.get("subject", "")
@@ -905,7 +931,7 @@ def radar_draft_endpoint(payload: Dict[str, Any]):
         "tone": tone
     }
 
-@app.post("/api/calendar/availability")
+@app.post("/api/calendar/availability", dependencies=[Depends(require_local_auth)])
 def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
     from datetime import date, timedelta
     p = payload or {}
@@ -935,7 +961,7 @@ def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
 
 from backend.radar.risk_evaluator import evaluate_second_opinion_risk
 
-@app.post("/api/radar/risk-check")
+@app.post("/api/radar/risk-check", dependencies=[Depends(require_local_auth)])
 def radar_risk_check_endpoint(payload: Dict[str, Any]):
     subject = payload.get("subject", "")
     body = payload.get("body", "")

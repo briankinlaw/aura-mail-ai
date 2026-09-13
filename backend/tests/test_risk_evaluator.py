@@ -11,8 +11,10 @@ from backend.radar.risk_evaluator import (
     RiskSeverity,
     RiskCategory
 )
+from backend.auth import get_auth_headers
 
 client = TestClient(app)
+client.headers.update(get_auth_headers())
 
 def test_safe_grounded_interaction():
     """Tests that a standard, strictly grounded interaction is evaluated as SAFE."""

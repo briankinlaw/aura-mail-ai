@@ -4,8 +4,10 @@ from backend.main import app, CACHED_EMAILS
 from backend.models import EmailMessage, EmailCategory, UserProfile
 from backend.ai_agent import classify_email, generate_personalized_reply, _classify_heuristics
 from backend.config import get_user_profile
+from backend.auth import get_auth_headers
 
 client = TestClient(app)
+client.headers.update(get_auth_headers())
 
 def test_system_status():
     response = client.get("/api/status")

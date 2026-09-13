@@ -6,6 +6,46 @@
 
 const API_BASE = window.location.origin;
 
+// --- Authenticated Session Bootstrap ---
+let AURA_SESSION_TOKEN = null;
+
+const _nativeFetch = window.fetch;
+window._nativeFetch = _nativeFetch;
+window.fetch = async function(url, options = {}) {
+  options = options || {};
+  options.headers = options.headers || {};
+  if (AURA_SESSION_TOKEN) {
+    if (options.headers instanceof Headers) {
+      if (!options.headers.has('Authorization')) {
+        options.headers.set('Authorization', `Bearer ${AURA_SESSION_TOKEN}`);
+      }
+      if (!options.headers.has('X-Aura-Session-Token')) {
+        options.headers.set('X-Aura-Session-Token', AURA_SESSION_TOKEN);
+      }
+    } else if (typeof options.headers === 'object') {
+      if (!options.headers['Authorization']) {
+        options.headers['Authorization'] = `Bearer ${AURA_SESSION_TOKEN}`;
+      }
+      if (!options.headers['X-Aura-Session-Token']) {
+        options.headers['X-Aura-Session-Token'] = AURA_SESSION_TOKEN;
+      }
+    }
+  }
+  return _nativeFetch(url, options);
+};
+
+async function bootstrapAuraSession() {
+  try {
+    const res = await _nativeFetch(`${API_BASE}/api/auth/session`);
+    if (res.ok) {
+      const data = await res.json();
+      AURA_SESSION_TOKEN = data.session_token;
+    }
+  } catch (err) {
+    console.warn('Session bootstrap notice in add-in:', err);
+  }
+}
+
 // State
 let currentEmailData = {
     subject: "Senior Solutions Architect & Strategic Advisor Reachout",
@@ -72,8 +112,9 @@ const el = {
 };
 
 // Initialize Office.js or Standalone Mode
-Office.onReady((info) => {
+Office.onReady(async (info) => {
     console.log("[Aura Add-in] Office.onReady called. Host:", info.host, "Platform:", info.platform);
+    await bootstrapAuraSession();
     
     if (info.host === Office.HostType.Outlook && Office.context && Office.context.mailbox && Office.context.mailbox.item) {
         initOutlookItem();
