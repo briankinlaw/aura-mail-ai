@@ -362,6 +362,12 @@ class ImapProvider(BaseEmailProvider):
                 pass
             return messages, f"IMAP fetch error: {str(e)}"
 
+    def _get_display_name(self, account_id: str) -> str:
+        cfg = self._get_account_config(account_id)
+        if cfg and cfg.get("display_name"):
+            return cfg["display_name"]
+        return account_id
+
     def create_reply_draft(
         self, 
         account_id: str, 
@@ -381,15 +387,43 @@ class ImapProvider(BaseEmailProvider):
             )
 
         _, _, native_uid = decode_composite_id(message_id)
-        folders = self._discover_folders(client, account_id)
-        drafts_folder = folders.get("drafts", "Drafts")
-
+        
         try:
-            # Build MIME message
+            folders = self._discover_folders(client, account_id)
+            drafts_folder = folders.get("drafts", "Drafts")
+            
+            # 1. Fetch original message headers for genuine threading
+            orig_subject = "Inquiry"
+            orig_msg_id = None
+            orig_from = account_id
+            
+            client.select("INBOX", readonly=True)
+            res, msg_data = client.uid("fetch", native_uid, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM REPLY-TO MESSAGE-ID REFERENCES)])")
+            if res == "OK" and msg_data:
+                for part in msg_data:
+                    if isinstance(part, tuple) and part[1]:
+                        header_obj = email.message_from_bytes(part[1])
+                        subj_raw = header_obj.get("Subject", "")
+                        if subj_raw:
+                            orig_subject = subj_raw
+                        orig_msg_id = header_obj.get("Message-ID")
+                        orig_from = header_obj.get("Reply-To") or header_obj.get("From") or orig_from
+                        break
+
+            _, target_to = email.utils.parseaddr(orig_from)
+
+            # 2. Build MIME message
+            sender_name = self._get_display_name(account_id)
             msg = MIMEMultipart()
-            msg["From"] = f"Brian K. Kinlaw <{account_id}>"
-            msg["Subject"] = "Re: Executive Inquiry & Canonical Career Advisory"
+            msg["From"] = f"{sender_name} <{account_id}>" if sender_name != account_id else account_id
+            msg["To"] = target_to or account_id
+            msg["Subject"] = orig_subject if orig_subject.startswith("Re:") else f"Re: {orig_subject}"
             msg["Date"] = email.utils.formatdate(localtime=True)
+            
+            if orig_msg_id:
+                msg["In-Reply-To"] = orig_msg_id
+                msg["References"] = orig_msg_id
+
             msg.attach(MIMEText(reply_body, "plain"))
 
             if resume_filename:
@@ -398,12 +432,21 @@ class ImapProvider(BaseEmailProvider):
                 if not file_path or not file_path.exists():
                     file_path = RESUMES_DIR / resume_filename
                 if file_path and file_path.exists():
-                    with open(file_path, "rb") as f:
-                        part = MIMEApplication(f.read(), Name=file_path.name)
-                    part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
-                    msg.attach(part)
+                    try:
+                        with open(file_path, "rb") as f:
+                            part = MIMEApplication(f.read(), Name=file_path.name)
+                        part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
+                        msg.attach(part)
+                    except Exception as e:
+                        return ProviderOperationResult(
+                            success=False,
+                            provider="IMAP",
+                            account_id=account_id,
+                            operation="CREATE_DRAFT",
+                            error_code="ATTACHMENT_FAILED",
+                            safe_message=f"Failed to read attachment '{resume_filename}': {str(e)}"
+                        )
                 else:
-                    client.logout()
                     return ProviderOperationResult(
                         success=False,
                         provider="IMAP",
@@ -414,12 +457,11 @@ class ImapProvider(BaseEmailProvider):
                     )
 
             raw_bytes = msg.as_bytes()
-            res, _ = client.append(f'"{drafts_folder}"', r"(\Draft \Seen)", None, raw_bytes)
-            if res != "OK":
-                res, _ = client.append(drafts_folder, r"(\Draft \Seen)", None, raw_bytes)
+            append_res, _ = client.append(f'"{drafts_folder}"', r"(\Draft \Seen)", None, raw_bytes)
+            if append_res != "OK":
+                append_res, _ = client.append(drafts_folder, r"(\Draft \Seen)", None, raw_bytes)
 
-            client.logout()
-            if res == "OK":
+            if append_res == "OK":
                 return ProviderOperationResult(
                     success=True,
                     provider="IMAP",
@@ -437,10 +479,6 @@ class ImapProvider(BaseEmailProvider):
                     safe_message=f"Failed to append draft to IMAP folder '{drafts_folder}'."
                 )
         except Exception as e:
-            try:
-                client.logout()
-            except Exception:
-                pass
             return ProviderOperationResult(
                 success=False,
                 provider="IMAP",
@@ -449,8 +487,22 @@ class ImapProvider(BaseEmailProvider):
                 error_code="EXCEPTION",
                 safe_message=f"Error saving IMAP draft: {str(e)}"
             )
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
 
     def attach_file(self, account_id: str, draft_id: str, filename: str, file_path: Path) -> ProviderOperationResult:
+        if not file_path.exists():
+            return ProviderOperationResult(
+                success=False,
+                provider="IMAP",
+                account_id=account_id,
+                operation="ATTACH_FILE",
+                error_code="FILE_NOT_FOUND",
+                safe_message=f"Attachment file '{filename}' does not exist on disk."
+            )
         return ProviderOperationResult(
             success=True,
             provider="IMAP",
@@ -490,27 +542,50 @@ class ImapProvider(BaseEmailProvider):
                 safe_message=f"No password found in Keychain for {account_id}."
             )
 
+        # Pre-validate attachment if requested
+        file_path = None
+        if resume_filename:
+            from backend.canonical_engine import resolve_resume_file
+            file_path = resolve_resume_file(resume_filename)
+            if not file_path or not file_path.exists():
+                file_path = RESUMES_DIR / resume_filename
+            if not file_path or not file_path.exists():
+                return ProviderOperationResult(
+                    success=False,
+                    provider="IMAP",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    error_code="FILE_NOT_FOUND",
+                    safe_message=f"Cannot send reply: attachment file '{resume_filename}' not found on disk."
+                )
+
         raw_smtp = cfg.get("smtp_server", "mail.twc.com" if "rr.com" in account_id else "smtp.office365.com")
         smtp_server, smtp_port = self._parse_host_port(raw_smtp, int(cfg.get("smtp_port", 587)))
 
         try:
+            sender_name = self._get_display_name(account_id)
             msg = MIMEMultipart()
-            msg["From"] = f"Brian K. Kinlaw <{account_id}>"
+            msg["From"] = f"{sender_name} <{account_id}>" if sender_name != account_id else account_id
             msg["To"] = to_email
             msg["Subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
             msg["Date"] = email.utils.formatdate(localtime=True)
             msg.attach(MIMEText(reply_body, "plain"))
 
-            if resume_filename:
-                from backend.canonical_engine import resolve_resume_file
-                file_path = resolve_resume_file(resume_filename)
-                if not file_path or not file_path.exists():
-                    file_path = RESUMES_DIR / resume_filename
-                if file_path and file_path.exists():
+            if resume_filename and file_path:
+                try:
                     with open(file_path, "rb") as f:
                         part = MIMEApplication(f.read(), Name=file_path.name)
                     part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
                     msg.attach(part)
+                except Exception as e:
+                    return ProviderOperationResult(
+                        success=False,
+                        provider="IMAP",
+                        account_id=account_id,
+                        operation="SEND_REPLY",
+                        error_code="ATTACHMENT_FAILED",
+                        safe_message=f"Failed to read attachment '{resume_filename}': {str(e)}"
+                    )
 
             server = smtplib.SMTP(smtp_server, smtp_port, timeout=20)
             server.starttls()
@@ -519,23 +594,39 @@ class ImapProvider(BaseEmailProvider):
             server.quit()
 
             # Append to Sent folder via IMAP
+            sent_appended = False
             client = self._get_imap_connection(account_id)
             if client:
                 try:
                     folders = self._discover_folders(client, account_id)
                     sent_folder = folders.get("sent", "Sent")
-                    client.append(f'"{sent_folder}"', r"(\Seen)", None, msg.as_bytes())
-                    client.logout()
+                    app_res, _ = client.append(f'"{sent_folder}"', r"(\Seen)", None, msg.as_bytes())
+                    if app_res == "OK":
+                        sent_appended = True
                 except Exception:
                     pass
+                finally:
+                    try:
+                        client.logout()
+                    except Exception:
+                        pass
 
-            return ProviderOperationResult(
-                success=True,
-                provider="IMAP",
-                account_id=account_id,
-                operation="SEND_REPLY",
-                safe_message=f"Email successfully sent to {to_email} via SMTP ({smtp_server})."
-            )
+            if sent_appended:
+                return ProviderOperationResult(
+                    success=True,
+                    provider="IMAP",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    safe_message=f"Email successfully sent to {to_email} via SMTP ({smtp_server}) and archived in Sent."
+                )
+            else:
+                return ProviderOperationResult(
+                    success=True,
+                    provider="IMAP",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    safe_message=f"Email sent to {to_email} via SMTP ({smtp_server}). (Copying to IMAP Sent folder was skipped or failed)."
+                )
         except Exception as e:
             return ProviderOperationResult(
                 success=False,
@@ -551,15 +642,27 @@ class ImapProvider(BaseEmailProvider):
         if not client:
             return None
         try:
-            client.create(f'"{folder_name}"')
-            client.logout()
-            return folder_name
-        except Exception:
+            # Check if folder already exists in list
+            status, folder_lines = client.list()
+            if status == "OK" and folder_lines:
+                for line in folder_lines:
+                    line_str = line.decode("utf-8", errors="ignore") if isinstance(line, bytes) else str(line)
+                    if folder_name in line_str:
+                        return folder_name
+
+            # Attempt creation
+            res, _ = client.create(f'"{folder_name}"')
+            if res == "OK":
+                return folder_name
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to create quarantine folder '{folder_name}' on IMAP server for {account_id}: {e}")
+            return None
+        finally:
             try:
                 client.logout()
             except Exception:
                 pass
-            return folder_name
 
     def move_message(self, account_id: str, message_id: str, destination_folder_id: str) -> ProviderOperationResult:
         client = self._get_imap_connection(account_id)
@@ -576,17 +679,13 @@ class ImapProvider(BaseEmailProvider):
         _, _, native_uid = decode_composite_id(message_id)
         try:
             client.select("INBOX")
-            # Ensure destination folder exists
-            try:
-                client.create(f'"{destination_folder_id}"')
-            except Exception:
-                pass
-
             res, _ = client.uid("copy", native_uid, f'"{destination_folder_id}"')
+            if res != "OK":
+                res, _ = client.uid("copy", native_uid, destination_folder_id)
+
             if res == "OK":
                 client.uid("store", native_uid, "+FLAGS", r"(\Deleted)")
                 client.expunge()
-                client.logout()
                 return ProviderOperationResult(
                     success=True,
                     provider="IMAP",
@@ -595,7 +694,6 @@ class ImapProvider(BaseEmailProvider):
                     safe_message=f"Message moved to folder '{destination_folder_id}' on IMAP server."
                 )
             else:
-                client.logout()
                 return ProviderOperationResult(
                     success=False,
                     provider="IMAP",
@@ -605,10 +703,6 @@ class ImapProvider(BaseEmailProvider):
                     safe_message=f"Failed to copy message UID {native_uid} to '{destination_folder_id}'."
                 )
         except Exception as e:
-            try:
-                client.logout()
-            except Exception:
-                pass
             return ProviderOperationResult(
                 success=False,
                 provider="IMAP",
@@ -617,6 +711,11 @@ class ImapProvider(BaseEmailProvider):
                 error_code="EXCEPTION",
                 safe_message=f"Error moving IMAP message: {str(e)}"
             )
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
 
     def delete_message(self, account_id: str, message_id: str) -> ProviderOperationResult:
         client = self._get_imap_connection(account_id)
@@ -630,8 +729,15 @@ class ImapProvider(BaseEmailProvider):
                 safe_message="Failed to connect to IMAP server."
             )
 
-        folders = self._discover_folders(client, account_id)
-        trash_folder = folders.get("trash", "Trash")
+        try:
+            folders = self._discover_folders(client, account_id)
+            trash_folder = folders.get("trash", "Trash")
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
         return self.move_message(account_id, message_id, trash_folder)
 
     def get_health_status(self, account_id: str) -> Dict[str, Any]:

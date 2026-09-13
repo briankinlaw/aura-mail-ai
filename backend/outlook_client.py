@@ -49,9 +49,19 @@ class OutlookClientAdapter:
         res = provider_manager.save_draft_reply(message_id, reply_body, resume_filename)
         return res.model_dump()
 
-    def send_reply(self, to_email: str, subject: str, reply_body: str, resume_filename: Optional[str] = None) -> Dict[str, Any]:
-        # For legacy direct send without message ID
-        res = provider_manager.send_reply("primary", to_email, subject, reply_body, resume_filename)
+    def send_reply(self, to_email: str, subject: str, reply_body: str, resume_filename: Optional[str] = None, message_id: Optional[str] = None) -> Dict[str, Any]:
+        target_id = message_id or "primary"
+        if not provider_manager.is_demo_mode() and target_id == "primary":
+            return {
+                "success": False,
+                "provider": "UNKNOWN",
+                "account_id": "unknown",
+                "operation": "SEND_REPLY",
+                "error_code": "UNROUTABLE_MESSAGE",
+                "safe_message": "Direct send without a valid message or account ID is disallowed in live mode.",
+                "retryable": False
+            }
+        res = provider_manager.send_reply(target_id, to_email, subject, reply_body, resume_filename)
         return res.model_dump()
 
     def move_email_to_folder(self, message_id: str, destination_folder_id: str) -> bool:

@@ -53,11 +53,12 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                 logger.warning(f"Failed to deserialize MSAL cache for {account_id}: {e}")
         return cache
 
-    def _save_token_cache(self, account_id: str, cache: msal.SerializableTokenCache):
+    def _save_token_cache(self, account_id: str, cache: msal.SerializableTokenCache) -> bool:
         """Saves serialized token cache for the specific account into Keychain."""
         if cache.has_state_changed:
             cache_data = cache.serialize()
-            set_secret(f"msal_cache_{account_id.lower()}", cache_data)
+            return set_secret(f"msal_cache_{account_id.lower()}", cache_data)
+        return True
 
     def _build_msal_app(self, account_id: Optional[str] = None) -> Optional[msal.PublicClientApplication]:
         """Creates an MSAL PublicClientApplication for the registered client ID."""
@@ -138,15 +139,17 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             mailbox = self._fetch_user_profile(result["access_token"], default_email=account_id)
             resolved_account_id = (account_id or mailbox.get("email") or target_account).lower()
             
-            # Save cache and token under the requested account ID
-            self._save_token_cache(resolved_account_id, app.token_cache)
-            set_secret(f"graph_token_{resolved_account_id}", result["access_token"])
-            
-            # If Microsoft returned a distinct primary alias, also populate it
-            profile_email = mailbox.get("email", "").lower()
-            if profile_email and profile_email != resolved_account_id:
-                self._save_token_cache(profile_email, app.token_cache)
-                set_secret(f"graph_token_{profile_email}", result["access_token"])
+            # Persist token cache in Keychain and verify storage
+            cache_saved = self._save_token_cache(resolved_account_id, app.token_cache)
+            if not cache_saved:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="MICROSOFT_GRAPH",
+                    account_id=resolved_account_id,
+                    operation="AUTHENTICATE",
+                    error_code="KEYCHAIN_WRITE_FAILED",
+                    safe_message=f"Authentication succeeded, but saving token cache to macOS Keychain failed for {resolved_account_id}."
+                )
             
             return ProviderOperationResult(
                 success=True,
@@ -192,13 +195,16 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             mailbox = self._fetch_user_profile(result["access_token"], default_email=account_id)
             resolved_account_id = (account_id or mailbox.get("email") or target_account).lower()
             
-            self._save_token_cache(resolved_account_id, app.token_cache)
-            set_secret(f"graph_token_{resolved_account_id}", result["access_token"])
-
-            profile_email = mailbox.get("email", "").lower()
-            if profile_email and profile_email != resolved_account_id:
-                self._save_token_cache(profile_email, app.token_cache)
-                set_secret(f"graph_token_{profile_email}", result["access_token"])
+            cache_saved = self._save_token_cache(resolved_account_id, app.token_cache)
+            if not cache_saved:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="MICROSOFT_GRAPH",
+                    account_id=resolved_account_id,
+                    operation="AUTHENTICATE",
+                    error_code="KEYCHAIN_WRITE_FAILED",
+                    safe_message=f"Authenticated, but saving token cache to macOS Keychain failed for {resolved_account_id}."
+                )
 
             return ProviderOperationResult(
                 success=True,
@@ -220,7 +226,10 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         )
 
     def get_access_token(self, account_id: str) -> Optional[str]:
-        """Acquires a valid access token silently from MSAL cache, refreshing automatically."""
+        """Acquires a valid access token silently from MSAL cache, refreshing automatically.
+        
+        Strictly avoids returning stale/expired tokens on silent refresh failure.
+        """
         cache = self._get_token_cache(account_id)
         app = msal.PublicClientApplication(
             client_id=self.client_id or "default",
@@ -235,8 +244,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                 self._save_token_cache(account_id, cache)
                 return result["access_token"]
         
-        # Fallback to direct token if stored
-        return get_secret(f"graph_token_{account_id.lower()}")
+        return None
 
     def _fetch_user_profile(self, access_token: str, default_email: Optional[str] = None) -> Dict[str, Any]:
         """Queries Microsoft Graph /me to resolve primary address, aliases, and display name."""
@@ -450,6 +458,23 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         reply_url = f"{GRAPH_API_ENDPOINT}/me/messages/{native_id}/createReply"
 
+        # Pre-validate attachment if requested
+        file_path = None
+        if resume_filename:
+            from backend.canonical_engine import resolve_resume_file
+            file_path = resolve_resume_file(resume_filename)
+            if not file_path or not file_path.exists():
+                file_path = RESUMES_DIR / resume_filename
+            if not file_path or not file_path.exists():
+                return ProviderOperationResult(
+                    success=False,
+                    provider="MICROSOFT_GRAPH",
+                    account_id=account_id,
+                    operation="CREATE_DRAFT",
+                    error_code="FILE_NOT_FOUND",
+                    safe_message=f"Requested attachment file '{resume_filename}' does not exist on disk."
+                )
+
         try:
             # 1. Create threaded reply draft
             res = requests.post(reply_url, headers=headers, json={"comment": reply_body}, timeout=15)
@@ -475,27 +500,20 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                     safe_message="Microsoft Graph did not return a valid draft ID."
                 )
 
-            # 2. Attach resume file if requested
-            if resume_filename:
-                from backend.canonical_engine import resolve_resume_file
-                file_path = resolve_resume_file(resume_filename)
-                if not file_path or not file_path.exists():
-                    file_path = RESUMES_DIR / resume_filename
-
-                if file_path and file_path.exists():
-                    attach_res = self.attach_file(account_id, draft_id, resume_filename, file_path)
-                    if not attach_res.success:
-                        # Return partial failure: Draft created, but attachment failed
-                        return ProviderOperationResult(
-                            success=False,
-                            provider="MICROSOFT_GRAPH",
-                            account_id=account_id,
-                            operation="CREATE_DRAFT",
-                            remote_object_id=draft_id,
-                            error_code="ATTACHMENT_FAILED",
-                            safe_message=f"Draft reply created in New Outlook Drafts, but attaching '{resume_filename}' failed: {attach_res.safe_message}",
-                            details={"draft_id": draft_id}
-                        )
+            # 2. Attach resume file if requested and confirmed
+            if resume_filename and file_path:
+                attach_res = self.attach_file(account_id, draft_id, resume_filename, file_path)
+                if not attach_res.success:
+                    return ProviderOperationResult(
+                        success=False,
+                        provider="MICROSOFT_GRAPH",
+                        account_id=account_id,
+                        operation="CREATE_DRAFT",
+                        remote_object_id=draft_id,
+                        error_code="ATTACHMENT_FAILED",
+                        safe_message=f"Draft reply created, but attaching '{resume_filename}' failed: {attach_res.safe_message}",
+                        details={"draft_id": draft_id}
+                    )
 
             return ProviderOperationResult(
                 success=True,
@@ -597,6 +615,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         reply_body: str, 
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
+        """Sends a threaded reply by creating/verifying the draft and sending it via Graph Draft Send endpoint."""
         token = self.get_access_token(account_id)
         if not token:
             return ProviderOperationResult(
@@ -608,51 +627,75 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                 safe_message="Not authenticated with Microsoft Graph."
             )
 
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        message_payload = {
-            "message": {
-                "subject": subject if subject.startswith("Re:") else f"Re: {subject}",
-                "body": {"contentType": "Text", "content": reply_body},
-                "toRecipients": [{"emailAddress": {"address": to_email}}],
-                "attachments": []
-            },
-            "saveToSentItems": "true"
-        }
+        # 1. Create and verify threaded reply draft (including attachment upload)
+        draft_res = self.create_reply_draft(
+            account_id=account_id,
+            message_id=message_id,
+            reply_body=reply_body,
+            resume_filename=resume_filename
+        )
+        if not draft_res.success:
+            return ProviderOperationResult(
+                success=False,
+                provider="MICROSOFT_GRAPH",
+                account_id=account_id,
+                operation="SEND_REPLY",
+                error_code=draft_res.error_code or "DRAFT_CREATION_FAILED",
+                safe_message=f"Failed to prepare threaded reply draft: {draft_res.safe_message}"
+            )
 
-        if resume_filename:
-            from backend.canonical_engine import resolve_resume_file
-            file_path = resolve_resume_file(resume_filename)
-            if not file_path or not file_path.exists():
-                file_path = RESUMES_DIR / resume_filename
-            if file_path and file_path.exists():
-                with open(file_path, "rb") as f:
-                    encoded = base64.b64encode(f.read()).decode("utf-8")
-                content_type = "application/pdf" if file_path.name.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                message_payload["message"]["attachments"].append({
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": file_path.name,
-                    "contentType": content_type,
-                    "contentBytes": encoded
-                })
+        draft_id = draft_res.remote_object_id
+        if not draft_id:
+            return ProviderOperationResult(
+                success=False,
+                provider="MICROSOFT_GRAPH",
+                account_id=account_id,
+                operation="SEND_REPLY",
+                error_code="NO_DRAFT_ID",
+                safe_message="No draft ID returned from Graph draft creation."
+            )
+
+        # 2. Send the verified draft via Graph Draft Send endpoint
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        send_url = f"{GRAPH_API_ENDPOINT}/me/messages/{draft_id}/send"
 
         try:
-            res = requests.post(f"{GRAPH_API_ENDPOINT}/me/sendMail", headers=headers, json=message_payload, timeout=25)
+            res = requests.post(send_url, headers=headers, timeout=25)
             if res.status_code in [200, 202]:
                 return ProviderOperationResult(
                     success=True,
                     provider="MICROSOFT_GRAPH",
                     account_id=account_id,
                     operation="SEND_REPLY",
-                    safe_message=f"Reply sent to {to_email} via Microsoft Graph with resume attached."
+                    safe_message=f"Threaded reply successfully sent to {to_email} via Microsoft Graph Draft Send."
                 )
-            else:
+            elif res.status_code == 401:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="MICROSOFT_GRAPH",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    error_code="AUTH_EXPIRED",
+                    safe_message="Microsoft Graph session expired during send. Re-authentication required."
+                )
+            elif res.status_code == 429:
+                retry_after = res.headers.get("Retry-After", "10")
+                return ProviderOperationResult(
+                    success=False,
+                    provider="MICROSOFT_GRAPH",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    error_code="THROTTLED_429",
+                    safe_message=f"Microsoft Graph rate limit reached. Retry in {retry_after}s.",
+                    retryable=True
+                )
                 return ProviderOperationResult(
                     success=False,
                     provider="MICROSOFT_GRAPH",
                     account_id=account_id,
                     operation="SEND_REPLY",
                     error_code=f"HTTP_{res.status_code}",
-                    safe_message=f"Failed to send email via Microsoft Graph: HTTP {res.status_code}"
+                    safe_message=f"Failed to send draft via Microsoft Graph: HTTP {res.status_code}"
                 )
         except Exception as e:
             return ProviderOperationResult(

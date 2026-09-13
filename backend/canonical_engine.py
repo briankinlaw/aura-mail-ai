@@ -15,12 +15,14 @@ from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime
 
+from backend.config import RESUMES_DIR
+
 logger = logging.getLogger("canonical_engine")
 
-# Canonical System Paths
-CANONICAL_ACTIVE_DIR = Path("/Users/briankinlaw/2026 Promevo_LOCAL/Canonical – Active")
-TARGETED_APPS_DIR = Path("/Users/briankinlaw/2026 Promevo_LOCAL/Targeted Applications")
-DOWNLOADS_VARIANTS_DIR = Path("/Users/briankinlaw/Downloads/Resume Variants")
+# Canonical System Paths (with graceful fallback to local RESUMES_DIR when external folders are absent)
+CANONICAL_ACTIVE_DIR = Path(os.getenv("CANONICAL_ACTIVE_DIR", "/Users/briankinlaw/2026 Promevo_LOCAL/Canonical – Active"))
+TARGETED_APPS_DIR = Path(os.getenv("TARGETED_APPS_DIR", "/Users/briankinlaw/2026 Promevo_LOCAL/Targeted Applications"))
+DOWNLOADS_VARIANTS_DIR = Path(os.getenv("DOWNLOADS_VARIANTS_DIR", "/Users/briankinlaw/Downloads/Resume Variants"))
 
 # Lens Archetype Definitions
 LENS_DEFINITIONS = {
@@ -74,21 +76,44 @@ LENS_DEFINITIONS = {
     }
 }
 
+# Locked Metrics and Career Facts from Canonical Ledger with Stable Fact IDs
+LOCKED_FACTS = {
+    "FACT_GOOGLE_REVENUE": "Influenced $8M in new Google Cloud revenue (never 'generated $8M')",
+    "FACT_CDW_REVENUE": "Closed $2.1M in services; Influenced $4M in annual revenue",
+    "FACT_PROMEVO_PIPELINE": "Pipeline contribution estimated $2M+; Presales efficiency roadmap targeting a 30% improvement",
+    "FACT_PROMEVO_RESULTS": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value",
+    "FACT_DXC_PORTFOLIO": "$22M portfolio with shared GTM P&L responsibility between OCTO and LOB Sales",
+    "FACT_CAREER_IMPACT": "$100M+ enterprise revenue influenced and delivered across career",
+    "FACT_CERTIFICATIONS": ["PMP (Project Management Professional)", "Google Cloud Certified Professional Cloud Architect", "Google Cloud Certified Professional Data Engineer"],
+    "FACT_EMPLOYMENT_MAVENCODE": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present)",
+    "FACT_EMPLOYMENT_PROMEVO": "Senior Solutions Architect at Promevo (2024 - Aug 2026; ended August 2026)",
+    "google": "Influenced $8M in new Google Cloud revenue (never 'generated $8M')",
+    "cdw": "Closed $2.1M in services; Influenced $4M in annual revenue",
+    "promevo_pipeline": "Pipeline contribution estimated $2M+; Presales efficiency roadmap targeting a 30% improvement",
+    "promevo_results": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value",
+    "dxc": "$22M portfolio with shared GTM P&L responsibility between OCTO and LOB Sales",
+    "career_impact": "$100M+ enterprise revenue influenced and delivered",
+    "certifications": ["PMP (Project Management Professional)", "Google Cloud Certified Professional Cloud Architect", "Google Cloud Certified Professional Data Engineer"],
+    "current_status": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present)"
+}
+
 def resolve_resume_file(identifier: Optional[str]) -> Optional[Path]:
     """Finds the absolute path of a resume given an absolute path, filename, or stem."""
+    search_dirs = [CANONICAL_ACTIVE_DIR, TARGETED_APPS_DIR, DOWNLOADS_VARIANTS_DIR, RESUMES_DIR]
+    
     if not identifier:
-        # Default to level 3A advisor canonical
-        if CANONICAL_ACTIVE_DIR.exists():
-            adv = list(CANONICAL_ACTIVE_DIR.glob("*Advisor_Canonical*.docx"))
-            if adv:
-                return adv[0]
+        # Default to level 3A advisor canonical if available
+        for d in search_dirs:
+            if d.exists():
+                adv = list(d.glob("*Advisor_Canonical*.docx")) + list(d.glob("*.docx"))
+                if adv:
+                    return adv[0]
         return None
 
     path_obj = Path(identifier)
     if path_obj.is_absolute() and path_obj.exists():
         return path_obj
 
-    search_dirs = [CANONICAL_ACTIVE_DIR, TARGETED_APPS_DIR, DOWNLOADS_VARIANTS_DIR]
     clean_name = path_obj.name.lower()
 
     for d in search_dirs:
@@ -98,21 +123,11 @@ def resolve_resume_file(identifier: Optional[str]) -> Optional[Path]:
         direct = d / path_obj.name
         if direct.exists():
             return direct
-        # Case-insensitive / partial match
+        # Case-insensitive match
         for f in d.glob("*"):
-            if f.name.lower() == clean_name:
+            if f.is_file() and f.name.lower() == clean_name:
                 return f
-# Locked Metrics from Canonical Ledger for strict zero-hallucination verification
-LOCKED_FACTS = {
-    "google": "Influenced $8M in new Google Cloud revenue (never 'generated $8M')",
-    "cdw": "Closed $2.1M in services; Influenced $4M in annual revenue",
-    "promevo_pipeline": "Pipeline contribution estimated $2M+; Presales efficiency roadmap targeting a 30% improvement",
-    "promevo_results": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value",
-    "dxc": "$22M portfolio with shared GTM P&L responsibility between OCTO and LOB Sales",
-    "career_impact": "$100M+ enterprise revenue influenced and delivered",
-    "certifications": ["PMP (Project Management Professional)", "Google Cloud Certified Professional Cloud Architect", "Google Cloud Certified Professional Data Engineer"],
-    "current_status": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present); Senior Solutions Architect at Promevo (Concurrent)"
-}
+    return None
 
 _RESUME_CACHE: Dict[str, Any] = {}
 _LAST_SCAN_TIME: Optional[float] = None
@@ -264,6 +279,26 @@ def scan_canonical_system(force_refresh: bool = False) -> Dict[str, Any]:
                 meta = parse_resume_metadata(f, "master_variant")
                 master_variants.append(meta)
 
+    # 4. Scan Local Project Resumes Directory
+    if RESUMES_DIR.exists():
+        for f in sorted(RESUMES_DIR.glob("*")):
+            if f.name.startswith(("~$", ".")) or f.is_dir():
+                continue
+            if f.suffix.lower() in [".docx", ".pdf", ".txt"]:
+                # Check if already indexed
+                if any(r["filename"] == f.name for r in (standard_canonicals + targeted_customs + master_variants + source_of_truth_docs)):
+                    continue
+                fname_lower = f.name.lower()
+                if "ledger" in fname_lower or "master" in fname_lower:
+                    meta = parse_resume_metadata(f, "source_of_truth")
+                    source_of_truth_docs.append(meta)
+                elif "advisor" in fname_lower or "canonical" in fname_lower:
+                    meta = parse_resume_metadata(f, "standard_canonical")
+                    standard_canonicals.append(meta)
+                else:
+                    meta = parse_resume_metadata(f, "targeted_custom")
+                    targeted_customs.append(meta)
+
     all_resumes = standard_canonicals + targeted_customs + master_variants
 
     _RESUME_CACHE = {
@@ -271,6 +306,7 @@ def scan_canonical_system(force_refresh: bool = False) -> Dict[str, Any]:
         "canonical_active_path": str(CANONICAL_ACTIVE_DIR),
         "targeted_apps_path": str(TARGETED_APPS_DIR),
         "downloads_variants_path": str(DOWNLOADS_VARIANTS_DIR),
+        "resumes_dir_path": str(RESUMES_DIR),
         "total_resumes": len(all_resumes),
         "standard_canonicals": standard_canonicals,
         "targeted_customs": targeted_customs,
@@ -287,14 +323,25 @@ def scan_canonical_system(force_refresh: bool = False) -> Dict[str, Any]:
 
 def get_canonical_ledger_summary() -> str:
     """Read the latest Accomplishment Ledger for factual grounding."""
-    if not CANONICAL_ACTIVE_DIR.exists():
-        return ""
-    ledger_files = list(CANONICAL_ACTIVE_DIR.glob("*Accomplishment_Ledger*.docx"))
-    if not ledger_files:
-        return ""
-    ledger_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-    text = extract_docx_text(ledger_files[0])
-    return text
+    search_dirs = [CANONICAL_ACTIVE_DIR, RESUMES_DIR]
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        ledger_files = list(d.glob("*Accomplishment_Ledger*.docx")) + list(d.glob("*Ledger*.docx")) + list(d.glob("*master*.txt"))
+        if ledger_files:
+            ledger_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            chosen = ledger_files[0]
+            if chosen.suffix.lower() == ".docx":
+                return extract_docx_text(chosen)
+            else:
+                try:
+                    with open(chosen, "r", encoding="utf-8") as f:
+                        return f.read()
+                except Exception:
+                    pass
+    
+    # Fallback to compiled locked facts text if no raw file on disk
+    return "\n".join([f"- {k}: {v}" for k, v in LOCKED_FACTS.items()])
 
 
 def find_best_resume_match(job_title: str, job_description: str, sender: str = "") -> Dict[str, Any]:

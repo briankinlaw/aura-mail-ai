@@ -40,12 +40,12 @@ class ResumeVariant(BaseModel):
     raw_text_length: int = 0
 
 class ResumeMatchResult(BaseModel):
-    selected_resume: str
+    selected_resume: Optional[str] = None
     selected_resume_path: Optional[str] = None
     selected_resume_meta: Optional[Dict[str, Any]] = None
-    match_score: int
-    matching_lens: str
-    lens_name: str
+    match_score: int = 0
+    matching_lens: str = "level_3a_advisor"
+    lens_name: str = "Level 3A — Advisor / Principal Solutions Architect"
     lens_badge: str = "🎯 Level 3A"
     lens_color: str = "#8b5cf6"
     rationale: str = ""
@@ -123,9 +123,10 @@ class UserProfile(BaseModel):
     )
     custom_reply_instructions: str = (
         "Be warm, concise, professional, and executive-ready. Connect my verified background directly to the employer's objectives. "
-        "Highlight 2-3 verified metrics (e.g. $8M Google Cloud revenue influenced, $100M+ enterprise revenue delivered, Promevo pipeline $2M+). "
+        "Highlight 2-3 verified metrics (e.g. $8M Google Cloud revenue influenced, $100M+ enterprise revenue delivered). "
         "Explicitly mention that my updated resume is attached. Invite them to schedule a brief intro discussion."
     )
+    cloud_ai_enabled: bool = False
     safety_mode: str = "SAFE_REVIEW"  # SAFE_REVIEW (drafts only) vs AUTONOMOUS (auto-send verified)
     noise_handling: str = "MOVE_TO_CLEANED_FOLDER"  # MOVE_TO_CLEANED_FOLDER vs DELETE_PERMANENTLY
 
@@ -140,3 +141,22 @@ class SendReplyRequest(BaseModel):
     attach_resume: bool = True
     resume_filename: Optional[str] = None
     to_email: Optional[str] = None
+
+class QuarantineMessageResult(BaseModel):
+    email_id: str
+    subject: str
+    provider: str
+    account_id: str
+    destination_folder_id: Optional[str] = None
+    success: bool
+    error_code: Optional[str] = None
+    message: str
+
+class QuarantineBatchResult(BaseModel):
+    status: str  # SUCCESS, PARTIAL_SUCCESS, FAILED
+    total_requested: int
+    cleaned_count: int
+    failed_count: int
+    cleaned_ids: List[str] = Field(default_factory=list)
+    results: List[QuarantineMessageResult] = Field(default_factory=list)
+    message: str

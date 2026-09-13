@@ -155,11 +155,24 @@ class GmailProvider(BaseEmailProvider):
     def get_access_token(self, account_id: str) -> Optional[str]:
         acc_key = account_id.lower()
         token = get_secret(f"gmail_access_{acc_key}")
-        if token:
-            # Quick check if token works or needs refresh
+        expires_at_str = get_secret(f"gmail_expires_{acc_key}")
+        
+        # Check if token is still valid (proactive refresh if within 60 seconds of expiry)
+        import time
+        now = time.time()
+        needs_refresh = False
+        if expires_at_str:
+            try:
+                expires_at = float(expires_at_str)
+                if now >= (expires_at - 60):
+                    needs_refresh = True
+            except ValueError:
+                pass
+        
+        if token and not needs_refresh:
             return token
         
-        # Try refreshing
+        # Try refreshing using refresh token
         refresh_token = get_secret(f"gmail_refresh_{acc_key}")
         cid = self.effective_client_id
         csec = self.effective_client_secret
@@ -176,13 +189,21 @@ class GmailProvider(BaseEmailProvider):
                     timeout=10
                 )
                 if res.status_code == 200:
-                    new_token = res.json().get("access_token")
+                    data = res.json()
+                    new_token = data.get("access_token")
+                    expires_in = data.get("expires_in", 3600)
                     set_secret(f"gmail_access_{acc_key}", new_token)
+                    set_secret(f"gmail_expires_{acc_key}", str(now + expires_in))
                     return new_token
+                elif res.status_code == 400 and "invalid_grant" in res.text:
+                    logger.warning(f"Gmail refresh token revoked/invalid for {account_id}. Deleting stale tokens.")
+                    delete_secret(f"gmail_access_{acc_key}")
+                    delete_secret(f"gmail_refresh_{acc_key}")
+                    delete_secret(f"gmail_expires_{acc_key}")
             except Exception as e:
                 logger.warning(f"Failed to refresh Gmail token for {account_id}: {e}")
         
-        return None
+        return token if token else None
 
     def authenticate(self, account_config: Dict[str, Any], auth_payload: Optional[Dict[str, Any]] = None) -> ProviderOperationResult:
         if auth_payload and "code" in auth_payload:
@@ -230,7 +251,18 @@ class GmailProvider(BaseEmailProvider):
                     account_id=account_id,
                     operation="VALIDATE",
                     error_code="AUTH_EXPIRED",
-                    safe_message="Gmail OAuth token expired."
+                    safe_message="Gmail OAuth token expired. Re-authentication required."
+                )
+            elif res.status_code == 429:
+                retry_after = res.headers.get("Retry-After", "10")
+                return ProviderOperationResult(
+                    success=False,
+                    provider="GMAIL",
+                    account_id=account_id,
+                    operation="VALIDATE",
+                    error_code="THROTTLED_429",
+                    safe_message=f"Gmail rate limit encountered. Retry in {retry_after}s.",
+                    retryable=True
                 )
             else:
                 return ProviderOperationResult(
@@ -274,6 +306,29 @@ class GmailProvider(BaseEmailProvider):
                 ))
         return results
 
+    def _extract_body_text(self, payload: Dict[str, Any]) -> str:
+        """Extracts and decodes body text from Gmail payload structure."""
+        body = payload.get("body", {})
+        data_b64 = body.get("data")
+        if data_b64:
+            try:
+                return base64.urlsafe_b64decode(data_b64).decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+
+        # Handle multipart parts
+        parts = payload.get("parts", [])
+        for part in parts:
+            mime_type = part.get("mimeType", "")
+            part_body = part.get("body", {})
+            part_data = part_body.get("data")
+            if part_data and ("text/plain" in mime_type or "text/html" in mime_type):
+                try:
+                    return base64.urlsafe_b64decode(part_data).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+        return ""
+
     def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "INBOX") -> Tuple[List[EmailMessage], Optional[str]]:
         token = self.get_access_token(account_id)
         if not token:
@@ -283,11 +338,10 @@ class GmailProvider(BaseEmailProvider):
         messages: List[EmailMessage] = []
 
         try:
-            # Query message list
             list_url = f"{GMAIL_API_BASE}/messages?q=label:{folder}&maxResults={min(limit, 50)}"
             res = requests.get(list_url, headers=headers, timeout=15)
             if res.status_code != 200:
-                return [], f"Gmail fetch failed: HTTP {res.status_code} - {res.text[:100]}"
+                return [], f"Gmail fetch failed: HTTP {res.status_code}"
             
             msg_list = res.json().get("messages", [])
             for item in msg_list:
@@ -295,14 +349,18 @@ class GmailProvider(BaseEmailProvider):
                 msg_res = requests.get(f"{GMAIL_API_BASE}/messages/{m_id}?format=full", headers=headers, timeout=10)
                 if msg_res.status_code == 200:
                     m_data = msg_res.json()
-                    headers_list = m_data.get("payload", {}).get("headers", [])
+                    payload = m_data.get("payload", {})
+                    headers_list = payload.get("headers", [])
                     header_dict = {h["name"].lower(): h["value"] for h in headers_list if "name" in h and "value" in h}
                     
                     subj = header_dict.get("subject", "(No Subject)")
                     from_raw = header_dict.get("from", "Unknown <unknown@gmail.com>")
+                    reply_to_raw = header_dict.get("reply-to", from_raw)
                     sender_name, sender_email = email.utils.parseaddr(from_raw)
+                    _, reply_to_email = email.utils.parseaddr(reply_to_raw)
                     date_str = header_dict.get("date", datetime.now().isoformat())
                     snippet = m_data.get("snippet", "")
+                    body_content = self._extract_body_text(payload) or snippet
                     
                     composite_id = encode_composite_id("GMAIL", account_id, m_id)
                     
@@ -311,10 +369,10 @@ class GmailProvider(BaseEmailProvider):
                         conversation_id=m_data.get("threadId"),
                         subject=subj,
                         sender_name=sender_name or sender_email,
-                        sender_email=sender_email,
+                        sender_email=reply_to_email or sender_email,
                         received_at=date_str,
                         preview=snippet,
-                        body_text=snippet,
+                        body_text=body_content,
                         folder=folder
                     )
                     messages.append(msg)
@@ -324,6 +382,46 @@ class GmailProvider(BaseEmailProvider):
             logger.error(f"Gmail fetch error for {account_id}: {e}")
             return messages, f"Network error during Gmail fetch: {str(e)}"
 
+    def build_reply_mime(
+        self,
+        to_email: str,
+        subject: str,
+        reply_body: str,
+        in_reply_to_rfc_id: Optional[str] = None,
+        references_rfc_id: Optional[str] = None,
+        resume_filename: Optional[str] = None
+    ) -> Tuple[Optional[MIMEMultipart], Optional[str]]:
+        """Constructs and validates standard RFC 5322 compliant reply MIME message."""
+        msg = MIMEMultipart()
+        msg["To"] = to_email
+        msg["Subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        
+        if in_reply_to_rfc_id:
+            msg["In-Reply-To"] = in_reply_to_rfc_id
+        if references_rfc_id:
+            msg["References"] = references_rfc_id
+
+        msg.attach(MIMEText(reply_body, "plain"))
+
+        if resume_filename:
+            from backend.canonical_engine import resolve_resume_file
+            file_path = resolve_resume_file(resume_filename)
+            if not file_path or not file_path.exists():
+                file_path = RESUMES_DIR / resume_filename
+            if not file_path or not file_path.exists():
+                return None, f"Attachment file '{resume_filename}' not found on disk."
+            
+            try:
+                with open(file_path, "rb") as f:
+                    part = MIMEApplication(f.read(), Name=file_path.name)
+                part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
+                msg.attach(part)
+            except Exception as e:
+                return None, f"Failed to read attachment '{resume_filename}': {str(e)}"
+
+        return msg, None
+
     def create_reply_draft(
         self, 
         account_id: str, 
@@ -331,6 +429,7 @@ class GmailProvider(BaseEmailProvider):
         reply_body: str, 
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
+        """Creates a verified threaded draft in Gmail matching Google threading requirements."""
         token = self.get_access_token(account_id)
         if not token:
             return ProviderOperationResult(
@@ -346,38 +445,51 @@ class GmailProvider(BaseEmailProvider):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         try:
-            # Build MIME message with in-reply-to headers
-            msg = MIMEMultipart()
-            msg["Subject"] = "Re: Executive Inquiry & Canonical Career Advisory"
-            msg["In-Reply-To"] = native_id
-            msg["References"] = native_id
-            msg.attach(MIMEText(reply_body, "plain"))
+            # 1. Fetch original message metadata to satisfy Gmail threading
+            orig_res = requests.get(f"{GMAIL_API_BASE}/messages/{native_id}?format=full", headers=headers, timeout=10)
+            if orig_res.status_code != 200:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="GMAIL",
+                    account_id=account_id,
+                    operation="CREATE_DRAFT",
+                    error_code=f"HTTP_{orig_res.status_code}",
+                    safe_message=f"Failed to fetch original message from Gmail: HTTP {orig_res.status_code}"
+                )
 
-            if resume_filename:
-                from backend.canonical_engine import resolve_resume_file
-                file_path = resolve_resume_file(resume_filename)
-                if not file_path or not file_path.exists():
-                    file_path = RESUMES_DIR / resume_filename
-                if file_path and file_path.exists():
-                    with open(file_path, "rb") as f:
-                        part = MIMEApplication(f.read(), Name=file_path.name)
-                    part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
-                    msg.attach(part)
-                else:
-                    return ProviderOperationResult(
-                        success=False,
-                        provider="GMAIL",
-                        account_id=account_id,
-                        operation="CREATE_DRAFT",
-                        error_code="FILE_NOT_FOUND",
-                        safe_message=f"Resume file '{resume_filename}' not found on disk."
-                    )
+            orig_data = orig_res.json()
+            thread_id = orig_data.get("threadId", native_id)
+            orig_headers = {h["name"].lower(): h["value"] for h in orig_data.get("payload", {}).get("headers", []) if "name" in h and "value" in h}
+            
+            orig_subject = orig_headers.get("subject", "Inquiry")
+            orig_msg_id = orig_headers.get("message-id")
+            reply_to_addr = orig_headers.get("reply-to") or orig_headers.get("from", "")
+            _, target_to = email.utils.parseaddr(reply_to_addr)
 
-            raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+            # 2. Build RFC-compliant MIME message
+            mime_msg, err = self.build_reply_mime(
+                to_email=target_to or account_id,
+                subject=orig_subject,
+                reply_body=reply_body,
+                in_reply_to_rfc_id=orig_msg_id,
+                references_rfc_id=orig_msg_id,
+                resume_filename=resume_filename
+            )
+            if err or not mime_msg:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="GMAIL",
+                    account_id=account_id,
+                    operation="CREATE_DRAFT",
+                    error_code="FILE_NOT_FOUND" if "not found" in (err or "").lower() else "MIME_BUILD_FAILED",
+                    safe_message=err or "Failed to construct reply MIME."
+                )
+
+            raw_b64 = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("utf-8")
             draft_payload = {
                 "message": {
                     "raw": raw_b64,
-                    "threadId": native_id
+                    "threadId": thread_id
                 }
             }
 
@@ -412,6 +524,15 @@ class GmailProvider(BaseEmailProvider):
             )
 
     def attach_file(self, account_id: str, draft_id: str, filename: str, file_path: Path) -> ProviderOperationResult:
+        if not file_path.exists():
+            return ProviderOperationResult(
+                success=False,
+                provider="GMAIL",
+                account_id=account_id,
+                operation="ATTACH_FILE",
+                error_code="FILE_NOT_FOUND",
+                safe_message=f"Attachment file '{filename}' does not exist on disk."
+            )
         return ProviderOperationResult(
             success=True,
             provider="GMAIL",
@@ -429,6 +550,7 @@ class GmailProvider(BaseEmailProvider):
         reply_body: str, 
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
+        """Sends a threaded reply in Gmail using draft creation and draft send endpoint."""
         token = self.get_access_token(account_id)
         if not token:
             return ProviderOperationResult(
@@ -440,37 +562,67 @@ class GmailProvider(BaseEmailProvider):
                 safe_message="Not authenticated with Gmail."
             )
 
-        try:
-            msg = MIMEMultipart()
-            msg["To"] = to_email
-            msg["Subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
-            msg.attach(MIMEText(reply_body, "plain"))
-
-            if resume_filename:
-                from backend.canonical_engine import resolve_resume_file
-                file_path = resolve_resume_file(resume_filename)
-                if not file_path or not file_path.exists():
-                    file_path = RESUMES_DIR / resume_filename
-                if file_path and file_path.exists():
-                    with open(file_path, "rb") as f:
-                        part = MIMEApplication(f.read(), Name=file_path.name)
-                    part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
-                    msg.attach(part)
-
-            raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-            res = requests.post(
-                f"{GMAIL_API_BASE}/messages/send",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"raw": raw_b64},
-                timeout=25
+        # 1. Create verified threaded draft first
+        draft_res = self.create_reply_draft(
+            account_id=account_id,
+            message_id=message_id,
+            reply_body=reply_body,
+            resume_filename=resume_filename
+        )
+        if not draft_res.success:
+            return ProviderOperationResult(
+                success=False,
+                provider="GMAIL",
+                account_id=account_id,
+                operation="SEND_REPLY",
+                error_code=draft_res.error_code or "DRAFT_CREATION_FAILED",
+                safe_message=f"Failed to prepare threaded reply: {draft_res.safe_message}"
             )
+
+        draft_id = draft_res.remote_object_id
+        if not draft_id:
+            return ProviderOperationResult(
+                success=False,
+                provider="GMAIL",
+                account_id=account_id,
+                operation="SEND_REPLY",
+                error_code="NO_DRAFT_ID",
+                safe_message="No draft ID returned from Gmail draft creation."
+            )
+
+        # 2. Send the verified draft via Gmail drafts/send endpoint
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        send_url = f"{GMAIL_API_BASE}/drafts/send"
+
+        try:
+            res = requests.post(send_url, headers=headers, json={"id": draft_id}, timeout=25)
             if res.status_code in [200, 201]:
                 return ProviderOperationResult(
                     success=True,
                     provider="GMAIL",
                     account_id=account_id,
                     operation="SEND_REPLY",
-                    safe_message=f"Reply successfully sent to {to_email} via Gmail API."
+                    safe_message=f"Threaded reply successfully sent to {to_email} via Gmail API."
+                )
+            elif res.status_code == 401:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="GMAIL",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    error_code="AUTH_EXPIRED",
+                    safe_message="Gmail OAuth token expired during send. Please re-authenticate."
+                )
+            elif res.status_code == 429:
+                retry_after = res.headers.get("Retry-After", "10")
+                return ProviderOperationResult(
+                    success=False,
+                    provider="GMAIL",
+                    account_id=account_id,
+                    operation="SEND_REPLY",
+                    error_code="THROTTLED_429",
+                    safe_message=f"Gmail rate limit reached. Retry in {retry_after}s.",
+                    retryable=True
                 )
             else:
                 return ProviderOperationResult(

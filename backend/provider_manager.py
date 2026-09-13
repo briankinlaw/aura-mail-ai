@@ -2,7 +2,7 @@
 
 Dispatches email operations across Microsoft Graph, Gmail, IMAP, and Demo providers.
 Handles alias resolution, multi-mailbox aggregation, positive identity routing,
-and strict non-destructive error handling.
+quarantine folder resolution & caching, and strict fail-closed error handling.
 """
 
 import os
@@ -10,7 +10,11 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
-from backend.models import EmailMessage
+from backend.models import (
+    EmailMessage,
+    QuarantineMessageResult,
+    QuarantineBatchResult
+)
 from backend.config import load_settings, save_settings
 from backend.providers.base import (
     BaseEmailProvider,
@@ -28,7 +32,7 @@ logger = logging.getLogger("provider_manager")
 
 class ProviderManager:
     def __init__(self):
-        self.settings = load_settings()
+        self._quarantine_folder_cache: Dict[Tuple[str, str], str] = {}
         self._init_providers()
 
     def _init_providers(self):
@@ -46,13 +50,15 @@ class ProviderManager:
 
     def reload_config(self):
         self._init_providers()
+        self._quarantine_folder_cache.clear()
 
     def is_demo_mode(self) -> bool:
         settings = load_settings()
         return bool(settings.get("demo_mode", False))
 
-    def get_provider_by_type(self, provider_type: str) -> BaseEmailProvider:
-        p_upper = provider_type.upper()
+    def get_provider_by_type(self, provider_type: str) -> Optional[BaseEmailProvider]:
+        """Returns the requested provider instance, failing closed if unknown or unauthorized."""
+        p_upper = (provider_type or "").strip().upper()
         if p_upper == "MICROSOFT_GRAPH":
             return self.graph_provider
         elif p_upper == "GMAIL":
@@ -60,41 +66,66 @@ class ProviderManager:
         elif p_upper == "IMAP":
             return self.imap_provider
         elif p_upper == "DEMO":
-            return self.demo_provider
-        return self.demo_provider
+            if self.is_demo_mode():
+                return self.demo_provider
+            logger.warning("Attempted to access DemoProvider while demo_mode is False. Denying access.")
+            return None
+        return None
 
     def get_account_config(self, account_id: str) -> Optional[Dict[str, Any]]:
         settings = load_settings()
+        clean_id = (account_id or "").strip().lower()
         for acc in settings.get("configured_accounts", []):
-            if acc.get("account_id", "").lower() == account_id.lower() or acc.get("email", "").lower() == account_id.lower():
+            acc_id = acc.get("account_id", "").lower()
+            acc_email = acc.get("email", "").lower()
+            if acc_id == clean_id or acc_email == clean_id:
                 return acc
         return None
 
-    def get_provider_for_account(self, account_id: str) -> Tuple[BaseEmailProvider, Dict[str, Any]]:
+    def get_provider_for_account(self, account_id: str) -> Tuple[Optional[BaseEmailProvider], Optional[Dict[str, Any]]]:
+        """Positively resolves provider and config for a given account.
+        
+        Strictly fails closed without silently guessing providers based on email domains.
+        """
         if self.is_demo_mode():
             return self.demo_provider, {"account_id": "demo@auramail.local", "provider": "DEMO"}
 
         cfg = self.get_account_config(account_id)
         if not cfg:
-            # Fallback based on email domain
-            if "@gmail.com" in account_id.lower() or "@mavencode.com" in account_id.lower():
-                return self.gmail_provider, {"account_id": account_id, "provider": "GMAIL"}
-            elif "@outlook.com" in account_id.lower() or "@hotmail.com" in account_id.lower():
-                return self.graph_provider, {"account_id": account_id, "provider": "MICROSOFT_GRAPH"}
-            else:
-                return self.imap_provider, {"account_id": account_id, "provider": "IMAP"}
+            logger.warning(f"Account '{account_id}' is not configured in settings. Rejecting routing.")
+            return None, None
 
-        p_type = cfg.get("provider", "MICROSOFT_GRAPH")
-        return self.get_provider_by_type(p_type), cfg
+        p_type = cfg.get("provider", "")
+        provider = self.get_provider_by_type(p_type)
+        return provider, cfg
 
-    def get_provider_for_message(self, message_id: str) -> Tuple[BaseEmailProvider, str, str]:
-        """Resolves provider, account_id, and native_id from structured composite ID."""
+    def get_provider_for_message(self, message_id: str) -> Tuple[Optional[BaseEmailProvider], str, str, Optional[str]]:
+        """Resolves provider, account_id, native_id, and error_code from structured composite ID.
+        
+        Returns: (provider, account_id, native_id, error_code)
+        """
         if self.is_demo_mode():
-            return self.demo_provider, "demo@auramail.local", message_id
+            return self.demo_provider, "demo@auramail.local", message_id, None
 
         provider_name, account_id, native_id = decode_composite_id(message_id)
+        
+        if provider_name in ["UNKNOWN", "MAC_DESKTOP"] or not provider_name:
+            return None, account_id, native_id, "UNROUTABLE_MESSAGE"
+
+        if provider_name == "DEMO":
+            if not self.is_demo_mode():
+                return None, account_id, native_id, "DEMO_ISOLATED"
+            return self.demo_provider, "demo@auramail.local", native_id, None
+
         provider = self.get_provider_by_type(provider_name)
-        return provider, account_id, native_id
+        if not provider:
+            return None, account_id, native_id, "UNKNOWN_PROVIDER"
+
+        cfg = self.get_account_config(account_id)
+        if not cfg:
+            return None, account_id, native_id, "ACCOUNT_NOT_FOUND"
+
+        return provider, account_id, native_id, None
 
     def list_all_accounts(self) -> List[AccountIdentity]:
         """Returns all configured accounts with validated connection statuses and capabilities."""
@@ -110,11 +141,13 @@ class ProviderManager:
             p_type = acc.get("provider", "MICROSOFT_GRAPH")
             provider = self.get_provider_by_type(p_type)
             
+            if not provider:
+                continue
+
             # Check if this is an alias
             is_alias = acc.get("is_alias", False)
             alias_of = acc.get("alias_of")
             
-            # If alias, mirror the parent's connection
             if is_alias and alias_of:
                 parent_res = provider.validate_connection(alias_of)
                 all_identities.append(AccountIdentity(
@@ -150,7 +183,14 @@ class ProviderManager:
         """Fetches and merges messages across all active mailboxes into a unified inbox."""
         if self.is_demo_mode():
             msgs, _ = self.demo_provider.fetch_inbox_messages("demo@auramail.local")
-            return msgs, {"demo_mode": True, "accounts_synced": 1, "errors": []}
+            return msgs, {
+                "status": "SUCCESS",
+                "demo_mode": True, 
+                "accounts_synced": 1, 
+                "accounts_failed": 0,
+                "errors": [],
+                "timestamp": datetime.now().isoformat()
+            }
 
         settings = load_settings()
         user_profile = settings.get("user_profile", {})
@@ -159,13 +199,13 @@ class ProviderManager:
         configured = settings.get("configured_accounts", [])
         all_messages: List[EmailMessage] = []
         sync_stats = {
+            "status": "SUCCESS",
             "accounts_synced": 0,
             "accounts_failed": 0,
             "errors": [],
             "timestamp": datetime.now().isoformat()
         }
 
-        # Track seen mailboxes to avoid duplicate fetching of aliases
         fetched_mailboxes = set()
 
         for acc in configured:
@@ -174,11 +214,9 @@ class ProviderManager:
             
             acc_id = acc.get("account_id", acc.get("email", "")).lower()
             
-            # Skip historical accounts
             if acc_id in historical_accounts or any(h in acc_id for h in historical_accounts):
                 continue
             
-            # Skip aliases whose parent mailbox was already fetched
             if acc.get("is_alias") and acc.get("alias_of"):
                 parent = acc.get("alias_of").lower()
                 if parent in fetched_mailboxes:
@@ -186,6 +224,10 @@ class ProviderManager:
 
             p_type = acc.get("provider", "MICROSOFT_GRAPH")
             provider = self.get_provider_by_type(p_type)
+            if not provider:
+                sync_stats["accounts_failed"] += 1
+                sync_stats["errors"].append({"account_id": acc_id, "error": f"Unknown or unconfigured provider '{p_type}'"})
+                continue
 
             try:
                 msgs, err = provider.fetch_inbox_messages(acc_id, limit=limit_per_account)
@@ -206,6 +248,14 @@ class ProviderManager:
 
         save_settings(settings)
 
+        # Determine overall sync status truthfully
+        if sync_stats["accounts_synced"] == 0 and sync_stats["accounts_failed"] > 0:
+            sync_stats["status"] = "FAILED"
+        elif sync_stats["accounts_failed"] > 0:
+            sync_stats["status"] = "PARTIAL_SUCCESS"
+        else:
+            sync_stats["status"] = "SUCCESS"
+
         # Sort combined inbox by received_at descending
         all_messages.sort(key=lambda m: m.received_at, reverse=True)
         return all_messages, sync_stats
@@ -216,7 +266,17 @@ class ProviderManager:
         reply_body: str, 
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
-        provider, account_id, native_id = self.get_provider_for_message(message_id)
+        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
+        if not provider:
+            return ProviderOperationResult(
+                success=False,
+                provider="UNKNOWN",
+                account_id=account_id or "unknown",
+                operation="CREATE_DRAFT",
+                error_code=err_code or "UNROUTABLE_MESSAGE",
+                safe_message=f"Cannot create draft for unroutable message '{message_id}': {err_code or 'routing failed'}",
+                retryable=False
+            )
         return provider.create_reply_draft(
             account_id=account_id,
             message_id=message_id,
@@ -232,7 +292,17 @@ class ProviderManager:
         reply_body: str, 
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
-        provider, account_id, native_id = self.get_provider_for_message(message_id)
+        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
+        if not provider:
+            return ProviderOperationResult(
+                success=False,
+                provider="UNKNOWN",
+                account_id=account_id or "unknown",
+                operation="SEND_REPLY",
+                error_code=err_code or "UNROUTABLE_MESSAGE",
+                safe_message=f"Cannot send reply for unroutable message '{message_id}': {err_code or 'routing failed'}",
+                retryable=False
+            )
         return provider.send_reply(
             account_id=account_id,
             message_id=message_id,
@@ -243,7 +313,17 @@ class ProviderManager:
         )
 
     def move_message(self, message_id: str, destination_folder_id: str) -> ProviderOperationResult:
-        provider, account_id, native_id = self.get_provider_for_message(message_id)
+        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
+        if not provider:
+            return ProviderOperationResult(
+                success=False,
+                provider="UNKNOWN",
+                account_id=account_id or "unknown",
+                operation="MOVE_MESSAGE",
+                error_code=err_code or "UNROUTABLE_MESSAGE",
+                safe_message=f"Cannot move unroutable message '{message_id}': {err_code or 'routing failed'}",
+                retryable=False
+            )
         return provider.move_message(
             account_id=account_id,
             message_id=message_id,
@@ -251,10 +331,142 @@ class ProviderManager:
         )
 
     def delete_message(self, message_id: str) -> ProviderOperationResult:
-        provider, account_id, native_id = self.get_provider_for_message(message_id)
+        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
+        if not provider:
+            return ProviderOperationResult(
+                success=False,
+                provider="UNKNOWN",
+                account_id=account_id or "unknown",
+                operation="DELETE_MESSAGE",
+                error_code=err_code or "UNROUTABLE_MESSAGE",
+                safe_message=f"Cannot delete unroutable message '{message_id}': {err_code or 'routing failed'}",
+                retryable=False
+            )
         return provider.delete_message(
             account_id=account_id,
             message_id=message_id
+        )
+
+    def quarantine_message(self, message_id: str, folder_name: str = "AI Cleaned - Noise") -> ProviderOperationResult:
+        """Resolves quarantine remote folder ID and moves noise message.
+        
+        Caches folder/label IDs per provider and account. Fails closed if remote resolution fails.
+        """
+        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
+        if not provider:
+            return ProviderOperationResult(
+                success=False,
+                provider="UNKNOWN",
+                account_id=account_id or "unknown",
+                operation="QUARANTINE",
+                error_code=err_code or "UNROUTABLE_MESSAGE",
+                safe_message=f"Cannot quarantine unroutable message '{message_id}': {err_code or 'routing failed'}",
+                retryable=False
+            )
+
+        # In demo mode, pass display name directly
+        if self.is_demo_mode() or provider.provider_type == ProviderType.DEMO:
+            return provider.move_message(account_id, message_id, folder_name)
+
+        # Resolve remote folder / label ID
+        cache_key = (provider.provider_type.value, account_id.lower())
+        remote_folder_id = self._quarantine_folder_cache.get(cache_key)
+
+        if not remote_folder_id:
+            try:
+                resolved_id = provider.create_or_resolve_quarantine_folder(account_id, folder_name)
+                if resolved_id:
+                    self._quarantine_folder_cache[cache_key] = resolved_id
+                    remote_folder_id = resolved_id
+                else:
+                    return ProviderOperationResult(
+                        success=False,
+                        provider=provider.provider_type.value,
+                        account_id=account_id,
+                        operation="QUARANTINE",
+                        error_code="QUARANTINE_RESOLUTION_FAILED",
+                        safe_message=f"Could not create or resolve remote quarantine folder '{folder_name}' on mailbox '{account_id}'.",
+                        retryable=False
+                    )
+            except Exception as e:
+                return ProviderOperationResult(
+                    success=False,
+                    provider=provider.provider_type.value,
+                    account_id=account_id,
+                    operation="QUARANTINE",
+                    error_code="EXCEPTION",
+                    safe_message=f"Exception resolving quarantine folder on '{account_id}': {str(e)}",
+                    retryable=False
+                )
+
+        return provider.move_message(
+            account_id=account_id,
+            message_id=message_id,
+            destination_folder_id=remote_folder_id
+        )
+
+    def batch_quarantine_noise(self, emails_to_clean: List[EmailMessage], folder_name: str = "AI Cleaned - Noise") -> QuarantineBatchResult:
+        """Executes cross-provider noise quarantine with accurate status reporting and per-message tracking."""
+        if not emails_to_clean:
+            return QuarantineBatchResult(
+                status="SUCCESS",
+                total_requested=0,
+                cleaned_count=0,
+                failed_count=0,
+                cleaned_ids=[],
+                results=[],
+                message="No noise emails to clean."
+            )
+
+        cleaned_ids: List[str] = []
+        results: List[QuarantineMessageResult] = []
+
+        for email_msg in emails_to_clean:
+            res = self.quarantine_message(email_msg.id, folder_name=folder_name)
+            if res.success:
+                cleaned_ids.append(email_msg.id)
+                results.append(QuarantineMessageResult(
+                    email_id=email_msg.id,
+                    subject=email_msg.subject,
+                    provider=res.provider,
+                    account_id=res.account_id,
+                    destination_folder_id=res.remote_object_id,
+                    success=True,
+                    message=res.safe_message
+                ))
+            else:
+                results.append(QuarantineMessageResult(
+                    email_id=email_msg.id,
+                    subject=email_msg.subject,
+                    provider=res.provider,
+                    account_id=res.account_id,
+                    success=False,
+                    error_code=res.error_code,
+                    message=res.safe_message
+                ))
+
+        total = len(emails_to_clean)
+        cleaned_count = len(cleaned_ids)
+        failed_count = total - cleaned_count
+
+        if failed_count == 0 and cleaned_count > 0:
+            status = "SUCCESS"
+            msg = f"Successfully quarantined {cleaned_count} noise email(s) into '{folder_name}'."
+        elif cleaned_count > 0 and failed_count > 0:
+            status = "PARTIAL_SUCCESS"
+            msg = f"Partial cleanup: {cleaned_count} quarantined, {failed_count} failed."
+        else:
+            status = "FAILED"
+            msg = f"Quarantine failed for all {failed_count} noise email(s)."
+
+        return QuarantineBatchResult(
+            status=status,
+            total_requested=total,
+            cleaned_count=cleaned_count,
+            failed_count=failed_count,
+            cleaned_ids=cleaned_ids,
+            results=results,
+            message=msg
         )
 
 provider_manager = ProviderManager()
