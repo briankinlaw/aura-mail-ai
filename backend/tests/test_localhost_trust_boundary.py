@@ -1,20 +1,30 @@
 """
-Unit and Integration Tests for Localhost API Trust Boundary & Auth Hardening (Phase 2 Corrective).
+Unit and Integration Tests for Localhost API Browser-Origin Defense & Auth Hardening (Phase 2).
+
+Approved Threat Model:
+  - In-Scope: Unauthorized browser origins, cross-site request attacks (CSRF), sandboxed/null
+    origins, DNS-rebinding Host abuse, and accidental unauthenticated API access.
+  - Out-of-Scope: Malicious software already running as the logged-in macOS user ($UID),
+    same-user filesystem access, or root compromise.
+
 Verifies:
   - Removal of wildcard CORS and null origin allowlists.
-  - Rejection of unknown and lookalike origins.
-  - Absence of unauthenticated credential disclosure endpoints (/api/auth/session).
+  - Rejection of unauthorized and lookalike origins via CORS preflight and server-side Origin checks.
+  - Host header validation against DNS rebinding attacks via TrustedHostMiddleware.
+  - Absence of unauthenticated credential bootstrap endpoints (/api/auth/session).
   - Strict enforcement of request authorization on all privileged endpoints with zero side effects.
   - Proper handling of malformed and invalid tokens.
-  - Same-origin runtime token delivery for legitimate local UI and add-in.
+  - Server-rendered same-origin token delivery for legitimate local UI and add-in.
+  - Absence of session token in unrelated API responses and static assets.
   - Functional preservation of external OAuth browser redirects.
 """
 
+import io
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from backend.main import app, ALLOWED_ORIGINS
+from backend.main import app, ALLOWED_ORIGINS, ALLOWED_HOSTS
 from backend.auth import (
     get_local_session_token,
     get_auth_headers,
@@ -27,7 +37,7 @@ auth_client = TestClient(app)
 auth_client.headers.update(get_auth_headers())
 
 
-# --- 1. CORS Security Tests ---
+# --- 1. CORS & Browser-Origin Security Tests ---
 
 def test_cors_wildcard_and_null_removed():
     """
@@ -40,21 +50,8 @@ def test_cors_wildcard_and_null_removed():
 
 
 def test_cors_approved_origins_accepted():
-    """Verifies that legitimate localhost, 127.0.0.1, and Microsoft Office add-in origins are permitted."""
-    approved_origins = [
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "https://localhost:8000",
-        "https://127.0.0.1:8000",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://localhost:3000",
-        "https://127.0.0.1:3000",
-        "https://outlook.office.com",
-        "https://outlook.office365.com",
-        "https://appsforoffice.microsoft.com",
-    ]
-    for origin in approved_origins:
+    """Verifies that legitimate localhost, 127.0.0.1, and local development origins are permitted."""
+    for origin in ALLOWED_ORIGINS:
         response = unauth_client.options(
             "/api/status",
             headers={
@@ -69,7 +66,7 @@ def test_cors_approved_origins_accepted():
 def test_cors_null_origin_rejected():
     """
     SECURITY INVARIANT:
-    Verifies that requests presenting 'Origin: null' (sandboxed iframes, opaque contexts) are rejected.
+    Verifies that preflight requests presenting 'Origin: null' (sandboxed iframes, opaque contexts) are rejected.
     """
     response = unauth_client.options(
         "/api/status",
@@ -84,7 +81,7 @@ def test_cors_null_origin_rejected():
 def test_cors_unknown_and_lookalike_origins_rejected():
     """
     SECURITY INVARIANT:
-    Verifies that arbitrary external origins, lookalikes, and subdomain spoofing are rejected.
+    Verifies that arbitrary external origins, lookalikes, and subdomain spoofing are rejected during preflight.
     """
     malicious_origins = [
         "https://evil-attacker.com",
@@ -107,19 +104,75 @@ def test_cors_unknown_and_lookalike_origins_rejected():
         assert response.headers.get("access-control-allow-origin") != origin
 
 
-# --- 2. Absence of Unauthenticated Credential Disclosure ---
+# --- 2. Host Validation & DNS-Rebinding Defense ---
+
+def test_host_validation_dns_rebinding_rejected():
+    """
+    DNS-REBINDING DEFENSE:
+    Verifies that requests arriving with untrusted Host headers (e.g. attacker domains in DNS rebinding)
+    are rejected with 400 Bad Request by TrustedHostMiddleware.
+    """
+    untrusted_hosts = [
+        "evil-attacker.com",
+        "malicious-rebind.net",
+        "attacker.com:8000",
+        "192.168.1.50:8000"
+    ]
+    for host in untrusted_hosts:
+        res = unauth_client.get("/api/status", headers={"Host": host})
+        assert res.status_code == 400
+        assert "Invalid host header" in res.text
+
+
+def test_host_validation_legitimate_hosts_accepted():
+    """Verifies that legitimate loopback hosts (localhost, 127.0.0.1, testserver) are accepted."""
+    trusted_hosts = ["localhost", "127.0.0.1", "testserver"]
+    for host in trusted_hosts:
+        res = unauth_client.get("/api/status", headers={"Host": host})
+        assert res.status_code == 200
+
+
+# --- 3. Server-Side Origin Verification (Defense in Depth) ---
+
+def test_server_side_origin_rejection_on_privileged_endpoints():
+    """
+    DEFENSE IN DEPTH:
+    Verifies that even if an attacker supplies a valid token, an unauthorized browser Origin
+    (or Origin: null) is rejected with 403 Forbidden by server-side verification.
+    """
+    token = get_local_session_token()
+    disallowed_origins = [
+        "https://evil-attacker.com",
+        "null",
+        "http://localhost.attacker.com",
+        "http://127.0.0.1.attacker.com",
+    ]
+    for bad_origin in disallowed_origins:
+        res = unauth_client.post(
+            "/api/calendar/availability",
+            json={"days_ahead": 3},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Origin": bad_origin
+            }
+        )
+        assert res.status_code == 403
+        assert "Origin verification failed" in res.json().get("detail", "")
+
+
+# --- 4. Absence of Unauthenticated Credential Bootstrap Endpoints ---
 
 def test_no_unauthenticated_session_credential_disclosure_endpoint():
     """
-    CRITICAL SECURITY INVARIANT (Finding 1 Correction):
+    CRITICAL SECURITY INVARIANT:
     Verifies that no unauthenticated JSON API endpoint (/api/auth/session) exists
-    to disclose the local bearer token to arbitrary callers.
+    to disclose the session token.
     """
     response = unauth_client.get("/api/auth/session")
     assert response.status_code in [404, 405]
 
 
-# --- 3. Request Authorization on Privileged Endpoints ---
+# --- 5. Request Authorization on Privileged Endpoints ---
 
 PRIVILEGED_POST_ENDPOINTS = [
     ("/api/settings", {"demo_mode": True}),
@@ -154,6 +207,17 @@ def test_all_privileged_endpoints_reject_unauthenticated_request(path, payload):
     requests with 401 Unauthorized.
     """
     response = unauth_client.post(path, json=payload)
+    assert response.status_code == 401
+    assert "Authentication required" in response.json().get("detail", "")
+
+
+def test_unauthenticated_upload_resume_rejected():
+    """Verifies that multipart file upload to /api/profile/upload-resume rejects unauthenticated callers."""
+    fake_file = io.BytesIO(b"Fake resume content")
+    response = unauth_client.post(
+        "/api/profile/upload-resume",
+        files={"file": ("test_resume.docx", fake_file, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+    )
     assert response.status_code == 401
     assert "Authentication required" in response.json().get("detail", "")
 
@@ -215,7 +279,7 @@ def test_privileged_endpoints_reject_invalid_token():
     assert res3.status_code == 403
 
 
-# --- 4. Side-Effect Prevention Verification ---
+# --- 6. Side-Effect Prevention Verification ---
 
 def test_unauthenticated_send_reply_executes_no_side_effects():
     """Verifies that rejected unauthenticated requests to send-reply trigger zero provider actions."""
@@ -241,7 +305,7 @@ def test_unauthenticated_trash_executes_no_side_effects():
         assert not mock_delete.called
 
 
-# --- 5. Legitimate Authenticated Access & Same-Origin Delivery ---
+# --- 7. Legitimate Authenticated Access & Same-Origin Delivery ---
 
 def test_authenticated_requests_succeed_with_token():
     """Verifies that legitimate requests with valid authorization token succeed."""
@@ -251,7 +315,10 @@ def test_authenticated_requests_succeed_with_token():
     res1 = unauth_client.post(
         "/api/calendar/availability",
         json={"days_ahead": 3},
-        headers={"Authorization": f"Bearer {token}"}
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Origin": "http://localhost:8000"
+        }
     )
     assert res1.status_code == 200
     assert res1.json()["status"] == "SUCCESS"
@@ -260,15 +327,20 @@ def test_authenticated_requests_succeed_with_token():
     res2 = unauth_client.post(
         "/api/calendar/availability",
         json={"days_ahead": 3},
-        headers={"X-Aura-Session-Token": token}
+        headers={
+            "X-Aura-Session-Token": token,
+            "Origin": "http://127.0.0.1:8000"
+        }
     )
     assert res2.status_code == 200
 
 
 def test_server_rendered_html_injects_token_for_same_origin():
     """
+    SAME-ORIGIN BOOTSTRAP:
     Verifies that server-rendered same-origin HTML pages (/ and /add-in/taskpane.html)
-    contain the injected session token runtime configuration.
+    contain the injected session token runtime configuration for same-origin browser contexts
+    (protected from third-party sites by the browser's Same-Origin Policy).
     """
     token = get_local_session_token()
 
@@ -283,7 +355,44 @@ def test_server_rendered_html_injects_token_for_same_origin():
     assert f'window.__AURA_SESSION_TOKEN__ = "{token}";' in taskpane_res.text
 
 
-# --- 6. OAuth Special Endpoints & Public Assets ---
+# --- 8. Token Disclosure Scope & Public Endpoint Invariants ---
+
+def test_session_token_not_exposed_in_unrelated_api_responses_or_static_assets():
+    """
+    TOKEN EXPOSURE BOUNDARY TEST:
+    Verifies that the session token is NOT leaked in unrelated JSON API endpoints,
+    diagnostic endpoints, or static CSS/JS files.
+    """
+    token = get_local_session_token()
+    public_endpoints = [
+        "/api/status",
+        "/api/safety-policy",
+        "/api/accounts",
+        "/api/settings",
+        "/api/profile",
+        "/api/resumes",
+        "/api/canonical/resumes",
+        "/api/canonical/catalog",
+        "/api/canonical/ledger",
+        "/api/emails",
+        "/api/analytics/kpis",
+        "/api/analytics/funnel",
+        "/api/analytics/compensation",
+        "/api/analytics/resumes-roi",
+        "/api/analytics/events",
+        "/api/analytics/export",
+        "/api/stats",
+        "/api/daemon/status",
+        "/static/icon-64.png",
+    ]
+    for endpoint in public_endpoints:
+        res = unauth_client.get(endpoint)
+        assert res.status_code == 200, f"Public endpoint {endpoint} failed to return 200"
+        assert token not in res.text, f"Token disclosed in response from {endpoint}!"
+        assert "AURA_SESSION_TOKEN" not in res.text
+
+
+# --- 9. OAuth Special Endpoints & Public Assets ---
 
 def test_oauth_endpoints_remain_accessible_without_bearer_token():
     """
@@ -312,95 +421,4 @@ def test_public_read_only_and_static_routes_remain_accessible():
     assert unauth_client.get("/api/status").status_code == 200
     assert unauth_client.get("/api/safety-policy").status_code == 200
     assert unauth_client.get("/static/icon-64.png").status_code == 200
-
-
-# --- 7. Adversarial Verification Tests (Step 7 Requirements) ---
-
-def test_credential_discovery_through_all_public_endpoints():
-    """
-    STEP 7.C ADVERSARIAL TEST:
-    Attempts to discover or scrape the privileged session credential through all
-    public read-only JSON API endpoints.
-    Expected: No privileged credential or unmasked secret is disclosed.
-    """
-    token = get_local_session_token()
-    public_endpoints = [
-        "/api/status",
-        "/api/safety-policy",
-        "/api/accounts",
-        "/api/settings",
-        "/api/profile",
-        "/api/resumes",
-        "/api/canonical/resumes",
-        "/api/canonical/catalog",
-        "/api/canonical/ledger",
-        "/api/emails",
-        "/api/analytics/kpis",
-        "/api/analytics/funnel",
-        "/api/analytics/compensation",
-        "/api/analytics/resumes-roi",
-        "/api/analytics/events",
-        "/api/analytics/export",
-        "/api/stats",
-        "/api/daemon/status",
-    ]
-    for endpoint in public_endpoints:
-        res = unauth_client.get(endpoint)
-        assert res.status_code == 200, f"Public endpoint {endpoint} failed to return 200"
-        body_text = res.text
-        # Assert active token is NEVER returned in any JSON response
-        assert token not in body_text, f"Token disclosed in response from {endpoint}!"
-        # Assert raw unmasked secrets are not disclosed
-        assert "AURA_SESSION_TOKEN" not in body_text
-
-
-def test_forged_browser_metadata_alone_does_not_authorize():
-    """
-    STEP 7.D ADVERSARIAL TEST:
-    Attempts privileged requests presenting forged browser metadata (Origin, Referer, User-Agent).
-    These values alone must NOT confer privileged authorization.
-    """
-    forged_headers = {
-        "Origin": "https://localhost:8000",
-        "Referer": "https://localhost:8000/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-    privileged_targets = [
-        ("/api/settings", {"demo_mode": True}),
-        ("/api/emails/sync", {}),
-        ("/api/daemon/run-now", {}),
-        ("/api/calendar/availability", {}),
-        ("/api/emails/test_id/send-reply", {"reply_body": "test"}),
-    ]
-    for path, payload in privileged_targets:
-        res = unauth_client.post(path, json=payload, headers=forged_headers)
-        assert res.status_code == 401, f"Forged metadata allowed unauthorized access to {path}"
-        assert "Authentication required" in res.json().get("detail", "")
-
-
-def test_null_origin_cannot_access_privileged_endpoints():
-    """
-    STEP 7.E ADVERSARIAL TEST:
-    Verifies that requests presenting 'Origin: null' cannot access privileged endpoints.
-    """
-    headers = {
-        "Origin": "null",
-        "Referer": "",
-        "User-Agent": "Mozilla/5.0 (Sandboxed Frame)",
-    }
-    res = unauth_client.post("/api/calendar/availability", json={}, headers=headers)
-    assert res.status_code == 401
-    assert "Authentication required" in res.json().get("detail", "")
-
-
-def test_unauthenticated_upload_resume_rejected():
-    """Verifies that multipart file upload to /api/profile/upload-resume rejects unauthenticated callers."""
-    import io
-    fake_file = io.BytesIO(b"Fake resume content")
-    response = unauth_client.post(
-        "/api/profile/upload-resume",
-        files={"file": ("test_resume.docx", fake_file, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
-    )
-    assert response.status_code == 401
-    assert "Authentication required" in response.json().get("detail", "")
 

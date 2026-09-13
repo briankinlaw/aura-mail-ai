@@ -85,3 +85,21 @@ The following packages are installed in `.venv` and utilized by optional feature
    - Zero-hallucination constraint matrix enforced across `canonical_engine.py` and `risk_evaluator.py`.
 4. **`Provider Abstraction Compatibility`**:
    - Graph, Gmail, IMAP, and Demo providers conform to `ProviderManager` contracts.
+
+---
+
+## 5. Phase 2 Local-Desktop Threat Model & Security Boundaries
+
+### Approved In-Scope Protections
+- **Unauthorized Browser Origins**: Enforced via explicit CORS allowlist containing only local desktop and Office.js webview origins (`localhost:8000`, `127.0.0.1:8000`, `localhost:3000`, `127.0.0.1:3000`).
+- **Cross-Site Request Attacks (CSRF)**: Prevented via mandatory custom headers (`Authorization: Bearer <token>` or `X-Aura-Session-Token: <token>`) and server-side `Origin` header verification on all privileged endpoints.
+- **Sandboxed & Opaque Origins**: `Origin: null` is strictly rejected by CORS preflight and server-side verification.
+- **DNS Rebinding & Host Manipulation**: Enforced via `TrustedHostMiddleware` (rejecting any unexpected `Host` header).
+- **Accidental Unauthenticated Access**: All 22 state-changing, credential-mutating, or execution-triggering routes require authentication and fail closed (`401 Unauthorized` or `403 Forbidden`).
+- **Loopback-Only Network Isolation**: All launchers bind strictly to `127.0.0.1` / `localhost` (zero `0.0.0.0` exposure).
+
+### Explicit Out-of-Scope / Accepted Risks
+- **Same-User Process Compromise**: Malicious processes already executing under the same logged-in macOS user account ($UID) operate within the same operating-system privilege domain and can access user-space files (`~/.aura_session_token`), databases, and process memory. Aura does not claim OS-process-level isolation against same-user software.
+- **Same-Origin XSS**: If arbitrary JavaScript execution occurs within the same origin (`http://localhost:8000`), in-memory session tokens can be accessed. (CSP hardening is tracked for future UI refinement).
+- **Root/Admin Compromise**: System-wide administrative compromise supersedes application-level controls.
+

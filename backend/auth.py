@@ -1,9 +1,14 @@
 """
-Aura Mail AI - Local API Trust Boundary & Request Authorization (Phase 2).
-Provides cryptographically secure local session token generation, filesystem
-token storage (with strict 0600 user-only permissions), constant-time verification,
-and FastAPI dependencies to protect privileged endpoints from unauthorized or
-cross-origin invocation.
+Aura Mail AI - Local Desktop Request Authorization & Browser Origin Protection (Phase 2).
+Provides cryptographically secure session token management, constant-time verification,
+FastAPI dependencies protecting privileged endpoints from unauthorized/cross-origin browser invocation,
+and server-side Origin verification as defense in depth.
+
+Approved Threat Model:
+- In-Scope: Unauthorized browser origins, cross-site request attacks (CSRF), sandboxed/null
+  browser contexts, and accidental unauthenticated API access.
+- Out-of-Scope: Malicious software already executing as the logged-in macOS user ($UID),
+  same-user filesystem access, or root compromise.
 """
 
 import os
@@ -11,10 +16,22 @@ import hmac
 import secrets
 import logging
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from fastapi import Request, Header, HTTPException, status
 
 logger = logging.getLogger("aura.auth")
+
+# Canonical CORS and Origin Allowlist for Local Desktop & Office.js Webview
+ALLOWED_ORIGINS: List[str] = [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "https://localhost:8000",
+    "https://127.0.0.1:8000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://localhost:3000",
+    "https://127.0.0.1:3000",
+]
 
 # In-memory storage for the active local session token
 _LOCAL_SESSION_TOKEN: Optional[str] = None
@@ -108,7 +125,8 @@ def require_local_auth(
     request: Request,
     authorization: Optional[str] = Header(None),
     x_aura_session_token: Optional[str] = Header(None, alias="X-Aura-Session-Token"),
-    x_aura_token: Optional[str] = Header(None, alias="X-Aura-Token")
+    x_aura_token: Optional[str] = Header(None, alias="X-Aura-Token"),
+    origin: Optional[str] = Header(None)
 ) -> str:
     """
     FastAPI security dependency protecting privileged state-changing endpoints.
@@ -118,10 +136,20 @@ def require_local_auth(
       3. Header: X-Aura-Token: <token>
     
     Fail-closed behaviors:
+      - Origin verification failure (unauthorized or null origin): returns 403 Forbidden
       - Missing token: returns 401 Unauthorized
       - Malformed authorization scheme (e.g. Basic ...): returns 403 Forbidden
       - Invalid / mismatch token: returns 403 Forbidden
     """
+    # Server-Side Origin Defense: When present on browser requests, reject unauthorized or null origins
+    if origin is not None:
+        origin_clean = origin.strip()
+        if origin_clean == "null" or origin_clean not in ALLOWED_ORIGINS:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Origin verification failed: Unauthorized browser origin '{origin_clean}'."
+            )
+
     candidate: Optional[str] = None
 
     if x_aura_session_token:
@@ -152,3 +180,4 @@ def require_local_auth(
         )
 
     return candidate
+

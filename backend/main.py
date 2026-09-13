@@ -58,21 +58,15 @@ app = FastAPI(
     version="1.1.0"
 )
 
-from backend.auth import require_local_auth, get_local_session_token
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from backend.auth import require_local_auth, get_local_session_token, ALLOWED_ORIGINS
 
-ALLOWED_ORIGINS = [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-    "https://localhost:8000",
-    "https://127.0.0.1:8000",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://localhost:3000",
-    "https://127.0.0.1:3000",
-    "https://outlook.office.com",
-    "https://outlook.office365.com",
-    "https://appsforoffice.microsoft.com"
-]
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "*.localhost", "testserver"]
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=ALLOWED_HOSTS
+)
 
 app.add_middleware(
     CORSMiddleware,
