@@ -93,5 +93,67 @@ class TestAuraDaemon(unittest.TestCase):
         self.assertEqual(len(summary["high_fit_opportunities"]), 1)
         self.assertEqual(summary["high_fit_opportunities"][0]["role_title"], "Principal AI & Cloud Architect")
 
+    @patch("backend.daemon.load_processed_ids", return_value=set())
+    @patch("backend.daemon.ProviderManager")
+    @patch("backend.daemon.classify_email_radar")
+    @patch("backend.daemon.send_macos_notification")
+    def test_permanent_invariant_daemon_never_calls_send_reply(self, mock_notify, mock_classify, mock_pm_cls, mock_processed):
+        """
+        PERMANENT SAFETY INVARIANT TEST:
+        BACKGROUND EXECUTION -> SEND FORBIDDEN
+        Verifies that non-dry-run autonomous daemon execution strictly stages drafts
+        and NEVER invokes send_reply() under any circumstances.
+        """
+        mock_pm = MagicMock()
+        mock_pm_cls.return_value = mock_pm
+
+        test_msg = EmailMessage(
+            id="daemon_invariant_msg_01",
+            account_id="kinlawb@outlook.com",
+            sender_name="Recruiter Marcus",
+            sender_email="marcus@talent.com",
+            subject="Urgent: Lead Cloud & AI Solutions Architect",
+            body_text="Hi Brian, please share your resume and availability for this urgent lead role.",
+            received_at="2026-09-13 11:00",
+            preview="Hi Brian...",
+            folder="Inbox"
+        )
+        mock_pm.sync_unified_inbox.return_value = ([test_msg], {"accounts_synced": 1, "status": "SUCCESS"})
+        mock_pm.save_draft_reply.return_value = ProviderOperationResult(
+            success=True,
+            provider="GRAPH",
+            account_id="kinlawb@outlook.com",
+            operation="CREATE_DRAFT",
+            safe_message="Draft created",
+            remote_object_id="draft_inv_123"
+        )
+
+        mock_classify.return_value = ClassificationResult(
+            category=EmailCategory.RESUME_REQUEST,
+            confidence=0.98,
+            reasoning="Recruiter inquiring about Lead Cloud Architect",
+            is_noise=False,
+            is_resume_request=True,
+            recruiter_details=RecruiterDetails(
+                recruiter_name="Marcus",
+                company_name="Apex Cloud",
+                role_title="Lead Cloud & AI Solutions Architect",
+                salary_range="$250k-$280k",
+                required_skills=["Google Cloud", "AI", "Architecture"]
+            ),
+            suggested_action="REPLY"
+        )
+
+        # Execute live (non-dry-run) daemon cycle
+        summary = run_daemon_cycle(dry_run=False)
+
+        # Invariant Assertions:
+        self.assertEqual(summary["drafts_staged"], 1)
+        # 1. save_draft_reply MUST be called
+        mock_pm.save_draft_reply.assert_called_once()
+        # 2. send_reply MUST NEVER be called
+        mock_pm.send_reply.assert_not_called()
+        self.assertFalse(mock_pm.send_reply.called, "CRITICAL INVARIANT VIOLATION: Daemon attempted to call send_reply()!")
+
 if __name__ == "__main__":
     unittest.main()
