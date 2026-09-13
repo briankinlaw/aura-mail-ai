@@ -122,7 +122,7 @@ def save_cached_emails():
 
 load_cached_emails()
 
-from backend.safety_policy import get_active_safety_mode, set_safety_mode, MailSafetyMode, ExecutionContext, evaluate_mail_action
+from backend.safety_policy import get_active_safety_mode, MailSafetyMode
 
 # --- System & Multi-Account Endpoints ---
 
@@ -152,6 +152,7 @@ def get_system_status():
 
 @app.get("/api/safety-policy")
 def get_safety_policy_endpoint():
+    """Read-only reporting of active Mail Safety Policy and foundational security invariants."""
     mode = get_active_safety_mode()
     return {
         "status": "SUCCESS",
@@ -162,20 +163,6 @@ def get_safety_policy_endpoint():
             "BACKGROUND EXECUTION -> SEND FORBIDDEN (Daemon, Background Radar, Scheduled Jobs are strictly forbidden from transmitting email)",
             "FAIL-CLOSED -> DRAFT_ONLY (Missing, malformed, or corrupt configuration resolves to DRAFT_ONLY)"
         ]
-    }
-
-@app.post("/api/safety-policy")
-def update_safety_policy_endpoint(payload: Dict[str, Any]):
-    new_mode_raw = payload.get("safety_mode", "")
-    new_mode = MailSafetyMode(new_mode_raw) if new_mode_raw in MailSafetyMode.__members__ else MailSafetyMode.DRAFT_ONLY
-
-    # Trust boundary check: must be interactive user context
-    actor_context = ExecutionContext.DASHBOARD_INTERACTIVE_USER
-    updated = set_safety_mode(new_mode, actor_context)
-    return {
-        "status": "SUCCESS",
-        "safety_mode": updated.value,
-        "message": f"Mail Safety Policy updated to {updated.value}."
     }
 
 @app.get("/api/accounts")
