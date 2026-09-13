@@ -26,9 +26,6 @@ logger = logging.getLogger("aura.auth")
 # Parent framing domains (e.g. outlook.office.com) are controlled separately via CSP frame-ancestors.
 ALLOWED_ORIGINS: List[str] = [
     "https://localhost:8000",
-    "https://127.0.0.1:8000",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
 ]
 
 # Allow optional development origins on port 3000 only when explicitly configured

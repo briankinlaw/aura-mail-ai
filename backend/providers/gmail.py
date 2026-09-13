@@ -20,7 +20,7 @@ from email.mime.application import MIMEApplication
 import requests
 
 from backend.models import EmailMessage
-from backend.config import RESUMES_DIR
+from backend.config import RESUMES_DIR, CANONICAL_ORIGIN
 from backend.security import get_secret, set_secret, delete_secret
 from backend.providers.base import (
     BaseEmailProvider,
@@ -71,14 +71,15 @@ class GmailProvider(BaseEmailProvider):
         settings = load_settings()
         return settings.get("google_client_secret", "")
 
-    def get_auth_url(self, redirect_uri: str = "http://127.0.0.1:8000/api/auth/google/callback", state: str = "gmail_auth") -> Optional[str]:
+    def get_auth_url(self, redirect_uri: Optional[str] = None, state: str = "gmail_auth") -> Optional[str]:
         cid = self.effective_client_id
         if not cid:
             return None
+        actual_redirect_uri = redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/google/callback"
         import urllib.parse
         params = {
             "client_id": cid,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": actual_redirect_uri,
             "response_type": "code",
             "scope": " ".join(GMAIL_SCOPES),
             "access_type": "offline",
@@ -87,9 +88,10 @@ class GmailProvider(BaseEmailProvider):
         }
         return f"{GOOGLE_AUTH_URI}?{urllib.parse.urlencode(params)}"
 
-    def exchange_code_for_token(self, code: str, redirect_uri: str = "http://127.0.0.1:8000/api/auth/google/callback", account_id: Optional[str] = None) -> ProviderOperationResult:
+    def exchange_code_for_token(self, code: str, redirect_uri: Optional[str] = None, account_id: Optional[str] = None) -> ProviderOperationResult:
         cid = self.effective_client_id
         csec = self.effective_client_secret
+        actual_redirect_uri = redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/google/callback"
         if not cid or not csec:
             return ProviderOperationResult(
                 success=False,
@@ -209,7 +211,7 @@ class GmailProvider(BaseEmailProvider):
         if auth_payload and "code" in auth_payload:
             return self.exchange_code_for_token(
                 auth_payload["code"], 
-                auth_payload.get("redirect_uri", "http://127.0.0.1:8000/api/auth/google/callback"),
+                auth_payload.get("redirect_uri", f"{CANONICAL_ORIGIN}/api/auth/google/callback"),
                 account_config.get("account_id")
             )
         return ProviderOperationResult(

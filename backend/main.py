@@ -33,7 +33,8 @@ from backend.config import (
     RESUMES_DIR,
     EMAILS_CACHE_FILE,
     CANONICAL_ORIGIN,
-    get_ssl_context_paths
+    get_ssl_context_paths,
+    require_ssl_context_paths
 )
 from backend.providers.base import decode_composite_id
 
@@ -1098,14 +1099,12 @@ if ADDIN_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    cert_file, key_file = get_ssl_context_paths()
-    uvicorn_kwargs = {
-        "app": "backend.main:app",
-        "host": "127.0.0.1",
-        "port": 8000,
-        "reload": True
-    }
-    if cert_file and key_file:
-        uvicorn_kwargs["ssl_certfile"] = str(cert_file)
-        uvicorn_kwargs["ssl_keyfile"] = str(key_file)
-    uvicorn.run(**uvicorn_kwargs)
+    cert_file, key_file = require_ssl_context_paths()
+    uvicorn.run(
+        "backend.main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+        ssl_certfile=str(cert_file),
+        ssl_keyfile=str(key_file)
+    )

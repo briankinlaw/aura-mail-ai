@@ -17,7 +17,7 @@ import msal
 import requests
 
 from backend.models import EmailMessage
-from backend.config import GRAPH_SCOPES, RESUMES_DIR
+from backend.config import GRAPH_SCOPES, RESUMES_DIR, CANONICAL_ORIGIN
 from backend.security import get_secret, set_secret, delete_secret, mask_secret
 from backend.providers.base import (
     BaseEmailProvider,
@@ -73,14 +73,15 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             token_cache=cache
         )
 
-    def get_auth_url(self, redirect_uri: str = "http://127.0.0.1:8000/api/auth/callback", login_hint: Optional[str] = None, state: Optional[str] = None) -> Optional[str]:
+    def get_auth_url(self, redirect_uri: Optional[str] = None, login_hint: Optional[str] = None, state: Optional[str] = None) -> Optional[str]:
         """Generates OAuth2 authorization URL via MSAL with forced account login when login_hint is provided."""
+        actual_redirect_uri = redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/callback"
         app = self._build_msal_app(login_hint)
         if not app:
             return None
         kwargs = {
             "scopes": self.scopes,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": actual_redirect_uri,
             "prompt": "login" if login_hint else "select_account"
         }
         if login_hint:
@@ -171,8 +172,9 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             retryable=result.get("error") in ["authorization_pending", "slow_down"]
         )
 
-    def exchange_code_for_token(self, code: str, redirect_uri: str = "http://127.0.0.1:8000/api/auth/callback", account_id: Optional[str] = None) -> ProviderOperationResult:
+    def exchange_code_for_token(self, code: str, redirect_uri: Optional[str] = None, account_id: Optional[str] = None) -> ProviderOperationResult:
         """Exchanges authorization code for tokens using MSAL."""
+        actual_redirect_uri = redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/callback"
         target_account = (account_id or "primary").lower()
         app = self._build_msal_app(target_account)
         if not app:
@@ -188,7 +190,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         result = app.acquire_token_by_authorization_code(
             code=code,
             scopes=self.scopes,
-            redirect_uri=redirect_uri
+            redirect_uri=actual_redirect_uri
         )
 
         if "access_token" in result:
@@ -272,7 +274,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         if auth_payload and "code" in auth_payload:
             return self.exchange_code_for_token(
                 auth_payload["code"], 
-                auth_payload.get("redirect_uri", "http://127.0.0.1:8000/api/auth/callback"),
+                auth_payload.get("redirect_uri", f"{CANONICAL_ORIGIN}/api/auth/callback"),
                 account_id=account_config.get("account_id")
             )
         return ProviderOperationResult(

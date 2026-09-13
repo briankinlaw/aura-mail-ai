@@ -180,6 +180,34 @@ def test_resolve_email_item_success():
     assert data["email"]["subject"] == "Senior Cloud Architect Reachout"
 
 
+def test_resolve_email_item_unauthenticated_rejected():
+    """
+    PHASE 2.1 RESOLVER AUTH SECURITY:
+    Verifies that unauthenticated calls to /api/emails/resolve-item fail with 401 Unauthorized.
+    """
+    unauth = TestClient(app)
+    res = unauth.post("/api/emails/resolve-item", json={
+        "provider": "MICROSOFT_GRAPH",
+        "item_id": "AAMkAGI2AAA="
+    })
+    assert res.status_code == 401
+    assert "Authentication required" in res.json().get("detail", "")
+
+
+def test_resolve_email_item_malformed_auth_rejected():
+    """
+    PHASE 2.1 RESOLVER AUTH SECURITY:
+    Verifies that malformed Authorization header fails with 403 Forbidden.
+    """
+    unauth = TestClient(app)
+    res = unauth.post(
+        "/api/emails/resolve-item",
+        json={"provider": "MICROSOFT_GRAPH", "item_id": "AAMkAGI2AAA="},
+        headers={"Authorization": "InvalidScheme token123"}
+    )
+    assert res.status_code == 403
+
+
 def test_resolve_email_item_account_scoping():
     """
     PHASE 2.1 SCOPING SECURITY:

@@ -39,7 +39,7 @@ Aura Mail AI v1.1 includes automatic migration logic in [backend/migration.py](f
 ### A. Microsoft 365 & Outlook.com (Microsoft Graph via MSAL)
 1. Register a multi-tenant or personal **Public Client Application** in [Microsoft Entra Admin Center](https://entra.microsoft.com).
 2. Configure Mobile & Desktop Redirect URIs:
-   - `http://127.0.0.1:8000/api/auth/callback`
+   - `https://localhost:8000/api/auth/callback`
    - `https://login.microsoftonline.com/common/oauth2/nativeclient`
 3. Request the following delegated permissions:
    - `Mail.ReadWrite` (Read inboxes and create cloud drafts)

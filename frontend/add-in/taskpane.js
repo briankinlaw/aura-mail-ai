@@ -9,6 +9,22 @@ const API_BASE = window.location.origin;
 // --- Authenticated Session Initialization from Same-Origin Runtime ---
 let AURA_SESSION_TOKEN = window.__AURA_SESSION_TOKEN__ || null;
 
+/**
+ * Returns authorization headers including the active Aura session token.
+ */
+function getAuthHeaders(extraHeaders = {}) {
+    const token = window.__AURA_SESSION_TOKEN__ || AURA_SESSION_TOKEN || "";
+    const headers = {
+        "Content-Type": "application/json",
+        ...extraHeaders
+    };
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+        headers["X-Aura-Session-Token"] = token;
+    }
+    return headers;
+}
+
 const _nativeFetch = window.fetch;
 window._nativeFetch = _nativeFetch;
 window.fetch = async function(url, options = {}) {
@@ -138,7 +154,7 @@ async function initOutlookItem() {
         try {
             const resolveRes = await fetch(`${API_BASE}/api/emails/resolve-item`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({
                     provider: "MICROSOFT_GRAPH",
                     account_id: userEmail,
@@ -161,8 +177,12 @@ async function initOutlookItem() {
                     runAnalysisPipeline();
                     return;
                 }
+            } else if (resolveRes.status === 401 || resolveRes.status === 403) {
+                console.error(`[Aura Add-in] Resolver authorization failure (${resolveRes.status}). Session token missing or invalid.`);
             } else if (resolveRes.status === 404) {
                 console.log("[Aura Add-in] Item not in local cache; reading directly from active Office.js item.");
+            } else {
+                console.warn("[Aura Add-in] Item resolution returned unexpected status:", resolveRes.status);
             }
         } catch (err) {
             console.warn("[Aura Add-in] Item resolution error:", err);
@@ -205,7 +225,9 @@ async function initOutlookItem() {
  */
 async function initStandaloneMode() {
     try {
-        const res = await fetch(`${API_BASE}/api/emails`);
+        const res = await fetch(`${API_BASE}/api/emails`, {
+            headers: getAuthHeaders()
+        });
         if (res.ok) {
             const emails = await res.json();
             const recruiterEmail = emails.find(e => e.classification && e.classification.is_resume_request);
@@ -236,7 +258,7 @@ async function runAnalysisPipeline() {
         // 1. Opportunity Radar Triage
         const triageRes = await fetch(`${API_BASE}/api/radar/triage`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders(),
             body: JSON.stringify({
                 subject: currentEmailData.subject,
                 body: currentEmailData.bodyText,
@@ -306,7 +328,7 @@ async function fetchAvailabilitySlots() {
     try {
         const res = await fetch(`${API_BASE}/api/calendar/availability`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ days_ahead: 7, timezone: "America/Chicago" })
         });
         if (res.ok) {
@@ -334,7 +356,7 @@ async function generateDraft() {
     try {
         const res = await fetch(`${API_BASE}/api/radar/draft`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders(),
             body: JSON.stringify({
                 subject: currentEmailData.subject,
                 body: currentEmailData.bodyText,
@@ -387,7 +409,7 @@ async function runRiskAudit(draftText) {
     try {
         const res = await fetch(`${API_BASE}/api/radar/risk-check`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders(),
             body: JSON.stringify({
                 subject: currentEmailData.subject,
                 body: currentEmailData.bodyText,
@@ -483,7 +505,10 @@ async function stageCloudDraft() {
     showToast("Staging draft in cloud mailbox...");
 
     try {
-        const res = await fetch(`${API_BASE}/api/emails/sync`);
+        const res = await fetch(`${API_BASE}/api/emails/sync`, {
+            method: "POST",
+            headers: getAuthHeaders()
+        });
         // If available in cache or mock
         showToast("Draft staged in Outlook Drafts folder with resume attached!");
     } catch (err) {

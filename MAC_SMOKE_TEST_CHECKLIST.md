@@ -38,7 +38,7 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
    ```bash
    ./run.sh
    ```
-   Open browser at `http://127.0.0.1:8000`.
+   Open browser at `https://localhost:8000`.
 
 ---
 

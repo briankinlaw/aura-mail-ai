@@ -90,10 +90,12 @@ def get_ssl_context_paths() -> tuple:
     """
     cert_env = os.getenv("AURA_SSL_CERT")
     key_env = os.getenv("AURA_SSL_KEY")
-    if cert_env and key_env:
-        cert_p, key_p = Path(cert_env), Path(key_env)
-        if cert_p.is_file() and key_p.is_file():
-            return cert_p, key_p
+    if cert_env or key_env:
+        if cert_env and key_env:
+            cert_p, key_p = Path(cert_env), Path(key_env)
+            if cert_p.is_file() and key_p.is_file():
+                return cert_p, key_p
+        return None, None
 
     default_dir = Path.home() / ".aura_certs"
     default_cert = default_dir / "localhost.pem"
@@ -102,6 +104,26 @@ def get_ssl_context_paths() -> tuple:
         return default_cert, default_key
 
     return None, None
+
+def require_ssl_context_paths() -> tuple:
+    """
+    Resolves locally trusted development TLS certificate and private key paths.
+    Enforces fail-closed behavior: raises RuntimeError if either certificate or private key is missing.
+    Returns (cert_path, key_path) when both files exist.
+    """
+    cert_p, key_p = get_ssl_context_paths()
+    if not cert_p or not key_p:
+        raise RuntimeError(
+            "FATAL: Missing local TLS certificate or private key for Aura Mail AI.\n"
+            "Canonical origin https://localhost:8000 requires HTTPS.\n"
+            "Expected certificate: ~/.aura_certs/localhost.pem (or AURA_SSL_CERT)\n"
+            "Expected private key:  ~/.aura_certs/localhost-key.pem (or AURA_SSL_KEY)\n"
+            "To generate local development certificates with mkcert:\n"
+            "  mkdir -p ~/.aura_certs\n"
+            "  mkcert -install\n"
+            "  mkcert -key-file ~/.aura_certs/localhost-key.pem -cert-file ~/.aura_certs/localhost.pem localhost 127.0.0.1"
+        )
+    return cert_p, key_p
 
 # Execute startup security check
 startup_security_audit(BASE_DIR)

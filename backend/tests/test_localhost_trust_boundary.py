@@ -313,25 +313,25 @@ def test_authenticated_requests_succeed_with_token():
     """Verifies that legitimate requests with valid authorization token succeed."""
     token = get_local_session_token()
 
-    # Via Bearer header
+    # Via Bearer header with canonical HTTPS origin
     res1 = unauth_client.post(
         "/api/calendar/availability",
         json={"days_ahead": 3},
         headers={
             "Authorization": f"Bearer {token}",
-            "Origin": "http://localhost:8000"
+            "Origin": "https://localhost:8000"
         }
     )
     assert res1.status_code == 200
     assert res1.json()["status"] == "SUCCESS"
 
-    # Via X-Aura-Session-Token header
+    # Via X-Aura-Session-Token header with canonical HTTPS origin
     res2 = unauth_client.post(
         "/api/calendar/availability",
         json={"days_ahead": 3},
         headers={
             "X-Aura-Session-Token": token,
-            "Origin": "http://127.0.0.1:8000"
+            "Origin": "https://localhost:8000"
         }
     )
     assert res2.status_code == 200
@@ -469,24 +469,131 @@ def test_taskpane_csp_frame_ancestors_configured():
     assert "https://outlook.office365.com" in csp
 
 
-def test_local_tls_context_discovery(tmp_path, monkeypatch):
+def test_canonical_cors_strict_allowlist():
     """
-    PHASE 2.1 TLS CONFIGURATION TEST:
-    Verifies local development TLS cert/key discovery via env vars and standard path.
+    PHASE 2.1 FINDING 3 REGRESSION TEST:
+    Verifies that the default production/local-desktop CORS allowlist strictly contains ONLY
+    canonical 'https://localhost:8000'.
+    HTTP localhost origins, 127.0.0.1 origins, and Microsoft parent origins are strictly rejected.
     """
-    from backend.config import get_ssl_context_paths, CANONICAL_ORIGIN
-    assert CANONICAL_ORIGIN == "https://localhost:8000"
+    assert ALLOWED_ORIGINS == ["https://localhost:8000"]
 
-    fake_cert = tmp_path / "test.pem"
-    fake_key = tmp_path / "test-key.pem"
-    fake_cert.write_text("CERT")
-    fake_key.write_text("KEY")
+    rejected_origins = [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "https://127.0.0.1:8000",
+        "https://outlook.office.com",
+        "https://appsforoffice.microsoft.com",
+        "https://localhost:8000.attacker.com",
+    ]
+    for origin in rejected_origins:
+        res = unauth_client.options(
+            "/api/status",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET"
+            }
+        )
+        assert res.headers.get("access-control-allow-origin") != origin
+
+
+def test_tls_fail_closed_on_missing_certificate(tmp_path, monkeypatch):
+    """
+    PHASE 2.1 FINDING 1 REGRESSION TEST:
+    Verifies that require_ssl_context_paths() refuses startup and raises RuntimeError when:
+    - certificate is missing
+    - private key is missing
+    - both are missing
+    Ensures HTTP fallback is strictly prohibited.
+    """
+    from backend.config import require_ssl_context_paths
+
+    # Scenario A: Neither file exists
+    missing_cert = tmp_path / "nonexistent_cert.pem"
+    missing_key = tmp_path / "nonexistent_key.pem"
+    monkeypatch.setenv("AURA_SSL_CERT", str(missing_cert))
+    monkeypatch.setenv("AURA_SSL_KEY", str(missing_key))
+    with pytest.raises(RuntimeError, match="FATAL: Missing local TLS certificate or private key"):
+        require_ssl_context_paths()
+
+    # Scenario B: Certificate exists but private key missing
+    real_cert = tmp_path / "real_cert.pem"
+    real_cert.write_text("CERT")
+    monkeypatch.setenv("AURA_SSL_CERT", str(real_cert))
+    monkeypatch.setenv("AURA_SSL_KEY", str(missing_key))
+    with pytest.raises(RuntimeError, match="FATAL: Missing local TLS certificate or private key"):
+        require_ssl_context_paths()
+
+    # Scenario C: Private key exists but certificate missing
+    real_key = tmp_path / "real_key.pem"
+    real_key.write_text("KEY")
+    monkeypatch.setenv("AURA_SSL_CERT", str(missing_cert))
+    monkeypatch.setenv("AURA_SSL_KEY", str(real_key))
+    with pytest.raises(RuntimeError, match="FATAL: Missing local TLS certificate or private key"):
+        require_ssl_context_paths()
+
+
+def test_tls_success_configuration(tmp_path, monkeypatch):
+    """
+    PHASE 2.1 TLS SUCCESS CONFIGURATION TEST:
+    Verifies that require_ssl_context_paths() returns both cert and key when both exist.
+    """
+    from backend.config import require_ssl_context_paths
+
+    fake_cert = tmp_path / "valid_cert.pem"
+    fake_key = tmp_path / "valid_key.pem"
+    fake_cert.write_text("VALID_CERT")
+    fake_key.write_text("VALID_KEY")
 
     monkeypatch.setenv("AURA_SSL_CERT", str(fake_cert))
     monkeypatch.setenv("AURA_SSL_KEY", str(fake_key))
-    cert_p, key_p = get_ssl_context_paths()
+    cert_p, key_p = require_ssl_context_paths()
     assert cert_p == fake_cert
     assert key_p == fake_key
 
-    monkeypatch.delenv("AURA_SSL_CERT", raising=False)
-    monkeypatch.delenv("AURA_SSL_KEY", raising=False)
+
+def test_menubar_server_launch_fails_closed_without_tls(tmp_path, monkeypatch):
+    """
+    PHASE 2.1 LAUNCH DEFENSE TEST:
+    Verifies that ensure_server_running() in menubar_app fails closed with RuntimeError
+    when local TLS certs are absent, rather than silently falling back to HTTP.
+    """
+    from backend.menubar_app import ensure_server_running
+
+    missing_cert = tmp_path / "absent_cert.pem"
+    missing_key = tmp_path / "absent_key.pem"
+    monkeypatch.setenv("AURA_SSL_CERT", str(missing_cert))
+    monkeypatch.setenv("AURA_SSL_KEY", str(missing_key))
+
+    with patch("backend.menubar_app.is_server_running", return_value=False):
+        with pytest.raises(RuntimeError, match="FATAL: Missing local TLS certificate or private key"):
+            ensure_server_running()
+
+
+def test_frontend_taskpane_authentication_contract():
+    """
+    PHASE 2.1 FINDING 2 STATIC CONTRACT TEST:
+    Verifies that the taskpane frontend (frontend/add-in/taskpane.js):
+    1. Defines getAuthHeaders helper attaching the session token.
+    2. Uses getAuthHeaders() for /api/emails/resolve-item and other privileged API calls.
+    3. Handles HTTP 401/403 authorization failures distinctly from 404 cache misses.
+    """
+    from backend.config import BASE_DIR
+    taskpane_js_path = BASE_DIR / "frontend" / "add-in" / "taskpane.js"
+    assert taskpane_js_path.is_file(), "taskpane.js must exist"
+
+    content = taskpane_js_path.read_text(encoding="utf-8")
+
+    # 1. getAuthHeaders definition
+    assert "function getAuthHeaders" in content
+    assert "Authorization" in content
+    assert "X-Aura-Session-Token" in content
+
+    # 2. Authenticated resolve-item invocation
+    assert "/api/emails/resolve-item" in content
+    assert "headers: getAuthHeaders()" in content
+
+    # 3. Distinct authorization failure handling (401/403 vs 404)
+    assert "status === 401" in content or "status === 403" in content
+    assert "Resolver authorization failure" in content
+    assert "status === 404" in content

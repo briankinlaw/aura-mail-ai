@@ -18,24 +18,33 @@ if [ -n "$EXISTING_PID" ]; then
     sleep 1
 fi
 
-# Check for local trusted development TLS certificate (Phase 2.1)
+# Check for local trusted development TLS certificate (Phase 2.1 Fail-Closed Invariant)
 CERT_FILE="${AURA_SSL_CERT:-$HOME/.aura_certs/localhost.pem}"
 KEY_FILE="${AURA_SSL_KEY:-$HOME/.aura_certs/localhost-key.pem}"
 
-SSL_FLAGS=""
-if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-    SSL_FLAGS="--ssl-certfile $CERT_FILE --ssl-keyfile $KEY_FILE"
+if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
+    echo "=========================================================="
+    echo "❌ FATAL: Missing local TLS certificate or private key."
+    echo "Aura Mail AI canonical origin https://localhost:8000 requires HTTPS."
+    echo "Expected certificate: $CERT_FILE"
+    echo "Expected private key:  $KEY_FILE"
+    echo ""
+    echo "💡 To generate local development certificates with mkcert:"
+    echo "   mkdir -p ~/.aura_certs"
+    echo "   mkcert -install"
+    echo "   mkcert -key-file ~/.aura_certs/localhost-key.pem -cert-file ~/.aura_certs/localhost.pem localhost 127.0.0.1"
+    echo ""
+    echo "Alternatively, export AURA_SSL_CERT and AURA_SSL_KEY environment variables."
+    echo "=========================================================="
+    exit 1
 fi
+
+SSL_FLAGS="--ssl-certfile $CERT_FILE --ssl-keyfile $KEY_FILE"
 
 echo "=========================================================="
 echo "🚀 Launching Aura Mail AI Assistant (FastAPI + Outlook Co-Pilot)"
 echo "📍 Canonical HTTPS Origin: https://localhost:8000"
 echo "📍 Taskpane URL: https://localhost:8000/add-in/taskpane.html"
-if [ -z "$SSL_FLAGS" ]; then
-    echo "⚠️  Note: Local TLS certificate not found in ~/.aura_certs/."
-    echo "💡 To generate local development TLS certificates with mkcert:"
-    echo "   mkdir -p ~/.aura_certs && mkcert -install && mkcert -key-file ~/.aura_certs/localhost-key.pem -cert-file ~/.aura_certs/localhost.pem localhost 127.0.0.1"
-fi
 echo "=========================================================="
 
 PYTHONPATH=. .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 $SSL_FLAGS --reload

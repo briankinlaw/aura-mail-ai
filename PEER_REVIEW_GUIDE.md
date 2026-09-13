@@ -52,7 +52,7 @@ pip install -r requirements.txt
 ```bash
 ./run.sh
 ```
-Open **`http://127.0.0.1:8000`** (Web Cockpit) or **`http://127.0.0.1:8000/add-in/taskpane.html`** (Outlook Add-in Preview).
+Open **`https://localhost:8000`** (Web Cockpit) or **`https://localhost:8000/add-in/taskpane.html`** (Outlook Add-in Preview).
 
 ---
 

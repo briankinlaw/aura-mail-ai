@@ -120,7 +120,7 @@ pip install -r requirements.txt
 1. Go to [Microsoft Entra Admin Center](https://entra.microsoft.com) ➔ **App registrations** ➔ **New registration**.
 2. Name: `Aura Mail AI`.
 3. Supported account types: `Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)`.
-4. Redirect URI: `Public client/native (mobile & desktop)` ➔ `http://127.0.0.1:8000/api/auth/callback`.
+4. Redirect URI: `Public client/native (mobile & desktop)` ➔ `https://localhost:8000/api/auth/callback`.
 5. Under **API permissions**, add delegated permissions:
    - `Mail.ReadWrite`
    - `Mail.Send`
@@ -146,7 +146,7 @@ python3 scripts/smoke_test_live.py
 ```bash
 ./run.sh
 ```
-Open your browser to: **`http://127.0.0.1:8000`**
+Open your browser to: **`https://localhost:8000`**
 
 ---
 

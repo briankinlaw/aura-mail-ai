@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import rumps
 
-from backend.config import DATA_DIR, load_settings, get_user_profile, CANONICAL_ORIGIN, get_ssl_context_paths
+from backend.config import DATA_DIR, load_settings, get_user_profile, CANONICAL_ORIGIN, require_ssl_context_paths
 
 from backend.daemon import (
     STATE_FILE,
@@ -55,17 +55,21 @@ def is_server_running() -> bool:
         return False
 
 def ensure_server_running():
-    """Starts the FastAPI uvicorn server in a background subprocess if not running."""
+    """Starts the FastAPI uvicorn server in a background subprocess if not running. Fails closed without TLS."""
     global SERVER_PROCESS
     if is_server_running():
         return
     
+    cert_p, key_p = require_ssl_context_paths()
     root_dir = str(Path(__file__).resolve().parent.parent)
     python_bin = sys.executable
-    cmd = [python_bin, "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "8000"]
-    cert_p, key_p = get_ssl_context_paths()
-    if cert_p and key_p:
-        cmd.extend(["--ssl-certfile", str(cert_p), "--ssl-keyfile", str(key_p)])
+    cmd = [
+        python_bin, "-m", "uvicorn", "backend.main:app",
+        "--host", "127.0.0.1",
+        "--port", "8000",
+        "--ssl-certfile", str(cert_p),
+        "--ssl-keyfile", str(key_p)
+    ]
 
     SERVER_PROCESS = subprocess.Popen(
         cmd,
