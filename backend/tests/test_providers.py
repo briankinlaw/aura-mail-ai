@@ -377,9 +377,65 @@ def test_provider_capabilities_least_privilege_exclude_send():
 
     # 5. ProviderManager aggregated account status
     pm = ProviderManager()
-    with patch("backend.config.load_settings", return_value={"configured_accounts": [{"account_id": "demo@auramail.local", "provider": "DEMO", "enabled": True}]}):
+    with patch("backend.provider_manager.load_settings", return_value={"demo_mode": False, "configured_accounts": [{"account_id": "demo@auramail.local", "provider": "DEMO", "enabled": True}]}):
         all_accs = pm.list_all_accounts(validate_remote=False)
         for acc in all_accs:
             assert "SEND" not in acc.capabilities
             assert "send" not in [c.lower() for c in acc.capabilities]
             assert "DRAFTS" in acc.capabilities
+
+
+def test_persisted_send_capability_sanitized_at_provider_manager_boundary():
+    """
+    PHASE 3.2.1 ADVERSARIAL REGRESSION:
+    Proves that when stale persisted settings contain 'SEND' or legacy variants
+    in the capabilities array of normal accounts and aliases, ProviderManager
+    strictly sanitizes them at the application boundary so 'SEND' never reaches
+    Aura-facing AccountIdentity objects.
+    """
+    from backend.provider_manager import ProviderManager, sanitize_aura_capabilities
+
+    # 1. Direct unit sanitization of legacy / malformed inputs
+    assert sanitize_aura_capabilities(["DRAFTS", "SEND", "ATTACHMENTS"]) == ["DRAFTS", "ATTACHMENTS"]
+    assert sanitize_aura_capabilities(["DRAFTS", " send ", "ATTACHMENTS"]) == ["DRAFTS", "ATTACHMENTS"]
+    assert sanitize_aura_capabilities(["Send", "drafts"]) == ["DRAFTS"]
+    assert sanitize_aura_capabilities(["SEND"]) == ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+    assert sanitize_aura_capabilities([]) == ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+    assert sanitize_aura_capabilities(None) == ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+    assert sanitize_aura_capabilities(["DRAFTS", 123, None, "SEND"]) == ["DRAFTS"]
+
+    # 2. Integration with ProviderManager.list_all_accounts()
+    pm = ProviderManager()
+    stale_settings = {
+        "demo_mode": False,
+        "configured_accounts": [
+            {
+                "account_id": "test@example.com",
+                "email": "test@example.com",
+                "provider": "GMAIL",
+                "enabled": True,
+                "capabilities": ["DRAFTS", "SEND", "ATTACHMENTS"]
+            },
+            {
+                "account_id": "alias@example.com",
+                "email": "alias@example.com",
+                "provider": "GMAIL",
+                "enabled": True,
+                "is_alias": True,
+                "alias_of": "test@example.com",
+                "capabilities": ["DRAFTS", " send ", "ATTACHMENTS", "MOVE"]
+            }
+        ]
+    }
+
+    with patch("backend.provider_manager.load_settings", return_value=stale_settings):
+        accounts = pm.list_all_accounts(validate_remote=False)
+        assert len(accounts) == 2
+
+        # Primary account sanitization
+        assert "SEND" not in accounts[0].capabilities
+        assert accounts[0].capabilities == ["DRAFTS", "ATTACHMENTS"]
+
+        # Alias account sanitization
+        assert "SEND" not in accounts[1].capabilities
+        assert accounts[1].capabilities == ["DRAFTS", "ATTACHMENTS", "MOVE"]

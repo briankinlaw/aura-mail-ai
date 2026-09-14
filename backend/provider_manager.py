@@ -32,6 +32,34 @@ from backend.safety_policy import MailSafetyMode
 
 logger = logging.getLogger("provider_manager")
 
+AURA_DEFAULT_CAPABILITIES = [
+    "DRAFTS",
+    "ATTACHMENTS",
+    "MOVE",
+    "DELETE",
+    "QUARANTINE"
+]
+
+def sanitize_aura_capabilities(capabilities: Optional[List[Any]]) -> List[str]:
+    """Sanitizes capability metadata at the Aura application boundary.
+
+    Guarantees that Aura never advertises 'SEND' as an application capability,
+    even if stale persisted configuration or legacy settings contain it.
+    Preserves all legitimate non-SEND capabilities (DRAFTS, ATTACHMENTS, MOVE, DELETE, QUARANTINE, THREADING).
+    """
+    if not capabilities:
+        return list(AURA_DEFAULT_CAPABILITIES)
+
+    sanitized: List[str] = []
+    for item in capabilities:
+        if not isinstance(item, str):
+            continue
+        clean_item = item.strip().upper()
+        if clean_item and clean_item != "SEND" and clean_item not in sanitized:
+            sanitized.append(clean_item)
+
+    return sanitized if sanitized else list(AURA_DEFAULT_CAPABILITIES)
+
 class ProviderManager:
     def __init__(self):
         self._quarantine_folder_cache: Dict[Tuple[str, str], str] = {}
@@ -172,7 +200,7 @@ class ProviderManager:
                     is_alias=True,
                     alias_of=alias_of,
                     last_sync_time=acc.get("last_sync_time"),
-                    capabilities=acc.get("capabilities", ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
+                    capabilities=sanitize_aura_capabilities(acc.get("capabilities"))
                 ))
             else:
                 is_connected = False
@@ -198,7 +226,7 @@ class ProviderManager:
                     is_alias=False,
                     last_sync_time=acc.get("last_sync_time"),
                     last_error=last_error,
-                    capabilities=acc.get("capabilities", ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
+                    capabilities=sanitize_aura_capabilities(acc.get("capabilities"))
                 ))
 
         return all_identities

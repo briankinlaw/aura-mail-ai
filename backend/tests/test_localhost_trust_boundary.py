@@ -616,21 +616,24 @@ def test_frontend_taskpane_authentication_contract():
 
 def test_accounts_api_does_not_expose_send_capability():
     """
-    PHASE 3.2 API SEMANTICS INVARIANT:
-    Verifies that /api/accounts endpoint returns capabilities strictly excluding 'SEND'.
+    PHASE 3.2 & 3.2.1 API SEMANTICS INVARIANT:
+    Verifies that /api/accounts endpoint returns capabilities strictly excluding 'SEND',
+    even when underlying persisted settings contain stale 'SEND' entries.
     """
     token = get_local_session_token()
-    with patch("backend.main.provider_manager.list_all_accounts") as mock_status:
-        from backend.providers.base import AccountIdentity, ProviderType
-        mock_status.return_value = [
-            AccountIdentity(
-                account_id="demo@auramail.local",
-                email_address="demo@auramail.local",
-                provider=ProviderType.DEMO,
-                display_name="Demo Mode",
-                capabilities=["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
-            )
+    stale_settings = {
+        "demo_mode": False,
+        "configured_accounts": [
+            {
+                "account_id": "test@example.com",
+                "email": "test@example.com",
+                "provider": "GMAIL",
+                "enabled": True,
+                "capabilities": ["DRAFTS", "SEND", "ATTACHMENTS"]
+            }
         ]
+    }
+    with patch("backend.provider_manager.load_settings", return_value=stale_settings):
         res = unauth_client.get(
             "/api/accounts",
             headers={"Authorization": f"Bearer {token}", "Origin": "https://localhost:8000"}
@@ -642,6 +645,7 @@ def test_accounts_api_does_not_expose_send_capability():
             assert "SEND" not in acc.get("capabilities", [])
             assert "send" not in [c.lower() for c in acc.get("capabilities", [])]
             assert "DRAFTS" in acc.get("capabilities", [])
+            assert acc.get("capabilities") == ["DRAFTS", "ATTACHMENTS"]
 
 
 def test_frontend_app_js_filters_send_capability():
