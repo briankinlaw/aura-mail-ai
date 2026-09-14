@@ -26,7 +26,7 @@ Aura Mail AI v1.1 implements a hardened, zero-trust architecture designed for ex
   - Google Gemini API Key (`gemini_api_key`)
   - Microsoft Graph OAuth Tokens & MSAL Caches (`msal_cache_<account_id>`, `graph_token_<account_id>`)
   - Gmail API Access & Refresh Tokens (`gmail_access_<account_id>`, `gmail_refresh_<account_id>`)
-  - IMAP/SMTP Passwords (`imap_password_<account_id>`)
+  - IMAP Passwords (`imap_password_<account_id>`)
 
 ### On-Disk Sanitization
 - `data/settings.json` contains only non-secret user preferences, role models, and account metadata.
@@ -61,4 +61,4 @@ To safeguard against unintended commitments or metric drift, `backend/radar/risk
 2. **Automated Test Guard** ([`backend/tests/test_multi_account.py`](file:///Users/briankinlaw/aura-mail-ai/backend/tests/test_multi_account.py)):
    - `test_repository_secrets_sanitized()` scans the entire repository during `pytest` runs and fails if any secrets are present.
 3. **Automated Test Suite**:
-   - **59 of 59 automated test cases passing** across all modules.
+   - **152 of 152 automated test cases passing** across all modules.
