@@ -406,6 +406,16 @@ function fallbackDraft(lens, includeAvailability) {
  */
 let currentAuditRequestId = 0;
 
+function invalidateRiskAudit(reason = "Draft modified after audit.") {
+    currentAuditRequestId += 1;
+    if (!el.riskSentinelBanner) return;
+    el.riskSentinelBanner.className = "risk-sentinel-banner pending";
+    el.sentinelIcon.textContent = "ℹ️";
+    el.sentinelStatusBadge.textContent = "RE-AUDIT REQUIRED";
+    el.sentinelStatusBadge.className = "sentinel-status-badge pending";
+    el.sentinelSummary.textContent = "Draft changed after its last risk check. The previous audit no longer applies.";
+}
+
 async function runRiskAudit(draftText) {
     if (!el.riskSentinelBanner) return;
 
@@ -432,13 +442,37 @@ async function runRiskAudit(draftText) {
             })
         });
 
-        // Discard stale out-of-order responses from an earlier audit
+        // Stale check 1: after fetch() network boundary
         if (auditRequestId !== currentAuditRequestId) {
             return;
         }
 
         if (res.ok) {
-            const audit = await res.json();
+            let audit;
+            try {
+                audit = await res.json();
+            } catch (jsonErr) {
+                if (auditRequestId !== currentAuditRequestId) return;
+                console.warn("[Aura Add-in] Risk audit JSON parse error:", jsonErr);
+                el.riskSentinelBanner.className = "risk-sentinel-banner unavailable";
+                el.sentinelIcon.textContent = "ℹ️";
+                el.sentinelStatusBadge.textContent = "RISK CHECK UNAVAILABLE";
+                el.sentinelStatusBadge.className = "sentinel-status-badge unavailable";
+                el.sentinelSummary.textContent = "Automated risk check response was malformed. Human review required before native client dispatch.";
+                return;
+            }
+
+            // Stale check 2: after await res.json() parse boundary before interpretation and rendering
+            if (auditRequestId !== currentAuditRequestId) {
+                return;
+            }
+
+            // Defense-in-depth: content correlation verification
+            if (el.draftReplyText && el.draftReplyText.value !== draftText) {
+                invalidateRiskAudit("Draft content diverged from audited text.");
+                return;
+            }
+
             const sev = String(audit.severity || "").toUpperCase();
             const action = String(audit.recommended_action || "").toUpperCase();
             const isExplicitSafe = (sev === "SAFE" && action === "PROCEED");
@@ -636,6 +670,12 @@ el.btnCopyClipboard.addEventListener("click", () => {
     copyToClipboard(el.draftReplyText.value);
     showToast("Draft copied to clipboard!");
 });
+
+if (el.draftReplyText) {
+    el.draftReplyText.addEventListener("input", () => {
+        invalidateRiskAudit("User edited draft text.");
+    });
+}
 
 el.btnCopySlots.addEventListener("click", () => {
     if (currentSlots.length > 0) {

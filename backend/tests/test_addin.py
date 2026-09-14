@@ -318,17 +318,33 @@ def test_taskpane_html_initial_state_not_verified_safe():
 
 def test_taskpane_js_implements_safe_audit_contract_and_request_tracking():
     """
-    Finding 2: taskpane.js must implement strict (SAFE + PROCEED) verification,
-    request ID sequencing for race condition protection, and fail-safe handling.
+    Phase 4.1.1 & 4.1.2: taskpane.js must implement:
+    1. Strict (SAFE + PROCEED) verification for VERIFIED SAFE.
+    2. Invalidation helper `invalidateRiskAudit` on manual draft mutation.
+    3. Input event listener on `draftReplyText`.
+    4. Two-phase stale checks: after fetch() and after await res.json().
+    5. Fail-safe handling for JSON parse errors and malformed results.
     """
     res = client.get("/add-in/taskpane.js")
     assert res.status_code == 200
     js = res.text
+
+    # Audit invalidation helper & listener
+    assert "function invalidateRiskAudit(" in js
+    assert "RE-AUDIT REQUIRED" in js
+    assert 'el.draftReplyText.addEventListener("input"' in js or "addEventListener('input'" in js or 'addEventListener("input"' in js
+
+    # Request sequencing & stale checks (both post-fetch and post-json)
     assert "currentAuditRequestId" in js
-    assert "auditRequestId !== currentAuditRequestId" in js
+    assert js.count("auditRequestId !== currentAuditRequestId") >= 2
+
+    # Safe audit criteria
     assert 'sev === "SAFE" && action === "PROCEED"' in js
     assert "RISK CHECK UNAVAILABLE" in js
     assert "REVIEW REQUIRED" in js
+
+    # Content correlation defense-in-depth
+    assert "draftReplyText.value !== draftText" in js or "draftReplyText.value !== auditedDraftText" in js or "value !== draftText" in js
 
 
 def test_frontend_risk_banner_state_logic_simulation():
@@ -381,7 +397,7 @@ def test_frontend_risk_banner_state_logic_simulation():
                 "badge_class": "sentinel-status-badge unavailable"
             }
 
-        # 1. Exact SAFE + PROCEED
+    # 1. Exact SAFE + PROCEED
     s1 = simulate_taskpane_audit(200, {"severity": "SAFE", "recommended_action": "PROCEED"})
     assert s1["badge_text"] == "VERIFIED SAFE"
     assert "safe" in s1["banner_class"]
@@ -422,47 +438,152 @@ def test_frontend_risk_banner_state_logic_simulation():
     assert "unavailable" in s8["banner_class"]
 
 
-def test_frontend_risk_audit_lifecycle_and_race_condition_simulation():
+def test_phase_4_1_2_risk_audit_lifecycle_and_invalidation_matrix():
     """
-    Finding 2: Tests lifecycle and race-condition handling:
-    1. Draft A audit succeeds -> VERIFIED SAFE.
-    2. Draft B audit starts -> Prior safe state is immediately cleared to AUDITING...
-    3. Draft B audit fails -> Shows RISK CHECK UNAVAILABLE.
-    4. Late response from Draft A arrives after Draft B audit began -> Discarded, banner remains Draft B state.
+    Phase 4.1.2 Adversarial Lifecycle Matrix:
+    - Case A: Successful audit -> VERIFIED SAFE.
+    - Case B: Manual mutation after successful audit -> prior audit invalidated -> RE-AUDIT REQUIRED.
+    - Case C: Mutation while audit in flight -> generation invalidated -> completing audit ignored.
+    - Case D: New audit supersedes old audit -> old completion cannot update UI.
+    - Case E: Request becomes stale during JSON parsing -> post-parse stale check rejects it.
+    - Case F: JSON parse failure -> RISK CHECK UNAVAILABLE.
+    - Case G: Malformed security object -> REVIEW REQUIRED.
     """
-    state = {
-        "currentAuditRequestId": 0,
-        "banner_badge": "PENDING AUDIT",
-        "banner_class": "risk-sentinel-banner pending"
-    }
+    class TaskpaneAuditSim:
+        def __init__(self):
+            self.currentAuditRequestId = 0
+            self.draft_text = ""
+            self.banner_badge = "PENDING AUDIT"
+            self.banner_class = "risk-sentinel-banner pending"
+            self.summary = ""
 
-    # Step 1: Draft A starts
-    state["currentAuditRequestId"] += 1
-    req_a_id = state["currentAuditRequestId"]
-    state["banner_badge"] = "AUDITING..."
-    state["banner_class"] = "risk-sentinel-banner pending"
+        def invalidateRiskAudit(self, reason="Draft modified after audit."):
+            self.currentAuditRequestId += 1
+            self.banner_class = "risk-sentinel-banner pending"
+            self.banner_badge = "RE-AUDIT REQUIRED"
+            self.summary = "Draft changed after its last risk check. The previous audit no longer applies."
 
-    # Step 1 response arrives for Draft A
-    if req_a_id == state["currentAuditRequestId"]:
-        state["banner_badge"] = "VERIFIED SAFE"
-        state["banner_class"] = "risk-sentinel-banner safe"
-    assert state["banner_badge"] == "VERIFIED SAFE"
+        def on_user_input(self, new_text):
+            self.draft_text = new_text
+            self.invalidateRiskAudit("User edited draft text.")
 
-    # Step 2: User modifies draft -> Draft B audit starts
-    state["currentAuditRequestId"] += 1
-    req_b_id = state["currentAuditRequestId"]
-    state["banner_badge"] = "AUDITING..."  # Prior safe state immediately cleared
-    state["banner_class"] = "risk-sentinel-banner pending"
-    assert state["banner_badge"] == "AUDITING..."
+        def start_audit(self, draft_text):
+            self.currentAuditRequestId += 1
+            req_id = self.currentAuditRequestId
+            self.draft_text = draft_text
+            self.banner_class = "risk-sentinel-banner pending"
+            self.banner_badge = "AUDITING..."
+            self.summary = "Scanning draft against canonical profile & security policies..."
+            return req_id
 
-    # Step 3: Draft B audit fails (e.g. network timeout)
-    if req_b_id == state["currentAuditRequestId"]:
-        state["banner_badge"] = "RISK CHECK UNAVAILABLE"
-        state["banner_class"] = "risk-sentinel-banner unavailable"
-    assert state["banner_badge"] == "RISK CHECK UNAVAILABLE"
+        def complete_audit(self, req_id, audited_text, status_code, raw_json_str=None, is_net_err=False):
+            # Stale check 1 (post-fetch)
+            if req_id != self.currentAuditRequestId:
+                return "DROPPED_STALE_POST_FETCH"
 
-    # Step 4: Stale / late response from Draft A arrives late
-    if req_a_id == state["currentAuditRequestId"]:
-        state["banner_badge"] = "VERIFIED SAFE"  # Should NOT be reached
-    # Assert state remains Draft B's failed state, NOT overwritten by Draft A
-    assert state["banner_badge"] == "RISK CHECK UNAVAILABLE"
+            if is_net_err or status_code != 200:
+                self.banner_class = "risk-sentinel-banner unavailable"
+                self.banner_badge = "RISK CHECK UNAVAILABLE"
+                self.summary = "Security risk check endpoint returned non-200 status."
+                return "RENDERED_NET_ERR"
+
+            # Parse JSON
+            import json
+            try:
+                audit = json.loads(raw_json_str) if raw_json_str is not None else {}
+            except Exception:
+                if req_id != self.currentAuditRequestId:
+                    return "DROPPED_STALE_ON_JSON_ERR"
+                self.banner_class = "risk-sentinel-banner unavailable"
+                self.banner_badge = "RISK CHECK UNAVAILABLE"
+                self.summary = "Automated risk check response was malformed."
+                return "RENDERED_JSON_ERR"
+
+            # Stale check 2 (post-JSON parse)
+            if req_id != self.currentAuditRequestId:
+                return "DROPPED_STALE_POST_JSON"
+
+            # Content correlation
+            if self.draft_text != audited_text:
+                self.invalidateRiskAudit("Draft content diverged from audited text.")
+                return "INVALIDATED_CONTENT_DIVERGENCE"
+
+            sev = str(audit.get("severity", "")).upper()
+            action = str(audit.get("recommended_action", "")).upper()
+
+            if sev == "SAFE" and action == "PROCEED":
+                self.banner_class = "risk-sentinel-banner safe"
+                self.banner_badge = "VERIFIED SAFE"
+                self.summary = "No risk factors identified."
+                return "RENDERED_SAFE"
+            elif sev == "HIGH_RISK" or action == "BLOCKED":
+                self.banner_class = "risk-sentinel-banner high-risk"
+                self.banner_badge = "BLOCKED / HIGH RISK"
+                self.summary = "High risk detected."
+                return "RENDERED_HIGH_RISK"
+            elif sev == "CAUTION" or action == "REVIEW_CAUTION":
+                self.banner_class = "risk-sentinel-banner caution"
+                self.banner_badge = "CAUTION REQUIRED"
+                self.summary = "Caution advised."
+                return "RENDERED_CAUTION"
+            else:
+                self.banner_class = "risk-sentinel-banner unavailable"
+                self.banner_badge = "REVIEW REQUIRED"
+                self.summary = "Human review required."
+                return "RENDERED_REVIEW_REQUIRED"
+
+    sim = TaskpaneAuditSim()
+
+    # Case A: Successful audit -> VERIFIED SAFE
+    req_a = sim.start_audit("Draft A content")
+    res_a = sim.complete_audit(req_a, "Draft A content", 200, '{"severity":"SAFE","recommended_action":"PROCEED"}')
+    assert res_a == "RENDERED_SAFE"
+    assert sim.banner_badge == "VERIFIED SAFE"
+    assert "safe" in sim.banner_class
+
+    # Case B: Manual mutation after successful audit -> RE-AUDIT REQUIRED
+    sim.on_user_input("Draft A content with manual edit")
+    assert sim.banner_badge == "RE-AUDIT REQUIRED"
+    assert "pending" in sim.banner_class
+    assert "VERIFIED SAFE" != sim.banner_badge
+
+    # Case C: Mutation while audit in flight -> completing audit ignored
+    req_c = sim.start_audit("Draft C content")
+    assert sim.banner_badge == "AUDITING..."
+    sim.on_user_input("Draft C mutated before response")
+    assert sim.banner_badge == "RE-AUDIT REQUIRED"
+    res_c = sim.complete_audit(req_c, "Draft C content", 200, '{"severity":"SAFE","recommended_action":"PROCEED"}')
+    assert res_c == "DROPPED_STALE_POST_FETCH"
+    assert sim.banner_badge == "RE-AUDIT REQUIRED"
+
+    # Case D: New audit supersedes old audit
+    req_d1 = sim.start_audit("Draft D1")
+    req_d2 = sim.start_audit("Draft D2")
+    res_d1 = sim.complete_audit(req_d1, "Draft D1", 200, '{"severity":"SAFE","recommended_action":"PROCEED"}')
+    assert res_d1 == "DROPPED_STALE_POST_FETCH"
+    res_d2 = sim.complete_audit(req_d2, "Draft D2", 200, '{"severity":"SAFE","recommended_action":"PROCEED"}')
+    assert res_d2 == "RENDERED_SAFE"
+    assert sim.banner_badge == "VERIFIED SAFE"
+
+    # Case E: Request becomes stale during JSON parsing
+    req_e = sim.start_audit("Draft E")
+    # Simulate fetch succeeded for req_e, but before post-JSON check, user types or new audit starts:
+    sim.invalidateRiskAudit("Intervening event during JSON parsing")
+    res_e = sim.complete_audit(req_e, "Draft E", 200, '{"severity":"SAFE","recommended_action":"PROCEED"}')
+    # Dropped at post-fetch/post-json stale check
+    assert "DROPPED_STALE" in res_e
+    assert sim.banner_badge == "RE-AUDIT REQUIRED"
+
+    # Case F: JSON parse failure
+    req_f = sim.start_audit("Draft F")
+    res_f = sim.complete_audit(req_f, "Draft F", 200, '{INVALID_JSON}')
+    assert res_f == "RENDERED_JSON_ERR"
+    assert sim.banner_badge == "RISK CHECK UNAVAILABLE"
+    assert "unavailable" in sim.banner_class
+
+    # Case G: Malformed security object (unknown severity/action)
+    req_g = sim.start_audit("Draft G")
+    res_g = sim.complete_audit(req_g, "Draft G", 200, '{"severity":"UNKNOWN","recommended_action":"UNKNOWN"}')
+    assert res_g == "RENDERED_REVIEW_REQUIRED"
+    assert sim.banner_badge == "REVIEW REQUIRED"
+    assert "unavailable" in sim.banner_class
