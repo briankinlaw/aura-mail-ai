@@ -1015,6 +1015,15 @@ from backend.radar.risk_evaluator import evaluate_second_opinion_risk
 
 @app.post("/api/radar/risk-check", dependencies=[Depends(require_local_auth)])
 def radar_risk_check_endpoint(payload: Dict[str, Any]):
+    """
+    Evaluates risk and second-opinion posture for proposed draft replies and operations.
+
+    SECURITY CONTRACT:
+    - execution-context type: backend.safety_policy.ExecutionContext (or string)
+    - API source: caller-supplied (untrusted descriptive metadata)
+    - authority to permit SEND: none (direct mail transmission is forbidden across all contexts)
+    - SEND risk result regardless of supplied context: HIGH_RISK / BLOCKED
+    """
     subject = payload.get("subject", "")
     body = payload.get("body", "")
     sender_name = payload.get("sender_name", "")

@@ -246,6 +246,70 @@ def test_exhaustive_severity_x_action_state_space(input_sev, input_act, expected
         assert normalized.detected_categories == [RiskCategory.CLEAN]
 
 
+def test_normalization_does_not_fabricate_categories_on_safe_blocked():
+    """
+    Finding 1: SAFE + BLOCKED + [CLEAN] normalizes upward to HIGH_RISK + BLOCKED
+    without fabricating AUTONOMOUS_SEND_POLICY or other unevidenced categories.
+    """
+    raw = RiskAssessmentResult(
+        severity=RiskSeverity.SAFE,
+        recommended_action="BLOCKED",
+        risk_score=5,
+        detected_categories=[RiskCategory.CLEAN],
+        is_flagged=False
+    )
+    norm = normalize_risk_assessment(raw)
+    assert norm.severity == RiskSeverity.HIGH_RISK
+    assert norm.recommended_action == "BLOCKED"
+    assert norm.risk_score >= 80
+    assert norm.is_flagged is True
+    # Crucial: Categories must NOT contain fabricated AUTONOMOUS_SEND_POLICY
+    assert RiskCategory.AUTONOMOUS_SEND_POLICY not in norm.detected_categories
+    assert norm.detected_categories == []
+
+
+def test_normalization_does_not_fabricate_categories_on_safe_review_caution():
+    """
+    Finding 1: SAFE + REVIEW_CAUTION + [CLEAN] normalizes upward to CAUTION + REVIEW_CAUTION
+    without fabricating UNVERIFIED_CAREER_CLAIM or other unevidenced categories.
+    """
+    raw = RiskAssessmentResult(
+        severity=RiskSeverity.SAFE,
+        recommended_action="REVIEW_CAUTION",
+        risk_score=5,
+        detected_categories=[RiskCategory.CLEAN],
+        is_flagged=False
+    )
+    norm = normalize_risk_assessment(raw)
+    assert norm.severity == RiskSeverity.CAUTION
+    assert norm.recommended_action == "REVIEW_CAUTION"
+    assert norm.risk_score >= 40
+    assert norm.is_flagged is True
+    # Crucial: Categories must NOT contain fabricated UNVERIFIED_CAREER_CLAIM
+    assert RiskCategory.UNVERIFIED_CAREER_CLAIM not in norm.detected_categories
+    assert norm.detected_categories == []
+
+
+def test_genuine_category_retained_with_stronger_action_and_no_fabrication():
+    """
+    Finding 1: Genuine detected category is retained when a stronger independent signal
+    elevates severity/action, without adding any unevidenced fabricated categories.
+    """
+    raw = RiskAssessmentResult(
+        severity=RiskSeverity.CAUTION,
+        recommended_action="BLOCKED",
+        risk_score=50,
+        detected_categories=[RiskCategory.UNVERIFIED_CAREER_CLAIM],
+        is_flagged=True
+    )
+    norm = normalize_risk_assessment(raw)
+    assert norm.severity == RiskSeverity.HIGH_RISK
+    assert norm.recommended_action == "BLOCKED"
+    assert norm.risk_score >= 80
+    assert norm.is_flagged is True
+    assert norm.detected_categories == [RiskCategory.UNVERIFIED_CAREER_CLAIM]
+
+
 # ---------------------------------------------------------------------------
 # 4. Score Hardening & Type Validation Tests (Step 10, 11, 18)
 # ---------------------------------------------------------------------------

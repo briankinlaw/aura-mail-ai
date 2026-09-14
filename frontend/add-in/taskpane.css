@@ -559,6 +559,16 @@ input:checked + .toggle-slider:before {
     border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
+.risk-sentinel-banner.pending {
+    background: rgba(148, 163, 184, 0.1);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.risk-sentinel-banner.unavailable {
+    background: rgba(148, 163, 184, 0.15);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
 .sentinel-header {
     display: flex;
     align-items: center;
@@ -594,6 +604,16 @@ input:checked + .toggle-slider:before {
 .sentinel-status-badge.high-risk {
     background: rgba(239, 68, 68, 0.25);
     color: #f87171;
+}
+
+.sentinel-status-badge.pending {
+    background: rgba(148, 163, 184, 0.2);
+    color: #94a3b8;
+}
+
+.sentinel-status-badge.unavailable {
+    background: rgba(148, 163, 184, 0.25);
+    color: #cbd5e1;
 }
 
 .sentinel-summary {

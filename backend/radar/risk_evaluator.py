@@ -181,16 +181,12 @@ def normalize_risk_assessment(result: RiskAssessmentResult) -> RiskAssessmentRes
         norm_score = max(raw_score, 80)
         norm_flagged = True
         norm_categories = [c for c in clean_categories if c != RiskCategory.CLEAN]
-        if not norm_categories:
-            norm_categories = [RiskCategory.AUTONOMOUS_SEND_POLICY]
     elif canonical_rank == 1:
         norm_severity = RiskSeverity.CAUTION
         norm_action = "REVIEW_CAUTION"
         norm_score = max(raw_score, 40)
         norm_flagged = True
         norm_categories = [c for c in clean_categories if c != RiskCategory.CLEAN]
-        if not norm_categories:
-            norm_categories = [RiskCategory.UNVERIFIED_CAREER_CLAIM]
     else:
         norm_severity = RiskSeverity.SAFE
         norm_action = "PROCEED"

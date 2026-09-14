@@ -404,8 +404,20 @@ function fallbackDraft(lens, includeAvailability) {
 /**
  * Gemini Risk Sentinel (Second Opinion)
  */
+let currentAuditRequestId = 0;
+
 async function runRiskAudit(draftText) {
     if (!el.riskSentinelBanner) return;
+
+    const auditRequestId = ++currentAuditRequestId;
+
+    // Immediately clear prior status when a new audit starts
+    el.riskSentinelBanner.className = "risk-sentinel-banner pending";
+    el.sentinelIcon.textContent = "⏳";
+    el.sentinelStatusBadge.textContent = "AUDITING...";
+    el.sentinelStatusBadge.className = "sentinel-status-badge pending";
+    el.sentinelSummary.textContent = "Evaluating draft safety and grounding against Accomplishment Ledger...";
+
     try {
         const res = await fetch(`${API_BASE}/api/radar/risk-check`, {
             method: "POST",
@@ -420,34 +432,63 @@ async function runRiskAudit(draftText) {
             })
         });
 
+        // Discard stale out-of-order responses from an earlier audit
+        if (auditRequestId !== currentAuditRequestId) {
+            return;
+        }
+
         if (res.ok) {
             const audit = await res.json();
-            const sev = String(audit.severity || "SAFE").toUpperCase();
-            const action = String(audit.recommended_action || "PROCEED").toUpperCase();
-            const isHighRisk = sev === "HIGH_RISK" || action === "BLOCKED";
-            const isCaution = !isHighRisk && (sev === "CAUTION" || action === "REVIEW_CAUTION");
+            const sev = String(audit.severity || "").toUpperCase();
+            const action = String(audit.recommended_action || "").toUpperCase();
+            const isExplicitSafe = (sev === "SAFE" && action === "PROCEED");
+            const isHighRisk = (sev === "HIGH_RISK" || action === "BLOCKED");
+            const isCaution = (!isHighRisk && (sev === "CAUTION" || action === "REVIEW_CAUTION"));
 
-            if (isHighRisk) {
+            if (isExplicitSafe) {
+                el.riskSentinelBanner.className = "risk-sentinel-banner safe";
+                el.sentinelIcon.textContent = "🛡️";
+                el.sentinelStatusBadge.textContent = "VERIFIED SAFE";
+                el.sentinelStatusBadge.className = "sentinel-status-badge safe";
+                el.sentinelSummary.textContent = audit.second_opinion_summary || "Grounding verified against Accomplishment Ledger.";
+            } else if (isHighRisk) {
                 el.riskSentinelBanner.className = "risk-sentinel-banner high-risk";
                 el.sentinelIcon.textContent = "🚨";
                 el.sentinelStatusBadge.textContent = "BLOCKED / HIGH RISK";
                 el.sentinelStatusBadge.className = "sentinel-status-badge high-risk";
+                el.sentinelSummary.textContent = audit.second_opinion_summary || "High-risk signals detected. Direct action blocked.";
             } else if (isCaution) {
                 el.riskSentinelBanner.className = "risk-sentinel-banner caution";
                 el.sentinelIcon.textContent = "⚠️";
                 el.sentinelStatusBadge.textContent = "CAUTION REQUIRED";
                 el.sentinelStatusBadge.className = "sentinel-status-badge caution";
+                el.sentinelSummary.textContent = audit.second_opinion_summary || "Cautionary items detected requiring review.";
             } else {
-                el.riskSentinelBanner.className = "risk-sentinel-banner safe";
-                el.sentinelIcon.textContent = "🛡️";
-                el.sentinelStatusBadge.textContent = "VERIFIED SAFE";
-                el.sentinelStatusBadge.className = "sentinel-status-badge safe";
+                // Malformed / unrecognized response structure: FAIL SAFE
+                el.riskSentinelBanner.className = "risk-sentinel-banner unavailable";
+                el.sentinelIcon.textContent = "ℹ️";
+                el.sentinelStatusBadge.textContent = "REVIEW REQUIRED";
+                el.sentinelStatusBadge.className = "sentinel-status-badge unavailable";
+                el.sentinelSummary.textContent = "Risk audit returned an unrecognized result. Manual review required.";
             }
-
-            el.sentinelSummary.textContent = audit.second_opinion_summary || "Grounding verified against Accomplishment Ledger.";
+        } else {
+            // Non-2xx response: FAIL SAFE
+            el.riskSentinelBanner.className = "risk-sentinel-banner unavailable";
+            el.sentinelIcon.textContent = "ℹ️";
+            el.sentinelStatusBadge.textContent = "RISK CHECK UNAVAILABLE";
+            el.sentinelStatusBadge.className = "sentinel-status-badge unavailable";
+            el.sentinelSummary.textContent = "Automated risk check could not be completed. Human review required before native client dispatch.";
         }
     } catch (err) {
+        if (auditRequestId !== currentAuditRequestId) {
+            return;
+        }
         console.warn("[Aura Add-in] Risk audit check error:", err);
+        el.riskSentinelBanner.className = "risk-sentinel-banner unavailable";
+        el.sentinelIcon.textContent = "ℹ️";
+        el.sentinelStatusBadge.textContent = "RISK CHECK UNAVAILABLE";
+        el.sentinelStatusBadge.className = "sentinel-status-badge unavailable";
+        el.sentinelSummary.textContent = "Automated risk check could not be completed. Human review required before native client dispatch.";
     }
 }
 

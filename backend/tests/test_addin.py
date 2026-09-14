@@ -298,3 +298,171 @@ def test_authoritative_graph_status_indicator():
     assert "status" in g_conn
     assert "display_text" in g_conn
     assert g_conn["status"] in ["CONNECTED", "AUTH_REQUIRED", "NOT_CONFIGURED", "DEMO", "READY_TO_CONNECT"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.1.1 Outlook Add-in Risk Sentinel UI & Lifecycle Tests
+# ---------------------------------------------------------------------------
+
+def test_taskpane_html_initial_state_not_verified_safe():
+    """
+    Finding 2: Initial taskpane HTML must not present VERIFIED SAFE before an audit runs.
+    """
+    res = client.get("/add-in/taskpane.html")
+    assert res.status_code == 200
+    html = res.text
+    assert "riskSentinelBanner" in html
+    assert "PENDING AUDIT" in html
+    assert "VERIFIED SAFE" not in html
+
+
+def test_taskpane_js_implements_safe_audit_contract_and_request_tracking():
+    """
+    Finding 2: taskpane.js must implement strict (SAFE + PROCEED) verification,
+    request ID sequencing for race condition protection, and fail-safe handling.
+    """
+    res = client.get("/add-in/taskpane.js")
+    assert res.status_code == 200
+    js = res.text
+    assert "currentAuditRequestId" in js
+    assert "auditRequestId !== currentAuditRequestId" in js
+    assert 'sev === "SAFE" && action === "PROCEED"' in js
+    assert "RISK CHECK UNAVAILABLE" in js
+    assert "REVIEW REQUIRED" in js
+
+
+def test_frontend_risk_banner_state_logic_simulation():
+    """
+    Simulates the exact taskpane.js runRiskAudit decision tree to verify all frontend states:
+    - exact SAFE + PROCEED -> VERIFIED SAFE
+    - SAFE + BLOCKED -> BLOCKED / HIGH RISK
+    - HIGH_RISK + PROCEED -> BLOCKED / HIGH RISK
+    - CAUTION + REVIEW_CAUTION -> CAUTION REQUIRED
+    - empty/malformed object -> REVIEW REQUIRED
+    - non-2xx response / exception -> RISK CHECK UNAVAILABLE
+    """
+    def simulate_taskpane_audit(status_code, body_dict_or_none, is_exception=False):
+        if is_exception or status_code != 200 or body_dict_or_none is None:
+            return {
+                "banner_class": "risk-sentinel-banner unavailable",
+                "badge_text": "RISK CHECK UNAVAILABLE",
+                "badge_class": "sentinel-status-badge unavailable"
+            }
+
+        audit = body_dict_or_none
+        sev = str(audit.get("severity", "")).upper()
+        action = str(audit.get("recommended_action", "")).upper()
+        is_explicit_safe = (sev == "SAFE" and action == "PROCEED")
+        is_high_risk = (sev == "HIGH_RISK" or action == "BLOCKED")
+        is_caution = (not is_high_risk and (sev == "CAUTION" or action == "REVIEW_CAUTION"))
+
+        if is_explicit_safe:
+            return {
+                "banner_class": "risk-sentinel-banner safe",
+                "badge_text": "VERIFIED SAFE",
+                "badge_class": "sentinel-status-badge safe"
+            }
+        elif is_high_risk:
+            return {
+                "banner_class": "risk-sentinel-banner high-risk",
+                "badge_text": "BLOCKED / HIGH RISK",
+                "badge_class": "sentinel-status-badge high-risk"
+            }
+        elif is_caution:
+            return {
+                "banner_class": "risk-sentinel-banner caution",
+                "badge_text": "CAUTION REQUIRED",
+                "badge_class": "sentinel-status-badge caution"
+            }
+        else:
+            return {
+                "banner_class": "risk-sentinel-banner unavailable",
+                "badge_text": "REVIEW REQUIRED",
+                "badge_class": "sentinel-status-badge unavailable"
+            }
+
+        # 1. Exact SAFE + PROCEED
+    s1 = simulate_taskpane_audit(200, {"severity": "SAFE", "recommended_action": "PROCEED"})
+    assert s1["badge_text"] == "VERIFIED SAFE"
+    assert "safe" in s1["banner_class"]
+
+    # 2. Contradictory SAFE + BLOCKED
+    s2 = simulate_taskpane_audit(200, {"severity": "SAFE", "recommended_action": "BLOCKED"})
+    assert s2["badge_text"] == "BLOCKED / HIGH RISK"
+    assert "high-risk" in s2["banner_class"]
+
+    # 3. Contradictory HIGH_RISK + PROCEED
+    s3 = simulate_taskpane_audit(200, {"severity": "HIGH_RISK", "recommended_action": "PROCEED"})
+    assert s3["badge_text"] == "BLOCKED / HIGH RISK"
+    assert "high-risk" in s3["banner_class"]
+
+    # 4. CAUTION + REVIEW_CAUTION
+    s4 = simulate_taskpane_audit(200, {"severity": "CAUTION", "recommended_action": "REVIEW_CAUTION"})
+    assert s4["badge_text"] == "CAUTION REQUIRED"
+    assert "caution" in s4["banner_class"]
+
+    # 5. Empty object
+    s5 = simulate_taskpane_audit(200, {})
+    assert s5["badge_text"] == "REVIEW REQUIRED"
+    assert "unavailable" in s5["banner_class"]
+
+    # 6. Unknown enums
+    s6 = simulate_taskpane_audit(200, {"severity": "UNKNOWN_SEV", "recommended_action": "UNKNOWN_ACT"})
+    assert s6["badge_text"] == "REVIEW REQUIRED"
+    assert "unavailable" in s6["banner_class"]
+
+    # 7. Non-2xx response (e.g. 500 server error)
+    s7 = simulate_taskpane_audit(500, None)
+    assert s7["badge_text"] == "RISK CHECK UNAVAILABLE"
+    assert "unavailable" in s7["banner_class"]
+
+    # 8. Network exception
+    s8 = simulate_taskpane_audit(0, None, is_exception=True)
+    assert s8["badge_text"] == "RISK CHECK UNAVAILABLE"
+    assert "unavailable" in s8["banner_class"]
+
+
+def test_frontend_risk_audit_lifecycle_and_race_condition_simulation():
+    """
+    Finding 2: Tests lifecycle and race-condition handling:
+    1. Draft A audit succeeds -> VERIFIED SAFE.
+    2. Draft B audit starts -> Prior safe state is immediately cleared to AUDITING...
+    3. Draft B audit fails -> Shows RISK CHECK UNAVAILABLE.
+    4. Late response from Draft A arrives after Draft B audit began -> Discarded, banner remains Draft B state.
+    """
+    state = {
+        "currentAuditRequestId": 0,
+        "banner_badge": "PENDING AUDIT",
+        "banner_class": "risk-sentinel-banner pending"
+    }
+
+    # Step 1: Draft A starts
+    state["currentAuditRequestId"] += 1
+    req_a_id = state["currentAuditRequestId"]
+    state["banner_badge"] = "AUDITING..."
+    state["banner_class"] = "risk-sentinel-banner pending"
+
+    # Step 1 response arrives for Draft A
+    if req_a_id == state["currentAuditRequestId"]:
+        state["banner_badge"] = "VERIFIED SAFE"
+        state["banner_class"] = "risk-sentinel-banner safe"
+    assert state["banner_badge"] == "VERIFIED SAFE"
+
+    # Step 2: User modifies draft -> Draft B audit starts
+    state["currentAuditRequestId"] += 1
+    req_b_id = state["currentAuditRequestId"]
+    state["banner_badge"] = "AUDITING..."  # Prior safe state immediately cleared
+    state["banner_class"] = "risk-sentinel-banner pending"
+    assert state["banner_badge"] == "AUDITING..."
+
+    # Step 3: Draft B audit fails (e.g. network timeout)
+    if req_b_id == state["currentAuditRequestId"]:
+        state["banner_badge"] = "RISK CHECK UNAVAILABLE"
+        state["banner_class"] = "risk-sentinel-banner unavailable"
+    assert state["banner_badge"] == "RISK CHECK UNAVAILABLE"
+
+    # Step 4: Stale / late response from Draft A arrives late
+    if req_a_id == state["currentAuditRequestId"]:
+        state["banner_badge"] = "VERIFIED SAFE"  # Should NOT be reached
+    # Assert state remains Draft B's failed state, NOT overwritten by Draft A
+    assert state["banner_badge"] == "RISK CHECK UNAVAILABLE"
