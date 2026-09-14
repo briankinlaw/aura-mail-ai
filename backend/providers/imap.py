@@ -249,7 +249,7 @@ class ImapProvider(BaseEmailProvider):
                     is_primary=acc.get("is_primary", False),
                     last_sync_time=acc.get("last_sync_time"),
                     last_error=val_res.safe_message if not val_res.success else None,
-                    capabilities=["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+                    capabilities=["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
                 ))
         return results
 

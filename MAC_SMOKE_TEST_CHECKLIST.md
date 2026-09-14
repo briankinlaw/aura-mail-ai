@@ -53,7 +53,7 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
   - `brian@mavencode.com` (MavenCode Google Workspace)
   - `cbkinlaw@satx.rr.com` (Spectrum IMAP)
   - `briankinlaw@satx.rr.com` (Spectrum IMAP)
-- [ ] Verify capabilities chips (`DRAFTS`, `SEND`, `ATTACHMENTS`, `MOVE`, `DELETE`, `QUARANTINE`) are listed on each card.
+- [ ] Verify capabilities chips (`DRAFTS`, `ATTACHMENTS`, `MOVE`, `DELETE`, `QUARANTINE`) are listed on each card.
 - [ ] Click **Test** on an account to verify on-demand health checking.
 
 ### Step 2: Cloud Draft Creation & Attachment Staging

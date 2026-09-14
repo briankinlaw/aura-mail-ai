@@ -429,7 +429,7 @@ function renderAccountsGrid() {
       `<span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">● Connected</span>` :
       `<span style="font-size: 0.75rem; color: #ef4444; font-weight: 600;">○ Disconnected</span>`;
     
-    const caps = (acc.capabilities || []).map(c => `<span class="skill-chip" style="font-size: 0.65rem; padding: 2px 6px;">${c}</span>`).join(' ');
+    const caps = (acc.capabilities || []).filter(c => c !== 'SEND').map(c => `<span class="skill-chip" style="font-size: 0.65rem; padding: 2px 6px;">${c}</span>`).join(' ');
     
     card.innerHTML = `
       <div>

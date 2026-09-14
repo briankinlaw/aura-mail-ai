@@ -172,7 +172,7 @@ class ProviderManager:
                     is_alias=True,
                     alias_of=alias_of,
                     last_sync_time=acc.get("last_sync_time"),
-                    capabilities=acc.get("capabilities", ["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
+                    capabilities=acc.get("capabilities", ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
                 ))
             else:
                 is_connected = False
@@ -198,7 +198,7 @@ class ProviderManager:
                     is_alias=False,
                     last_sync_time=acc.get("last_sync_time"),
                     last_error=last_error,
-                    capabilities=acc.get("capabilities", ["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
+                    capabilities=acc.get("capabilities", ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"])
                 ))
 
         return all_identities

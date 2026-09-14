@@ -91,7 +91,7 @@ class DemoProvider(BaseEmailProvider):
                 is_connected=True,
                 is_primary=False,
                 last_sync_time=datetime.now().isoformat(),
-                capabilities=["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+                capabilities=["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
             )
         ]
 

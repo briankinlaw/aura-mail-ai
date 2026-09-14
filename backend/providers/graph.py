@@ -372,7 +372,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                     alias_of=acc.get("alias_of"),
                     last_sync_time=acc.get("last_sync_time"),
                     last_error=val_res.safe_message if not val_res.success else None,
-                    capabilities=["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE", "THREADING"]
+                    capabilities=["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE", "THREADING"]
                 ))
         return results
 

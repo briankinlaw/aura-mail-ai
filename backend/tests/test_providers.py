@@ -322,3 +322,64 @@ def test_imap_provider_has_no_smtplib_dependency():
     """
     import backend.providers.imap as imap_module
     assert not hasattr(imap_module, "smtplib")
+
+
+def test_provider_capabilities_least_privilege_exclude_send():
+    """
+    PHASE 3.2 CAPABILITY SEMANTICS INVARIANT:
+    Verifies that all provider declarations and aggregated account identities
+    strictly exclude 'SEND' from Aura application capabilities, while preserving
+    legitimate non-send capabilities (DRAFTS, ATTACHMENTS, MOVE, DELETE, QUARANTINE).
+    """
+    from backend.provider_manager import ProviderManager
+    from backend.providers.graph import MicrosoftGraphProvider
+    from backend.providers.gmail import GmailProvider
+    from backend.providers.imap import ImapProvider
+    from backend.providers.demo import DemoProvider
+
+    # 1. Microsoft Graph provider capabilities
+    graph = MicrosoftGraphProvider(client_id="mock-id")
+    with patch.object(graph, "validate_connection", return_value=ProviderOperationResult(success=True, provider="MICROSOFT_GRAPH", account_id="test@outlook.com", operation="VALIDATE", safe_message="OK")):
+        with patch("backend.config.load_settings", return_value={"configured_accounts": [{"account_id": "test@outlook.com", "provider": "MICROSOFT_GRAPH"}]}):
+            accounts = graph.list_accounts()
+            for acc in accounts:
+                assert "SEND" not in acc.capabilities
+                assert "send" not in [c.lower() for c in acc.capabilities]
+                assert "DRAFTS" in acc.capabilities
+
+    # 2. Gmail provider capabilities
+    gmail = GmailProvider(client_id="mock-id", client_secret="mock-secret")
+    with patch.object(gmail, "validate_connection", return_value=ProviderOperationResult(success=True, provider="GMAIL", account_id="test@gmail.com", operation="VALIDATE", safe_message="OK")):
+        with patch("backend.config.load_settings", return_value={"configured_accounts": [{"account_id": "test@gmail.com", "provider": "GMAIL"}]}):
+            accounts = gmail.list_accounts()
+            for acc in accounts:
+                assert "SEND" not in acc.capabilities
+                assert "send" not in [c.lower() for c in acc.capabilities]
+                assert "DRAFTS" in acc.capabilities
+
+    # 3. IMAP provider capabilities
+    imap = ImapProvider()
+    with patch.object(imap, "validate_connection", return_value=ProviderOperationResult(success=True, provider="IMAP", account_id="test@satx.rr.com", operation="VALIDATE", safe_message="OK")):
+        with patch("backend.config.load_settings", return_value={"configured_accounts": [{"account_id": "test@satx.rr.com", "provider": "IMAP"}]}):
+            accounts = imap.list_accounts()
+            for acc in accounts:
+                assert "SEND" not in acc.capabilities
+                assert "send" not in [c.lower() for c in acc.capabilities]
+                assert "DRAFTS" in acc.capabilities
+
+    # 4. Demo provider capabilities
+    demo = DemoProvider()
+    accounts = demo.list_accounts()
+    for acc in accounts:
+        assert "SEND" not in acc.capabilities
+        assert "send" not in [c.lower() for c in acc.capabilities]
+        assert "DRAFTS" in acc.capabilities
+
+    # 5. ProviderManager aggregated account status
+    pm = ProviderManager()
+    with patch("backend.config.load_settings", return_value={"configured_accounts": [{"account_id": "demo@auramail.local", "provider": "DEMO", "enabled": True}]}):
+        all_accs = pm.list_all_accounts(validate_remote=False)
+        for acc in all_accs:
+            assert "SEND" not in acc.capabilities
+            assert "send" not in [c.lower() for c in acc.capabilities]
+            assert "DRAFTS" in acc.capabilities

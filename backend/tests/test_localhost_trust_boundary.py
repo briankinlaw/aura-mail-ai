@@ -612,3 +612,45 @@ def test_frontend_taskpane_authentication_contract():
     assert "status === 401" in content or "status === 403" in content
     assert "Resolver authorization failure" in content
     assert "status === 404" in content
+
+
+def test_accounts_api_does_not_expose_send_capability():
+    """
+    PHASE 3.2 API SEMANTICS INVARIANT:
+    Verifies that /api/accounts endpoint returns capabilities strictly excluding 'SEND'.
+    """
+    token = get_local_session_token()
+    with patch("backend.main.provider_manager.list_all_accounts") as mock_status:
+        from backend.providers.base import AccountIdentity, ProviderType
+        mock_status.return_value = [
+            AccountIdentity(
+                account_id="demo@auramail.local",
+                email_address="demo@auramail.local",
+                provider=ProviderType.DEMO,
+                display_name="Demo Mode",
+                capabilities=["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+            )
+        ]
+        res = unauth_client.get(
+            "/api/accounts",
+            headers={"Authorization": f"Bearer {token}", "Origin": "https://localhost:8000"}
+        )
+        assert res.status_code == 200
+        accounts = res.json()
+        assert len(accounts) > 0
+        for acc in accounts:
+            assert "SEND" not in acc.get("capabilities", [])
+            assert "send" not in [c.lower() for c in acc.get("capabilities", [])]
+            assert "DRAFTS" in acc.get("capabilities", [])
+
+
+def test_frontend_app_js_filters_send_capability():
+    """
+    PHASE 3.2 FRONTEND DEFENSE-IN-DEPTH:
+    Verifies that frontend/app.js contains defensive filtering preventing 'SEND' chips.
+    """
+    from backend.config import BASE_DIR
+    app_js_path = BASE_DIR / "frontend" / "app.js"
+    assert app_js_path.is_file()
+    content = app_js_path.read_text(encoding="utf-8")
+    assert "filter(c => c !== 'SEND')" in content or 'filter(c => c !== "SEND")' in content
