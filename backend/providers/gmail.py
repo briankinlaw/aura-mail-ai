@@ -543,7 +543,7 @@ class GmailProvider(BaseEmailProvider):
             safe_message=f"Attachment '{filename}' bundled into MIME draft."
         )
 
-    def send_reply(
+    def _execute_send_reply(
         self, 
         account_id: str, 
         message_id: str, 

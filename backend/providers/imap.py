@@ -511,7 +511,7 @@ class ImapProvider(BaseEmailProvider):
             safe_message=f"Attachment '{filename}' bundled into IMAP MIME structure."
         )
 
-    def send_reply(
+    def _execute_send_reply(
         self, 
         account_id: str, 
         message_id: str, 

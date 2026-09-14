@@ -608,7 +608,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                 safe_message=f"Error attaching file to Microsoft Graph draft: {str(e)}"
             )
 
-    def send_reply(
+    def _execute_send_reply(
         self, 
         account_id: str, 
         message_id: str, 

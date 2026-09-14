@@ -12,6 +12,12 @@ from pydantic import BaseModel, Field
 import urllib.parse
 
 from backend.models import EmailMessage
+from backend.safety_policy import (
+    evaluate_mail_action,
+    MailAction,
+    ExecutionContext,
+    MailSafetyMode,
+)
 
 class ProviderType(str, Enum):
     MICROSOFT_GRAPH = "MICROSOFT_GRAPH"
@@ -132,14 +138,57 @@ class BaseEmailProvider(ABC):
         """Uploads and attaches a file to an existing cloud draft."""
         pass
 
-    @abstractmethod
     def send_reply(
-        self, 
-        account_id: str, 
-        message_id: str, 
-        to_email: str, 
-        subject: str, 
-        reply_body: str, 
+        self,
+        account_id: str,
+        message_id: str,
+        to_email: str,
+        subject: str,
+        reply_body: str,
+        resume_filename: Optional[str] = None,
+        context: ExecutionContext = ExecutionContext.UNAUTHENTICATED_API,
+        safety_mode: Optional[MailSafetyMode] = None,
+    ) -> ProviderOperationResult:
+        """Centralized mail safety policy enforcement at the provider transmission boundary.
+
+        Guarantees that all concrete email providers fail closed unless transmission is
+        independently authorized by an interactive human context and permitted by safety mode.
+        """
+        policy_eval = evaluate_mail_action(MailAction.SEND_REPLY, context=context, safety_mode=safety_mode)
+        if not policy_eval.allowed:
+            prov_name = self.provider_type.value if hasattr(self, "provider_type") and self.provider_type else "UNKNOWN"
+            return ProviderOperationResult(
+                success=False,
+                provider=prov_name,
+                account_id=account_id,
+                operation="SEND_REPLY",
+                error_code="SEND_FORBIDDEN",
+                safe_message=f"Mail Transmission Blocked: {policy_eval.reason}",
+                retryable=False,
+                details={
+                    "safety_mode": policy_eval.safety_mode.value,
+                    "execution_context": context.value,
+                    "reason": policy_eval.reason,
+                }
+            )
+
+        return self._execute_send_reply(
+            account_id=account_id,
+            message_id=message_id,
+            to_email=to_email,
+            subject=subject,
+            reply_body=reply_body,
+            resume_filename=resume_filename,
+        )
+
+    @abstractmethod
+    def _execute_send_reply(
+        self,
+        account_id: str,
+        message_id: str,
+        to_email: str,
+        subject: str,
+        reply_body: str,
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
         """Sends an email reply through the cloud provider and archives it in Sent Items."""

@@ -39,6 +39,12 @@ from backend.config import (
 from backend.providers.base import decode_composite_id
 
 from backend.security import get_secret, set_secret, mask_secret
+from backend.safety_policy import (
+    evaluate_mail_action,
+    MailAction,
+    ExecutionContext,
+    MailSafetyMode,
+)
 from backend.ai_agent import classify_email, generate_personalized_reply
 from backend.provider_manager import provider_manager
 from backend.desktop_helper import get_desktop_app_status
@@ -737,6 +743,26 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
 
 @app.post("/api/emails/{email_id}/send-reply", dependencies=[Depends(require_local_auth)])
 def send_email_reply(email_id: str, payload: SendReplyRequest):
+    # 1. Centralized Mail Safety Policy check for interactive user dispatch
+    policy_eval = evaluate_mail_action(
+        MailAction.SEND_REPLY,
+        context=ExecutionContext.DASHBOARD_INTERACTIVE_USER
+    )
+    if not policy_eval.allowed:
+        logger.warning(
+            f"send_email_reply denied by safety policy for {email_id} "
+            f"(mode={policy_eval.safety_mode.value}): {policy_eval.reason}"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "SEND_FORBIDDEN",
+                "message": f"Mail Transmission Blocked: {policy_eval.reason}",
+                "safety_mode": policy_eval.safety_mode.value,
+                "execution_context": ExecutionContext.DASHBOARD_INTERACTIVE_USER.value,
+            }
+        )
+
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
     
@@ -750,9 +776,19 @@ def send_email_reply(email_id: str, payload: SendReplyRequest):
         to_email=to_email,
         subject=payload.subject or email_msg.subject,
         reply_body=payload.reply_body,
-        resume_filename=resume_file if payload.attach_resume else None
+        resume_filename=resume_file if payload.attach_resume else None,
+        context=ExecutionContext.DASHBOARD_INTERACTIVE_USER
     )
     
+    if not result.success and result.error_code == "SEND_FORBIDDEN":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "SEND_FORBIDDEN",
+                "message": result.safe_message,
+            }
+        )
+
     if result.success:
         email_msg.status = "REPLIED"
         save_cached_emails()
@@ -772,7 +808,9 @@ def send_email_reply(email_id: str, payload: SendReplyRequest):
             facts_used=["Influenced $8M Google Cloud revenue", "$100M+ enterprise revenue delivered", "Promevo pipeline $2M+"],
             reply_text=payload.reply_body
         )
-    
+    else:
+        logger.warning(f"Failed to send reply for {email_id}: {result.safe_message}")
+
     return result.model_dump()
 
 @app.post("/api/emails/clean-noise", dependencies=[Depends(require_local_auth)])

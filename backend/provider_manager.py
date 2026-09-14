@@ -27,6 +27,12 @@ from backend.providers.graph import MicrosoftGraphProvider
 from backend.providers.gmail import GmailProvider
 from backend.providers.imap import ImapProvider
 from backend.providers.demo import DemoProvider
+from backend.safety_policy import (
+    evaluate_mail_action,
+    MailAction,
+    ExecutionContext,
+    MailSafetyMode,
+)
 
 logger = logging.getLogger("provider_manager")
 
@@ -312,8 +318,31 @@ class ProviderManager:
         to_email: str, 
         subject: str, 
         reply_body: str, 
-        resume_filename: Optional[str] = None
+        resume_filename: Optional[str] = None,
+        context: ExecutionContext = ExecutionContext.UNAUTHENTICATED_API,
+        safety_mode: Optional[MailSafetyMode] = None,
     ) -> ProviderOperationResult:
+        # Centralized Policy Evaluation
+        policy_eval = evaluate_mail_action(MailAction.SEND_REPLY, context=context, safety_mode=safety_mode)
+        if not policy_eval.allowed:
+            logger.warning(
+                f"ProviderManager blocked send_reply (context={context.value}, mode={policy_eval.safety_mode.value}): {policy_eval.reason}"
+            )
+            return ProviderOperationResult(
+                success=False,
+                provider="UNKNOWN",
+                account_id="unknown",
+                operation="SEND_REPLY",
+                error_code="SEND_FORBIDDEN",
+                safe_message=f"Mail Transmission Blocked: {policy_eval.reason}",
+                retryable=False,
+                details={
+                    "safety_mode": policy_eval.safety_mode.value,
+                    "execution_context": context.value,
+                    "reason": policy_eval.reason,
+                }
+            )
+
         provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
         if not provider:
             return ProviderOperationResult(
@@ -331,7 +360,9 @@ class ProviderManager:
             to_email=to_email,
             subject=subject,
             reply_body=reply_body,
-            resume_filename=resume_filename
+            resume_filename=resume_filename,
+            context=context,
+            safety_mode=safety_mode,
         )
 
     def move_message(self, message_id: str, destination_folder_id: str) -> ProviderOperationResult:

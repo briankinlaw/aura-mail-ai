@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 from backend.models import EmailMessage
 from backend.provider_manager import provider_manager
 from backend.desktop_helper import is_outlook_desktop_running
+from backend.safety_policy import ExecutionContext
 
 logger = logging.getLogger("legacy_outlook_client")
 
@@ -49,7 +50,15 @@ class OutlookClientAdapter:
         res = provider_manager.save_draft_reply(message_id, reply_body, resume_filename)
         return res.model_dump()
 
-    def send_reply(self, to_email: str, subject: str, reply_body: str, resume_filename: Optional[str] = None, message_id: Optional[str] = None) -> Dict[str, Any]:
+    def send_reply(
+        self,
+        to_email: str,
+        subject: str,
+        reply_body: str,
+        resume_filename: Optional[str] = None,
+        message_id: Optional[str] = None,
+        context: ExecutionContext = ExecutionContext.OUTLOOK_INTERACTIVE_USER
+    ) -> Dict[str, Any]:
         target_id = message_id or "primary"
         if not provider_manager.is_demo_mode() and target_id == "primary":
             return {
@@ -61,7 +70,14 @@ class OutlookClientAdapter:
                 "safe_message": "Direct send without a valid message or account ID is disallowed in live mode.",
                 "retryable": False
             }
-        res = provider_manager.send_reply(target_id, to_email, subject, reply_body, resume_filename)
+        res = provider_manager.send_reply(
+            message_id=target_id,
+            to_email=to_email,
+            subject=subject,
+            reply_body=reply_body,
+            resume_filename=resume_filename,
+            context=context
+        )
         return res.model_dump()
 
     def move_email_to_folder(self, message_id: str, destination_folder_id: str) -> bool:

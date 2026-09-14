@@ -136,7 +136,7 @@ class DemoProvider(BaseEmailProvider):
             safe_message=f"[DEMO] File '{filename}' attached to draft {draft_id}."
         )
 
-    def send_reply(
+    def _execute_send_reply(
         self, 
         account_id: str, 
         message_id: str, 
