@@ -514,10 +514,8 @@ window.openAuthModalFor = function(providerType, accountId) {
     
     // Auto-fill known server host defaults if empty or matching domain
     const imapInput = document.getElementById('imap-server-input');
-    const smtpInput = document.getElementById('smtp-server-input');
     if (accLower.includes('satx.rr.com')) {
       if (imapInput) imapInput.value = 'mail.twc.com';
-      if (smtpInput) smtpInput.value = 'mail.twc.com';
     }
   } else {
     if (elements.authTabMsal) elements.authTabMsal.click();
@@ -1013,7 +1011,6 @@ function setupEventListeners() {
     const emailAddr = document.getElementById('imap-email-input').value.trim();
     const pwd = document.getElementById('imap-password-input').value.trim();
     const imapServer = document.getElementById('imap-server-input').value.trim();
-    const smtpServer = document.getElementById('smtp-server-input').value.trim();
     
     if (!emailAddr || !pwd) {
       showToast('Email address and password required.', 'error');
@@ -1029,8 +1026,7 @@ function setupEventListeners() {
         body: JSON.stringify({
           email: emailAddr,
           password: pwd,
-          imap_server: imapServer,
-          smtp_server: smtpServer
+          imap_server: imapServer
         })
       });
       const data = await res.json();

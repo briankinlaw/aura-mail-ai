@@ -75,7 +75,7 @@ outlook-ai-assistant/
 │   │   ├── gmail.py            # Gmail API OAuth Provider
 │   │   ├── graph.py            # Microsoft Graph API Provider (MSAL)
 │   │   └── imap.py             # RFC 3501 IMAP Cloud Provider
-│   └── tests/                  # Automated Test Suite (149 Unit & Security Integration Tests)
+│   └── tests/                  # Automated Unit & Security Integration Test Suite
 │       ├── test_analytics.py
 │       ├── test_assistant.py
 │       ├── test_canonical_engine.py

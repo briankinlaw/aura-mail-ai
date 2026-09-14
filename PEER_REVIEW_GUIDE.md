@@ -20,7 +20,7 @@ Welcome! This guide provides peer reviewers with a structured walkthrough of the
 | **macOS Keychain Security** | [`backend/security.py`](file:///Users/briankinlaw/aura-mail-ai/backend/security.py) | Zero plaintext secrets on disk. Keyring-backed macOS Keychain vault, boot-time repository secret scanner, and automated test guards. |
 | **Canonical Career Engine** | [`backend/canonical_engine.py`](file:///Users/briankinlaw/aura-mail-ai/backend/canonical_engine.py) | 36-document local indexer, pure-Python OpenXML parser, 3-level role taxonomy matrix, token affinity scoring, locked facts grounding. |
 | **Telemetry & Observability** | [`backend/analytics.py`](file:///Users/briankinlaw/aura-mail-ai/backend/analytics.py) | SQLite database layer, compensation range parser, conversion funnel metrics, resume ROI tracking, append-only audit stream. |
-| **Automated Test Suite** | [`backend/tests/`](file:///Users/briankinlaw/aura-mail-ai/backend/tests/) | **152 comprehensive unit and integration tests** covering add-in endpoints, risk evaluator, analytics, canonical matching, providers, daemon, safety policy, trust boundary, and menubar. |
+| **Automated Test Suite** | [`backend/tests/`](file:///Users/briankinlaw/aura-mail-ai/backend/tests/) | **Comprehensive automated unit and security integration test suite** covering add-in endpoints, risk evaluator, analytics, canonical matching, providers, daemon, safety policy, trust boundary, and menubar. |
 
 ---
 
@@ -46,7 +46,7 @@ pip install -r requirements.txt
 ```bash
 .venv/bin/pytest backend/tests/ -v
 ```
-*Expected Output: `152 passed in < 15s`*
+*Expected Output: All tests pass (0 failures)*
 
 ### 4. Start the Application
 ```bash

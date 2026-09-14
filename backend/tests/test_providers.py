@@ -305,15 +305,14 @@ def test_graph_scopes_least_privilege():
 def test_gmail_scopes_least_privilege():
     """
     CRITICAL LEAST-PRIVILEGE INVARIANT:
-    Verifies that Gmail OAuth scopes strictly exclude explicit gmail.send.
-    Only readonly, compose, and modify scopes are requested for draft staging and label management.
+    Verifies that Gmail OAuth scopes strictly exclude explicit gmail.send,
+    and consolidate to the single minimum justified scope (gmail.modify)
+    covering message reading, draft creation, and label quarantine.
     """
     from backend.providers.gmail import GMAIL_SCOPES
     assert "https://www.googleapis.com/auth/gmail.send" not in GMAIL_SCOPES
     assert not any("gmail.send" in s.lower() for s in GMAIL_SCOPES)
-    assert "https://www.googleapis.com/auth/gmail.readonly" in GMAIL_SCOPES
-    assert "https://www.googleapis.com/auth/gmail.compose" in GMAIL_SCOPES
-    assert "https://www.googleapis.com/auth/gmail.modify" in GMAIL_SCOPES
+    assert GMAIL_SCOPES == ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def test_imap_provider_has_no_smtplib_dependency():

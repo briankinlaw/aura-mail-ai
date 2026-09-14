@@ -33,7 +33,7 @@
   - `base.py`: Provider interface abstractions & `ProviderOperationResult`.
   - `graph.py`: Microsoft Graph (MSAL) OAuth & device flow.
   - `gmail.py`: Google Cloud OAuth2 / Gmail API.
-  - `imap.py`: RFC 3501 IMAP / SMTP.
+  - `imap.py`: RFC 3501 IMAP.
   - `demo.py`: Offline mock provider.
 
 ### Frontend & Outlook Add-in Modules

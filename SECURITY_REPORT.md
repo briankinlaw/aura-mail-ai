@@ -61,4 +61,4 @@ To safeguard against unintended commitments or metric drift, `backend/radar/risk
 2. **Automated Test Guard** ([`backend/tests/test_multi_account.py`](file:///Users/briankinlaw/aura-mail-ai/backend/tests/test_multi_account.py)):
    - `test_repository_secrets_sanitized()` scans the entire repository during `pytest` runs and fails if any secrets are present.
 3. **Automated Test Suite**:
-   - **152 of 152 automated test cases passing** across all modules.
+   - **Comprehensive automated test suite passing across all modules** (0 failures).

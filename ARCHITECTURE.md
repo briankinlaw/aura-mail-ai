@@ -111,6 +111,6 @@ graph TD
 
 ## 4. Automated Verification & Quality Assurance
 
-- **Unit & Security Integration Tests**: 149 tests in `backend/tests/` covering safety policy, origin defense, trust boundaries, multi-account routing, providers, and factual grounding.
+- **Unit & Security Integration Tests**: Comprehensive automated test suite in `backend/tests/` covering safety policy, origin defense, trust boundaries, multi-account routing, providers, and factual grounding.
 - **Test Command**: `PYTHONPATH=. .venv/bin/pytest backend/tests/ -v`
-- **Result**: `149 passed` with 100% success.
+- **Result**: All tests pass with 100% success (0 failures).

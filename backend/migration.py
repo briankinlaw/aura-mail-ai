@@ -82,7 +82,6 @@ def migrate_v1_to_v1_1(settings_file: Path, base_dir: Path) -> Dict[str, Any]:
                 "provider": "IMAP",
                 "display_name": "Brian Kinlaw (Spectrum Roadrunner 1)",
                 "imap_server": "mail.twc.com",
-                "smtp_server": "mail.twc.com",
                 "enabled": True,
                 "is_primary": False
             },
@@ -92,7 +91,6 @@ def migrate_v1_to_v1_1(settings_file: Path, base_dir: Path) -> Dict[str, Any]:
                 "provider": "IMAP",
                 "display_name": "Brian Kinlaw (Spectrum Roadrunner 2)",
                 "imap_server": "mail.twc.com",
-                "smtp_server": "mail.twc.com",
                 "enabled": True,
                 "is_primary": False
             },

@@ -443,10 +443,8 @@ def auth_imap(payload: Dict[str, str]):
     email_addr = payload.get("email", "").strip().lower()
     password = payload.get("password", "").strip()
     imap_server_raw = payload.get("imap_server", "").strip()
-    smtp_server_raw = payload.get("smtp_server", "").strip()
     
     imap_host, imap_port = provider_manager.imap_provider._parse_host_port(imap_server_raw, 993)
-    smtp_host, smtp_port = provider_manager.imap_provider._parse_host_port(smtp_server_raw, 587)
     
     if not email_addr or not password:
         raise HTTPException(status_code=400, detail="Email and password are required.")
@@ -461,8 +459,8 @@ def auth_imap(payload: Dict[str, str]):
             acc["provider"] = "IMAP"
             acc["imap_server"] = imap_host or acc.get("imap_server", "mail.twc.com")
             acc["imap_port"] = imap_port
-            acc["smtp_server"] = smtp_host or acc.get("smtp_server", "mail.twc.com")
-            acc["smtp_port"] = smtp_port
+            acc.pop("smtp_server", None)
+            acc.pop("smtp_port", None)
             found = True
             break
     if not found:
@@ -473,8 +471,6 @@ def auth_imap(payload: Dict[str, str]):
             "display_name": email_addr,
             "imap_server": imap_host or "mail.twc.com",
             "imap_port": imap_port,
-            "smtp_server": smtp_host or "mail.twc.com",
-            "smtp_port": smtp_port,
             "enabled": True
         })
     settings["configured_accounts"] = configured
