@@ -1021,6 +1021,7 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
     sender_email = payload.get("sender_email", "")
     draft_reply = payload.get("draft_reply", "")
     proposed_action = payload.get("proposed_action", "DRAFT")
+    execution_context = payload.get("execution_context")
 
     msg = EmailMessage(
         id="addin-risk-temp",
@@ -1035,6 +1036,7 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
         email=msg,
         draft_reply=draft_reply,
         proposed_action=proposed_action,
+        execution_context=execution_context,
         user_profile=user_profile
     )
     return res.model_dump()
