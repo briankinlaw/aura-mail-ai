@@ -182,6 +182,7 @@ PRIVILEGED_POST_ENDPOINTS = [
     ("/api/emails/sync", {}),
     ("/api/emails/test_id/generate-reply", {"tone": "Professional"}),
     ("/api/emails/test_id/save-draft", {"reply_body": "test"}),
+    ("/api/emails/test_id/authorize-send", {"reply_body": "test"}),
     ("/api/emails/test_id/send-reply", {"reply_body": "test"}),
     ("/api/emails/clean-noise", {}),
     ("/api/emails/test_id/trash", {}),

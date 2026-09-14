@@ -7,15 +7,14 @@ for all cloud email integrations (Microsoft Graph, Gmail API, IMAP, Demo).
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 import urllib.parse
 
 from backend.models import EmailMessage
 from backend.safety_policy import (
-    evaluate_mail_action,
-    MailAction,
-    ExecutionContext,
+    validate_and_consume_send_authorization,
+    SendAuthorizationTicket,
     MailSafetyMode,
 )
 
@@ -146,15 +145,23 @@ class BaseEmailProvider(ABC):
         subject: str,
         reply_body: str,
         resume_filename: Optional[str] = None,
-        context: ExecutionContext = ExecutionContext.UNAUTHENTICATED_API,
-        safety_mode: Optional[MailSafetyMode] = None,
+        authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
     ) -> ProviderOperationResult:
         """Centralized mail safety policy enforcement at the provider transmission boundary.
 
         Guarantees that all concrete email providers fail closed unless transmission is
-        independently authorized by an interactive human context and permitted by safety mode.
+        independently authorized by a valid, unconsumed discrete SendAuthorizationTicket,
+        bound to the exact outbound payload and account under MANUAL_SEND_ONLY mode.
         """
-        policy_eval = evaluate_mail_action(MailAction.SEND_REPLY, context=context, safety_mode=safety_mode)
+        policy_eval = validate_and_consume_send_authorization(
+            account_id=account_id,
+            message_id=message_id,
+            to_email=to_email,
+            subject=subject,
+            reply_body=reply_body,
+            resume_filename=resume_filename,
+            authorization=authorization,
+        )
         if not policy_eval.allowed:
             prov_name = self.provider_type.value if hasattr(self, "provider_type") and self.provider_type else "UNKNOWN"
             return ProviderOperationResult(
@@ -167,7 +174,6 @@ class BaseEmailProvider(ABC):
                 retryable=False,
                 details={
                     "safety_mode": policy_eval.safety_mode.value,
-                    "execution_context": context.value,
                     "reason": policy_eval.reason,
                 }
             )

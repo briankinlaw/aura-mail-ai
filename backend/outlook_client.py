@@ -5,12 +5,12 @@ backward-compatibility for legacy scripts and test signatures.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 from backend.models import EmailMessage
 from backend.provider_manager import provider_manager
 from backend.desktop_helper import is_outlook_desktop_running
-from backend.safety_policy import ExecutionContext
+from backend.safety_policy import SendAuthorizationTicket, ExecutionContext
 
 logger = logging.getLogger("legacy_outlook_client")
 
@@ -57,7 +57,7 @@ class OutlookClientAdapter:
         reply_body: str,
         resume_filename: Optional[str] = None,
         message_id: Optional[str] = None,
-        context: ExecutionContext = ExecutionContext.OUTLOOK_INTERACTIVE_USER
+        authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
     ) -> Dict[str, Any]:
         target_id = message_id or "primary"
         if not provider_manager.is_demo_mode() and target_id == "primary":
@@ -76,7 +76,7 @@ class OutlookClientAdapter:
             subject=subject,
             reply_body=reply_body,
             resume_filename=resume_filename,
-            context=context
+            authorization=authorization,
         )
         return res.model_dump()
 

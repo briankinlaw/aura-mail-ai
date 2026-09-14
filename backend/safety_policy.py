@@ -1,11 +1,17 @@
 """
-Aura Mail AI - Mail Safety Policy Model & Enforcement Engine (Phase 1).
+Aura Mail AI - Mail Safety Policy Model & Enforcement Engine (Phase 1 & Phase 3 Remediation).
 Implements fail-closed safety modes (DRAFT_ONLY vs MANUAL_SEND_ONLY),
 explicit action classifications with fail-closed unknown action denial,
-execution context trust boundaries, and permanent no-send invariants.
+discrete interactive human send authorization tickets, cryptographic payload binding,
+and permanent background execution no-send invariants.
 """
 
 import logging
+import threading
+import time
+import secrets
+import hashlib
+import json
 from enum import Enum
 from typing import Optional, Any, Dict, Union, Set
 from pydantic import BaseModel, Field
@@ -17,7 +23,7 @@ class MailSafetyMode(str, Enum):
     """
     Explicit backend mail safety modes:
     - DRAFT_ONLY (default, fail-closed): Analysis, drafting, UI pre-filling, and clipboard copying allowed; all app sends blocked.
-    - MANUAL_SEND_ONLY: Transmit email only after explicit interactive human send action. Background send still strictly forbidden.
+    - MANUAL_SEND_ONLY: Transmit email only after independently verifiable, explicit, interactive human authorization. Background send still strictly forbidden.
     """
     DRAFT_ONLY = "DRAFT_ONLY"
     MANUAL_SEND_ONLY = "MANUAL_SEND_ONLY"
@@ -108,6 +114,281 @@ class PolicyEvaluationResult(BaseModel):
     is_send_blocked: bool = False
 
 
+class SendAuthorizationTicket(BaseModel):
+    """
+    Discrete, short-lived, single-use send authorization credential.
+    Bound to a specific account, message, outbound payload digest, and operation.
+    """
+    ticket_id: str
+    account_id: str
+    message_id: str
+    operation: str = "SEND_REPLY"
+    payload_digest: str
+    created_at: float
+    expires_at: float
+    consumed: bool = False
+
+
+# Thread-safe in-memory authorization registry
+_AUTH_LOCK = threading.Lock()
+_AUTHORIZATION_REGISTRY: Dict[str, SendAuthorizationTicket] = {}
+DEFAULT_TICKET_TTL_SECONDS: float = 120.0  # 2 minutes
+
+
+def clear_authorization_registry() -> None:
+    """Clears the ephemeral authorization registry (used in test setup/teardown)."""
+    with _AUTH_LOCK:
+        _AUTHORIZATION_REGISTRY.clear()
+
+
+def compute_outbound_payload_digest(
+    account_id: str,
+    message_id: str,
+    to_email: str,
+    subject: str,
+    reply_body: str,
+    resume_filename: Optional[str] = None,
+) -> str:
+    """
+    Computes a canonical SHA-256 digest of the outbound mail payload to guarantee content integrity
+    and prevent Time-of-Check to Time-of-Use (TOCTOU) mutations between human approval and send.
+    """
+    canonical_dict = {
+        "account_id": (account_id or "").strip().lower(),
+        "message_id": (message_id or "").strip(),
+        "operation": "SEND_REPLY",
+        "reply_body": (reply_body or "").strip(),
+        "resume_filename": (resume_filename or "").strip() if resume_filename else None,
+        "subject": (subject or "").strip(),
+        "to_email": (to_email or "").strip().lower(),
+    }
+    serialized = json.dumps(canonical_dict, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def issue_send_authorization(
+    account_id: str,
+    message_id: str,
+    to_email: str,
+    subject: str,
+    reply_body: str,
+    resume_filename: Optional[str] = None,
+    ttl_seconds: float = DEFAULT_TICKET_TTL_SECONDS,
+    originating_context: ExecutionContext = ExecutionContext.UNAUTHENTICATED_API,
+) -> SendAuthorizationTicket:
+    """
+    Issues a discrete, short-lived, single-use send authorization ticket for an explicit
+    interactive human send action.
+
+    TRUST BOUNDARIES ENFORCED:
+    1. Active safety mode MUST be MANUAL_SEND_ONLY (DRAFT_ONLY strictly forbids issuance).
+    2. Originating context MUST be an INTERACTIVE_HUMAN_CONTEXT (BACKGROUND_CONTEXTS strictly forbidden).
+    3. Cryptographically unpredictable nonce (256-bit entropy via secrets.token_urlsafe).
+    4. Exact payload digest binding (preventing recipient, subject, body, or attachment tampering).
+    """
+    active_mode = get_active_safety_mode()
+    if active_mode != MailSafetyMode.MANUAL_SEND_ONLY:
+        raise PermissionError(
+            f"Send Authorization Denied: Active safety mode is {active_mode.value}. "
+            "Send authorization tickets cannot be issued when policy is DRAFT_ONLY."
+        )
+
+    if originating_context not in INTERACTIVE_HUMAN_CONTEXTS:
+        raise PermissionError(
+            f"Send Authorization Denied: Execution context '{originating_context.value}' "
+            "is not authorized to request send authorization. Background execution cannot authorize mail sends."
+        )
+
+    digest = compute_outbound_payload_digest(
+        account_id=account_id,
+        message_id=message_id,
+        to_email=to_email,
+        subject=subject,
+        reply_body=reply_body,
+        resume_filename=resume_filename,
+    )
+
+    ticket_id = f"sat_{secrets.token_urlsafe(32)}"
+    now = time.time()
+    ticket = SendAuthorizationTicket(
+        ticket_id=ticket_id,
+        account_id=(account_id or "").strip().lower(),
+        message_id=(message_id or "").strip(),
+        operation="SEND_REPLY",
+        payload_digest=digest,
+        created_at=now,
+        expires_at=now + ttl_seconds,
+        consumed=False
+    )
+
+    with _AUTH_LOCK:
+        # Purge expired entries
+        expired = [k for k, v in _AUTHORIZATION_REGISTRY.items() if v.expires_at < now]
+        for k in expired:
+            _AUTHORIZATION_REGISTRY.pop(k, None)
+        _AUTHORIZATION_REGISTRY[ticket_id] = ticket
+
+    logger.info(f"Issued SendAuthorizationTicket '{ticket_id}' for message '{message_id}', account '{account_id}'.")
+    return ticket
+
+
+def validate_and_consume_send_authorization(
+    account_id: str,
+    message_id: str,
+    to_email: str,
+    subject: str,
+    reply_body: str,
+    resume_filename: Optional[str] = None,
+    authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
+) -> PolicyEvaluationResult:
+    """
+    Validates and atomically consumes a SendAuthorizationTicket for a SEND_REPLY operation.
+
+    ENFORCEMENT RULES:
+    1. Active safety mode must be MANUAL_SEND_ONLY (DRAFT_ONLY unconditionally denies).
+    2. Authorization ticket must be provided, non-empty, and recognized in registry.
+    3. Ticket must not be expired.
+    4. Ticket must not have been already consumed (replay prevention).
+    5. Ticket account_id and message_id must match exactly.
+    6. Operation must be SEND_REPLY.
+    7. Payload digest must match canonical hash of current outbound arguments (content integrity).
+    8. Atomically marks ticket as consumed.
+    """
+    try:
+        active_mode = get_active_safety_mode()
+
+        # 1. DRAFT_ONLY Invariant: Absolutely no transmission permitted
+        if active_mode != MailSafetyMode.MANUAL_SEND_ONLY:
+            return PolicyEvaluationResult(
+                allowed=False,
+                safety_mode=active_mode,
+                context=ExecutionContext.UNAUTHENTICATED_API,
+                action="SEND_REPLY",
+                reason=f"Policy Enforcement (DRAFT_ONLY): Active safety mode is {active_mode.value}. Transmission is strictly forbidden.",
+                is_send_blocked=True
+            )
+
+        # 2. Authorization ticket presence check
+        if not authorization:
+            return PolicyEvaluationResult(
+                allowed=False,
+                safety_mode=active_mode,
+                context=ExecutionContext.UNAUTHENTICATED_API,
+                action="SEND_REPLY",
+                reason="Discrete Send Authorization Required: No authorization ticket provided for mail transmission.",
+                is_send_blocked=True
+            )
+
+        ticket_id = authorization.ticket_id if isinstance(authorization, SendAuthorizationTicket) else str(authorization).strip()
+        if not ticket_id:
+            return PolicyEvaluationResult(
+                allowed=False,
+                safety_mode=active_mode,
+                context=ExecutionContext.UNAUTHENTICATED_API,
+                action="SEND_REPLY",
+                reason="Discrete Send Authorization Required: Empty authorization ticket.",
+                is_send_blocked=True
+            )
+
+        now = time.time()
+        current_digest = compute_outbound_payload_digest(
+            account_id=account_id,
+            message_id=message_id,
+            to_email=to_email,
+            subject=subject,
+            reply_body=reply_body,
+            resume_filename=resume_filename,
+        )
+
+        with _AUTH_LOCK:
+            stored_ticket = _AUTHORIZATION_REGISTRY.get(ticket_id)
+            if not stored_ticket:
+                return PolicyEvaluationResult(
+                    allowed=False,
+                    safety_mode=active_mode,
+                    context=ExecutionContext.UNAUTHENTICATED_API,
+                    action="SEND_REPLY",
+                    reason=f"Discrete Send Authorization Invalid: Ticket '{ticket_id}' not found, unrecognized, or purged.",
+                    is_send_blocked=True
+                )
+
+            if stored_ticket.consumed:
+                return PolicyEvaluationResult(
+                    allowed=False,
+                    safety_mode=active_mode,
+                    context=ExecutionContext.UNAUTHENTICATED_API,
+                    action="SEND_REPLY",
+                    reason=f"Discrete Send Authorization Replay Detected: Ticket '{ticket_id}' has already been consumed.",
+                    is_send_blocked=True
+                )
+
+            if stored_ticket.expires_at < now:
+                _AUTHORIZATION_REGISTRY.pop(ticket_id, None)
+                return PolicyEvaluationResult(
+                    allowed=False,
+                    safety_mode=active_mode,
+                    context=ExecutionContext.UNAUTHENTICATED_API,
+                    action="SEND_REPLY",
+                    reason=f"Discrete Send Authorization Expired: Ticket '{ticket_id}' has expired.",
+                    is_send_blocked=True
+                )
+
+            norm_account = (account_id or "").strip().lower()
+            if stored_ticket.account_id != norm_account:
+                return PolicyEvaluationResult(
+                    allowed=False,
+                    safety_mode=active_mode,
+                    context=ExecutionContext.UNAUTHENTICATED_API,
+                    action="SEND_REPLY",
+                    reason=f"Discrete Send Authorization Account Mismatch: Ticket issued for '{stored_ticket.account_id}', requested for '{norm_account}'.",
+                    is_send_blocked=True
+                )
+
+            norm_message = (message_id or "").strip()
+            if stored_ticket.message_id != norm_message:
+                return PolicyEvaluationResult(
+                    allowed=False,
+                    safety_mode=active_mode,
+                    context=ExecutionContext.UNAUTHENTICATED_API,
+                    action="SEND_REPLY",
+                    reason=f"Discrete Send Authorization Message Mismatch: Ticket issued for '{stored_ticket.message_id}', requested for '{norm_message}'.",
+                    is_send_blocked=True
+                )
+
+            if stored_ticket.payload_digest != current_digest:
+                return PolicyEvaluationResult(
+                    allowed=False,
+                    safety_mode=active_mode,
+                    context=ExecutionContext.UNAUTHENTICATED_API,
+                    action="SEND_REPLY",
+                    reason="Discrete Send Authorization Content Integrity Violation: Outbound payload (recipient, subject, body, or attachment) has been mutated since authorization was granted.",
+                    is_send_blocked=True
+                )
+
+            # Atomic single-use consumption
+            stored_ticket.consumed = True
+
+        logger.info(f"SendAuthorizationTicket '{ticket_id}' validated and consumed successfully for message '{message_id}'.")
+        return PolicyEvaluationResult(
+            allowed=True,
+            safety_mode=active_mode,
+            context=ExecutionContext.DASHBOARD_INTERACTIVE_USER,
+            action="SEND_REPLY",
+            reason=f"Discrete Send Authorization verified and consumed for ticket '{ticket_id}'.",
+            is_send_blocked=False
+        )
+    except Exception as ex:
+        logger.error(f"Unexpected error validating authorization ticket: {ex}")
+        return PolicyEvaluationResult(
+            allowed=False,
+            safety_mode=get_active_safety_mode(),
+            context=ExecutionContext.UNAUTHENTICATED_API,
+            action="SEND_REPLY",
+            reason=f"Discrete Send Authorization Exception (Fail-Closed): {str(ex)}",
+            is_send_blocked=True
+        )
+
+
 def resolve_safety_mode(raw_value: Any) -> MailSafetyMode:
     """
     Fail-closed resolution of Mail Safety Mode.
@@ -195,7 +476,8 @@ def set_safety_mode(new_mode: Union[MailSafetyMode, str], human_actor_context: E
 def evaluate_mail_action(
     action: Union[MailAction, str],
     context: ExecutionContext,
-    safety_mode: Optional[MailSafetyMode] = None
+    safety_mode: Optional[MailSafetyMode] = None,
+    authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
 ) -> PolicyEvaluationResult:
     """
     Core policy decision engine implementing the Acceptance Matrix:
@@ -206,12 +488,13 @@ def evaluate_mail_action(
     Background radar               | Draft only                  | Draft only
     Scheduled job                  | Draft only                  | Draft only
     AI/agent invocation            | Draft only                  | Draft only
-    Outlook interactive user       | Draft/review                | Explicit human send permitted
-    Aura dashboard interactive     | Send blocked                | Explicit human send permitted
+    Outlook interactive user       | Draft/review                | Explicit human send authorization required
+    Aura dashboard interactive     | Send blocked                | Explicit human send authorization required
     Unauthenticated/direct API     | Blocked                     | Blocked
 
     FAIL-CLOSED GUARANTEE:
     Unrecognized or unclassified actions are strictly DENIED by default.
+    Context enums alone NEVER grant transmission permission without discrete send authorization.
     """
     mode = safety_mode if safety_mode is not None else get_active_safety_mode()
     resolved_action = resolve_mail_action(action)
@@ -255,32 +538,45 @@ def evaluate_mail_action(
                 is_send_blocked=True
             )
 
-        # Interactive Human Contexts: Evaluated based on active safety mode
-        if context in INTERACTIVE_HUMAN_CONTEXTS:
-            if mode == MailSafetyMode.DRAFT_ONLY:
+        # In DRAFT_ONLY mode, send is absolutely blocked for all callers
+        if mode == MailSafetyMode.DRAFT_ONLY:
+            return PolicyEvaluationResult(
+                allowed=False,
+                safety_mode=mode,
+                context=context,
+                action=action_str,
+                reason=(
+                    "Policy Enforcement: Active safety mode is DRAFT_ONLY. "
+                    "Direct send operations are disabled; stage as draft for manual review."
+                ),
+                is_send_blocked=True
+            )
+
+        # Under MANUAL_SEND_ONLY mode, transmission REQUIRES discrete authorization.
+        # Context enum alone is metadata, not proof.
+        if mode == MailSafetyMode.MANUAL_SEND_ONLY:
+            if not authorization:
                 return PolicyEvaluationResult(
                     allowed=False,
                     safety_mode=mode,
                     context=context,
                     action=action_str,
                     reason=(
-                        f"Policy Enforcement: Active safety mode is DRAFT_ONLY. "
-                        "Direct send operations are disabled; stage as draft for manual review."
+                        "Discrete Send Authorization Required: A caller-supplied execution context alone "
+                        "is not proof of human authorization. A valid SendAuthorizationTicket is required."
                     ),
                     is_send_blocked=True
                 )
-            elif mode == MailSafetyMode.MANUAL_SEND_ONLY:
-                return PolicyEvaluationResult(
-                    allowed=True,
-                    safety_mode=mode,
-                    context=context,
-                    action=action_str,
-                    reason=(
-                        f"Explicit interactive human send permitted under MANUAL_SEND_ONLY policy "
-                        f"from context '{context.value}'."
-                    ),
-                    is_send_blocked=False
-                )
+
+            # If authorization is provided, return allowed (actual consumption handled by validate_and_consume)
+            return PolicyEvaluationResult(
+                allowed=True,
+                safety_mode=mode,
+                context=context,
+                action=action_str,
+                reason=f"Interactive human send authorized under MANUAL_SEND_ONLY with ticket '{authorization}'.",
+                is_send_blocked=False
+            )
 
         # Unauthenticated / unauthorized contexts are strictly blocked
         return PolicyEvaluationResult(

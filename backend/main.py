@@ -23,7 +23,9 @@ from backend.models import (
     ClassificationResult,
     UserProfile,
     ReplyDraftRequest,
-    SendReplyRequest
+    SendReplyRequest,
+    AuthorizeSendRequest,
+    AuthorizeSendResponse
 )
 from backend.config import (
     load_settings,
@@ -39,11 +41,13 @@ from backend.config import (
 from backend.providers.base import decode_composite_id
 
 from backend.security import get_secret, set_secret, mask_secret
+from backend import safety_policy
 from backend.safety_policy import (
     evaluate_mail_action,
     MailAction,
     ExecutionContext,
     MailSafetyMode,
+    SendAuthorizationTicket,
 )
 from backend.ai_agent import classify_email, generate_personalized_reply
 from backend.provider_manager import provider_manager
@@ -144,8 +148,6 @@ def save_cached_emails():
 
 load_cached_emails()
 
-from backend.safety_policy import get_active_safety_mode, MailSafetyMode
-
 # --- System & Multi-Account Endpoints ---
 
 @app.get("/api/status")
@@ -201,14 +203,14 @@ def get_system_status():
         "available_resumes": resumes,
         "cached_emails_count": len(CACHED_EMAILS),
         "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
-        "safety_mode": get_active_safety_mode().value
+        "safety_mode": safety_policy.get_active_safety_mode().value
     }
 
 
 @app.get("/api/safety-policy")
 def get_safety_policy_endpoint():
     """Read-only reporting of active Mail Safety Policy and foundational security invariants."""
-    mode = get_active_safety_mode()
+    mode = safety_policy.get_active_safety_mode()
     return {
         "status": "SUCCESS",
         "active_mode": mode.value,
@@ -741,25 +743,76 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
 
     return result.model_dump()
 
-@app.post("/api/emails/{email_id}/send-reply", dependencies=[Depends(require_local_auth)])
-def send_email_reply(email_id: str, payload: SendReplyRequest):
-    # 1. Centralized Mail Safety Policy check for interactive user dispatch
-    policy_eval = evaluate_mail_action(
-        MailAction.SEND_REPLY,
-        context=ExecutionContext.DASHBOARD_INTERACTIVE_USER
-    )
-    if not policy_eval.allowed:
-        logger.warning(
-            f"send_email_reply denied by safety policy for {email_id} "
-            f"(mode={policy_eval.safety_mode.value}): {policy_eval.reason}"
-        )
+@app.post("/api/emails/{email_id}/authorize-send", dependencies=[Depends(require_local_auth)])
+def authorize_send_endpoint(email_id: str, payload: AuthorizeSendRequest):
+    """
+    Explicit Interactive Send Authorization Handshake (Phase 3 Remediation).
+    Issues a discrete, short-lived, single-use send authorization ticket bound to the exact
+    outbound payload digest, account, and message.
+    Strictly fails closed if active safety mode is DRAFT_ONLY.
+    """
+    mode = safety_policy.get_active_safety_mode()
+    if mode != MailSafetyMode.MANUAL_SEND_ONLY:
         raise HTTPException(
             status_code=403,
             detail={
                 "error_code": "SEND_FORBIDDEN",
-                "message": f"Mail Transmission Blocked: {policy_eval.reason}",
-                "safety_mode": policy_eval.safety_mode.value,
-                "execution_context": ExecutionContext.DASHBOARD_INTERACTIVE_USER.value,
+                "message": f"Send Authorization Denied: Active safety mode is {mode.value}. Transmission is disabled; stage as draft for review.",
+                "safety_mode": mode.value,
+            }
+        )
+
+    if email_id not in CACHED_EMAILS:
+        raise HTTPException(status_code=404, detail="Email not found")
+
+    email_msg = CACHED_EMAILS[email_id]
+    user_profile = get_user_profile()
+    resume_file = (payload.resume_filename or user_profile.active_resume_file) if payload.attach_resume else None
+    to_email = payload.to_email or email_msg.sender_email
+    subject = payload.subject or email_msg.subject
+
+    # Positively resolve account ID
+    provider, account_id, native_id, _ = provider_manager.get_provider_for_message(email_msg.id)
+    resolved_account = account_id or email_msg.account_id or "unknown@auramail.local"
+
+    try:
+        ticket = safety_policy.issue_send_authorization(
+            account_id=resolved_account,
+            message_id=email_msg.id,
+            to_email=to_email,
+            subject=subject,
+            reply_body=payload.reply_body,
+            resume_filename=resume_file,
+            originating_context=ExecutionContext.DASHBOARD_INTERACTIVE_USER,
+        )
+    except PermissionError as pe:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "SEND_FORBIDDEN",
+                "message": str(pe),
+                "safety_mode": mode.value,
+            }
+        )
+
+    return AuthorizeSendResponse(
+        status="SUCCESS",
+        authorization_ticket=ticket.ticket_id,
+        expires_at=ticket.expires_at,
+        payload_digest=ticket.payload_digest,
+        message_id=email_msg.id,
+        account_id=resolved_account
+    ).model_dump()
+
+
+@app.post("/api/emails/{email_id}/send-reply", dependencies=[Depends(require_local_auth)])
+def send_email_reply(email_id: str, payload: SendReplyRequest):
+    if not payload.authorization_ticket:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "SEND_FORBIDDEN",
+                "message": "Discrete Send Authorization Required: No authorization ticket provided in send request.",
             }
         )
 
@@ -768,16 +821,17 @@ def send_email_reply(email_id: str, payload: SendReplyRequest):
     
     email_msg = CACHED_EMAILS[email_id]
     user_profile = get_user_profile()
-    resume_file = payload.resume_filename or user_profile.active_resume_file
+    resume_file = (payload.resume_filename or user_profile.active_resume_file) if payload.attach_resume else None
     to_email = payload.to_email or email_msg.sender_email
+    subject = payload.subject or email_msg.subject
     
     result = provider_manager.send_reply(
         message_id=email_msg.id,
         to_email=to_email,
-        subject=payload.subject or email_msg.subject,
+        subject=subject,
         reply_body=payload.reply_body,
-        resume_filename=resume_file if payload.attach_resume else None,
-        context=ExecutionContext.DASHBOARD_INTERACTIVE_USER
+        resume_filename=resume_file,
+        authorization=payload.authorization_ticket,
     )
     
     if not result.success and result.error_code == "SEND_FORBIDDEN":
@@ -788,28 +842,33 @@ def send_email_reply(email_id: str, payload: SendReplyRequest):
                 "message": result.safe_message,
             }
         )
+    elif not result.success:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": result.error_code or "SEND_FAILED",
+                "message": result.safe_message,
+            }
+        )
 
-    if result.success:
-        email_msg.status = "REPLIED"
-        save_cached_emails()
-        update_opportunity_stage(email_id, "REPLIED")
-        log_event(
-            event_type="REPLY_SENT",
-            opportunity_id=email_id,
-            resume_file=resume_file,
-            details=f"Reply sent to {to_email} via {result.provider}."
-        )
-        log_grounding_audit(
-            opportunity_id=email_id,
-            subject=email_msg.subject,
-            company=email_msg.classification.recruiter_details.company_name if email_msg.classification and email_msg.classification.recruiter_details else "Client",
-            role=email_msg.classification.recruiter_details.role_title if email_msg.classification and email_msg.classification.recruiter_details else email_msg.subject,
-            resume_used=resume_file,
-            facts_used=["Influenced $8M Google Cloud revenue", "$100M+ enterprise revenue delivered", "Promevo pipeline $2M+"],
-            reply_text=payload.reply_body
-        )
-    else:
-        logger.warning(f"Failed to send reply for {email_id}: {result.safe_message}")
+    email_msg.status = "REPLIED"
+    save_cached_emails()
+    update_opportunity_stage(email_id, "REPLIED")
+    log_event(
+        event_type="REPLY_SENT",
+        opportunity_id=email_id,
+        resume_file=resume_file,
+        details=f"Reply sent to {to_email} via {result.provider}."
+    )
+    log_grounding_audit(
+        opportunity_id=email_id,
+        subject=email_msg.subject,
+        company=email_msg.classification.recruiter_details.company_name if email_msg.classification and email_msg.classification.recruiter_details else "Client",
+        role=email_msg.classification.recruiter_details.role_title if email_msg.classification and email_msg.classification.recruiter_details else email_msg.subject,
+        resume_used=resume_file,
+        facts_used=["Influenced $8M Google Cloud revenue", "$100M+ enterprise revenue delivered", "Promevo pipeline $2M+"],
+        reply_text=payload.reply_body
+    )
 
     return result.model_dump()
 

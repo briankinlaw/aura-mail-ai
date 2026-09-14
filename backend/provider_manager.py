@@ -7,7 +7,7 @@ quarantine folder resolution & caching, and strict fail-closed error handling.
 
 import os
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
 
 from backend.models import (
@@ -27,10 +27,9 @@ from backend.providers.graph import MicrosoftGraphProvider
 from backend.providers.gmail import GmailProvider
 from backend.providers.imap import ImapProvider
 from backend.providers.demo import DemoProvider
+from backend import safety_policy
 from backend.safety_policy import (
-    evaluate_mail_action,
-    MailAction,
-    ExecutionContext,
+    SendAuthorizationTicket,
     MailSafetyMode,
 )
 
@@ -319,27 +318,21 @@ class ProviderManager:
         subject: str, 
         reply_body: str, 
         resume_filename: Optional[str] = None,
-        context: ExecutionContext = ExecutionContext.UNAUTHENTICATED_API,
-        safety_mode: Optional[MailSafetyMode] = None,
+        authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
     ) -> ProviderOperationResult:
-        # Centralized Policy Evaluation
-        policy_eval = evaluate_mail_action(MailAction.SEND_REPLY, context=context, safety_mode=safety_mode)
-        if not policy_eval.allowed:
-            logger.warning(
-                f"ProviderManager blocked send_reply (context={context.value}, mode={policy_eval.safety_mode.value}): {policy_eval.reason}"
-            )
+        active_mode = safety_policy.get_active_safety_mode()
+        if active_mode != MailSafetyMode.MANUAL_SEND_ONLY:
             return ProviderOperationResult(
                 success=False,
                 provider="UNKNOWN",
                 account_id="unknown",
                 operation="SEND_REPLY",
                 error_code="SEND_FORBIDDEN",
-                safe_message=f"Mail Transmission Blocked: {policy_eval.reason}",
+                safe_message=f"Mail Transmission Blocked: Active safety mode is {active_mode.value}. Transmission is strictly forbidden.",
                 retryable=False,
                 details={
-                    "safety_mode": policy_eval.safety_mode.value,
-                    "execution_context": context.value,
-                    "reason": policy_eval.reason,
+                    "safety_mode": active_mode.value,
+                    "reason": "DRAFT_ONLY invariant enforced.",
                 }
             )
 
@@ -361,8 +354,7 @@ class ProviderManager:
             subject=subject,
             reply_body=reply_body,
             resume_filename=resume_filename,
-            context=context,
-            safety_mode=safety_mode,
+            authorization=authorization,
         )
 
     def move_message(self, message_id: str, destination_folder_id: str) -> ProviderOperationResult:
