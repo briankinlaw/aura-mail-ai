@@ -88,6 +88,7 @@ const elements = {
   btnSyncInbox: document.getElementById('btn-sync-inbox'),
   btnRegenerateDraft: document.getElementById('btn-regenerate-draft'),
   btnSaveDraft: document.getElementById('btn-save-draft'),
+  btnCopyDraft: document.getElementById('btn-copy-draft'),
   btnSendReply: document.getElementById('btn-send-reply'),
   btnBatchCleanNoise: document.getElementById('btn-batch-clean-noise'),
   btnOpenAccounts: document.getElementById('btn-open-accounts'),
@@ -1087,57 +1088,54 @@ function setupEventListeners() {
     }
   });
 
-  // Save to Cloud Drafts
-  elements.btnSaveDraft.addEventListener('click', async () => {
-    if (!APP_STATE.selectedEmailId) return;
-    const replyBody = elements.replyBodyText.value;
-    const chosenResume = elements.resumeVariantSelect.value;
-    showToast(`Creating draft in cloud mailbox with '${chosenResume}' attached...`, 'info');
-    
-    try {
-      const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/save-draft`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reply_body: replyBody, resume_filename: chosenResume })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(data.safe_message || 'Draft successfully created in cloud Drafts folder!', 'success');
-      } else {
-        showToast(`Draft error: ${data.safe_message}`, 'error');
-      }
-      await refreshAll();
-    } catch (err) {
-      showToast('Failed to save draft: ' + err.message, 'error');
-    }
-  });
+  // Stage in Cloud Drafts
+  if (elements.btnSaveDraft) {
+    elements.btnSaveDraft.addEventListener('click', async () => {
+      if (!APP_STATE.selectedEmailId) return;
+      const replyBody = elements.replyBodyText.value;
+      const chosenResume = elements.resumeVariantSelect.value;
+      showToast(`Staging draft in cloud mailbox with '${chosenResume}' attached...`, 'info');
 
-  // Send Reply
-  elements.btnSendReply.addEventListener('click', async () => {
-    if (!APP_STATE.selectedEmailId) return;
-    const replyBody = elements.replyBodyText.value;
-    const chosenResume = elements.resumeVariantSelect.value;
-    
-    if (!confirm(`Are you ready to send this response with ${chosenResume} attached?`)) return;
-    
-    showToast('Sending response via cloud provider...', 'info');
-    try {
-      const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/send-reply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reply_body: replyBody, attach_resume: true, resume_filename: chosenResume })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(data.safe_message || 'Reply sent successfully!', 'success');
-      } else {
-        showToast(`Send error: ${data.safe_message}`, 'error');
+      try {
+        const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/save-draft`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reply_body: replyBody, resume_filename: chosenResume })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.safe_message || 'Draft successfully staged in cloud Drafts folder! Review and send in Outlook/Gmail.', 'success');
+        } else {
+          showToast(`Draft staging error: ${data.safe_message}`, 'error');
+        }
+        await refreshAll();
+      } catch (err) {
+        showToast('Failed to stage draft: ' + err.message, 'error');
       }
-      await refreshAll();
-    } catch (err) {
-      showToast('Failed to send reply: ' + err.message, 'error');
-    }
-  });
+    });
+  }
+
+  // Copy Draft Response
+  if (elements.btnCopyDraft) {
+    elements.btnCopyDraft.addEventListener('click', () => {
+      const textToCopy = elements.replyBodyText.value.trim();
+      if (!textToCopy) {
+        showToast('No draft text to copy.', 'warning');
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textToCopy);
+      } else {
+        const temp = document.createElement('textarea');
+        temp.value = textToCopy;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand('copy');
+        document.body.removeChild(temp);
+      }
+      showToast('Response text copied to clipboard! Ready to paste into mail client.', 'success');
+    });
+  }
 
   // Vault Refresh
   if (elements.btnRefreshResumes) {

@@ -2,6 +2,8 @@
 
 Defines the contract, structured models, and composite ID encoding
 for all cloud email integrations (Microsoft Graph, Gmail API, IMAP, Demo).
+Implements fail-closed zero direct transmission invariant:
+Aura prepares drafts; native mail clients send.
 """
 
 from abc import ABC, abstractmethod
@@ -12,17 +14,15 @@ from pydantic import BaseModel, Field
 import urllib.parse
 
 from backend.models import EmailMessage
-from backend.safety_policy import (
-    validate_and_consume_send_authorization,
-    SendAuthorizationTicket,
-    MailSafetyMode,
-)
+from backend.safety_policy import MailSafetyMode
+
 
 class ProviderType(str, Enum):
     MICROSOFT_GRAPH = "MICROSOFT_GRAPH"
     GMAIL = "GMAIL"
     IMAP = "IMAP"
     DEMO = "DEMO"
+
 
 class AccountIdentity(BaseModel):
     account_id: str
@@ -36,9 +36,10 @@ class AccountIdentity(BaseModel):
     last_sync_time: Optional[str] = None
     last_error: Optional[str] = None
     capabilities: List[str] = Field(
-        default_factory=lambda: ["DRAFTS", "SEND", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
+        default_factory=lambda: ["DRAFTS", "ATTACHMENTS", "MOVE", "DELETE", "QUARANTINE"]
     )
     mailbox_details: Optional[Dict[str, Any]] = None
+
 
 class ProviderOperationResult(BaseModel):
     success: bool
@@ -51,12 +52,14 @@ class ProviderOperationResult(BaseModel):
     retryable: bool = False
     details: Optional[Dict[str, Any]] = None
 
+
 def encode_composite_id(provider: str, account_id: str, native_id: str) -> str:
     """Encodes provider, account_id, and remote message ID into a single immutable composite ID."""
     clean_provider = provider.strip().upper()
     clean_account = urllib.parse.quote_plus(account_id.strip().lower())
     clean_native = urllib.parse.quote_plus(str(native_id).strip())
     return f"{clean_provider}::{clean_account}::{clean_native}"
+
 
 def decode_composite_id(composite_id: str) -> Tuple[str, str, str]:
     """Decodes composite ID into (provider, account_id, native_id).
@@ -82,6 +85,7 @@ def decode_composite_id(composite_id: str) -> Tuple[str, str, str]:
         return "DEMO", "demo@auramail.local", composite_id
     
     return "UNKNOWN", "unknown@auramail.local", composite_id
+
 
 class BaseEmailProvider(ABC):
     """Abstract contract for cloud email integrations."""
@@ -145,60 +149,32 @@ class BaseEmailProvider(ABC):
         subject: str,
         reply_body: str,
         resume_filename: Optional[str] = None,
-        authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
+        authorization: Optional[Any] = None,
     ) -> ProviderOperationResult:
-        """Centralized mail safety policy enforcement at the provider transmission boundary.
+        """Centralized mail safety policy enforcement at the provider boundary.
 
-        Guarantees that all concrete email providers fail closed unless transmission is
-        independently authorized by a valid, unconsumed discrete SendAuthorizationTicket,
-        bound to the exact outbound payload and account under MANUAL_SEND_ONLY mode.
+        FAIL-CLOSED INVARIANT:
+        ANY AURA-CONTROLLED EXECUTION -> DIRECT MAIL TRANSMISSION FORBIDDEN.
+        Aura does not transmit outbound mail. Outbound mail must be staged as a draft
+        and sent exclusively by the human through their native mail client.
         """
-        policy_eval = validate_and_consume_send_authorization(
+        prov_name = self.provider_type.value if hasattr(self, "provider_type") and self.provider_type else "UNKNOWN"
+        return ProviderOperationResult(
+            success=False,
+            provider=prov_name,
             account_id=account_id,
-            message_id=message_id,
-            to_email=to_email,
-            subject=subject,
-            reply_body=reply_body,
-            resume_filename=resume_filename,
-            authorization=authorization,
+            operation="SEND_REPLY",
+            error_code="SEND_FORBIDDEN",
+            safe_message=(
+                "Mail Transmission Blocked: Aura direct mail transmission is permanently disabled. "
+                "Outbound mail is prepared and staged in your Drafts folder for review and native client transmission."
+            ),
+            retryable=False,
+            details={
+                "safety_mode": "DRAFT_STAGING_ONLY",
+                "reason": "Direct mail transmission forbidden from Aura execution boundary.",
+            }
         )
-        if not policy_eval.allowed:
-            prov_name = self.provider_type.value if hasattr(self, "provider_type") and self.provider_type else "UNKNOWN"
-            return ProviderOperationResult(
-                success=False,
-                provider=prov_name,
-                account_id=account_id,
-                operation="SEND_REPLY",
-                error_code="SEND_FORBIDDEN",
-                safe_message=f"Mail Transmission Blocked: {policy_eval.reason}",
-                retryable=False,
-                details={
-                    "safety_mode": policy_eval.safety_mode.value,
-                    "reason": policy_eval.reason,
-                }
-            )
-
-        return self._execute_send_reply(
-            account_id=account_id,
-            message_id=message_id,
-            to_email=to_email,
-            subject=subject,
-            reply_body=reply_body,
-            resume_filename=resume_filename,
-        )
-
-    @abstractmethod
-    def _execute_send_reply(
-        self,
-        account_id: str,
-        message_id: str,
-        to_email: str,
-        subject: str,
-        reply_body: str,
-        resume_filename: Optional[str] = None
-    ) -> ProviderOperationResult:
-        """Sends an email reply through the cloud provider and archives it in Sent Items."""
-        pass
 
     @abstractmethod
     def create_or_resolve_quarantine_folder(self, account_id: str, folder_name: str = "AI Cleaned - Noise") -> Optional[str]:

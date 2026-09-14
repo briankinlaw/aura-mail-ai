@@ -15,7 +15,7 @@ In **v1.1**, Aura Mail AI transitions to a **cloud-first, multi-account architec
 2. **Provider-Neutral Interface**: Abstract `BaseEmailProvider` implemented by `MicrosoftGraphProvider` (MSAL), `GmailProvider`, `ImapProvider`, and `DemoProvider`.
 3. **Structured Composite Message Identity**: Every message ID carries its positive provider and account identity (`provider:account_id:native_id`), eliminating prefix guessing.
 4. **macOS Keychain Vault**: Secrets (Gemini keys, OAuth refresh tokens, IMAP passwords) are stored exclusively in macOS Keychain via Python `keyring`.
-5. **Truthful Error Reporting & Safety**: Strict `SAFE_REVIEW` mode; no autonomous sending or deletion without confirmation; no false positive success; no silent sample email fallback on error.
+5. **Zero Direct Transmission Authority & Native Send Safety**: Strict `DRAFT_ONLY` and `MANUAL_SEND_ONLY` modes. Aura prepares and stages drafts; final mail transmission is performed exclusively by the human in the native mail client (Outlook / Gmail / Webmail). Aura's local API has zero transmission authority.
 
 ---
 
@@ -74,20 +74,21 @@ graph TD
 
 ### 3.1 Cloud Provider Architecture (`backend/providers/`)
 - **Abstract Base Contract** (`base.py`):
-  - `authenticate()`, `validate_connection()`, `list_accounts()`, `fetch_inbox_messages()`, `create_reply_draft()`, `attach_file()`, `send_reply()`, `move_message()`, `delete_message()`.
+  - `authenticate()`, `validate_connection()`, `list_accounts()`, `fetch_inbox_messages()`, `create_reply_draft()`, `attach_file()`, `move_message()`, `delete_message()`.
+  - Zero direct transmission: Aura prepares and stages drafts; human sends via native mail client. Legacy `send_reply` fails closed with `SEND_FORBIDDEN`.
   - Every operation returns a structured `ProviderOperationResult` with `success`, `provider`, `account_id`, `operation`, `remote_object_id`, `error_code`, `safe_message`, `retryable`.
 - **Microsoft Graph Provider** (`graph.py`):
   - Integrates `msal.PublicClientApplication` with serialized token cache in macOS Keychain.
   - Supports multi-mailbox accounts and automatic alias resolution.
-  - Implements Graph pagination (`@odata.nextLink`) and requests least-privilege scopes (`Mail.ReadWrite`, `Mail.Send`, `User.Read`, `offline_access`).
-  - Creates threaded drafts via `POST /me/messages/{id}/createReply` and validates attachment upload separately.
+  - Creates threaded drafts via `POST /me/messages/{id}/createReply` and uploads attachments. Zero Graph transmission endpoints (`/send`) are invoked by Aura.
 - **Gmail Provider** (`gmail.py`):
   - Dedicated Google OAuth2 integration with Keychain token storage.
-  - Composes MIME multipart in-reply-to drafts and handles label-based quarantine.
+  - Composes MIME multipart in-reply-to drafts and saves them to Gmail Drafts folder. Zero Gmail transmission endpoints (`/drafts/send`) are invoked by Aura.
 - **Generic IMAP / SMTP Provider** (`imap.py`):
   - Implements RFC 6154 Special-Use folder discovery (`\Drafts`, `\Sent`, `\Trash`, `\Junk`).
-  - Uses IMAP UID commands (`UID SEARCH`, `UID FETCH`, `UID COPY`, `UID STORE`) to guarantee UID validity.
+  - Appends prepared MIME drafts directly to IMAP Drafts folder. Outbound SMTP transmission (`smtp.sendmail`) is removed from Aura execution path.
 - **Explicit Demo Mode Provider** (`demo.py`):
+  - Isolated offline mock sandbox activated only when `demo_mode=True`.
   - Isolated offline mock sandbox activated only when `demo_mode=True`.
 
 ### 3.2 Security & macOS Keychain Vault (`backend/security.py`)

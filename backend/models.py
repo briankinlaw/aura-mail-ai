@@ -137,20 +137,12 @@ class ReplyDraftRequest(BaseModel):
     selected_resume: Optional[str] = None
     tone: Optional[str] = "Professional & Warm"
 
-class AuthorizeSendRequest(BaseModel):
+class SaveDraftRequest(BaseModel):
     reply_body: str
     subject: Optional[str] = None
     attach_resume: bool = True
     resume_filename: Optional[str] = None
     to_email: Optional[str] = None
-
-class AuthorizeSendResponse(BaseModel):
-    status: str
-    authorization_ticket: str
-    expires_at: float
-    payload_digest: str
-    message_id: str
-    account_id: str
 
 class SendReplyRequest(BaseModel):
     reply_body: str
@@ -158,7 +150,6 @@ class SendReplyRequest(BaseModel):
     attach_resume: bool = True
     resume_filename: Optional[str] = None
     to_email: Optional[str] = None
-    authorization_ticket: Optional[str] = None
 
 class QuarantineMessageResult(BaseModel):
     email_id: str

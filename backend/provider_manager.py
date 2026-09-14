@@ -28,10 +28,7 @@ from backend.providers.gmail import GmailProvider
 from backend.providers.imap import ImapProvider
 from backend.providers.demo import DemoProvider
 from backend import safety_policy
-from backend.safety_policy import (
-    SendAuthorizationTicket,
-    MailSafetyMode,
-)
+from backend.safety_policy import MailSafetyMode
 
 logger = logging.getLogger("provider_manager")
 
@@ -318,43 +315,29 @@ class ProviderManager:
         subject: str, 
         reply_body: str, 
         resume_filename: Optional[str] = None,
-        authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
+        authorization: Optional[Any] = None,
     ) -> ProviderOperationResult:
-        active_mode = safety_policy.get_active_safety_mode()
-        if active_mode != MailSafetyMode.MANUAL_SEND_ONLY:
-            return ProviderOperationResult(
-                success=False,
-                provider="UNKNOWN",
-                account_id="unknown",
-                operation="SEND_REPLY",
-                error_code="SEND_FORBIDDEN",
-                safe_message=f"Mail Transmission Blocked: Active safety mode is {active_mode.value}. Transmission is strictly forbidden.",
-                retryable=False,
-                details={
-                    "safety_mode": active_mode.value,
-                    "reason": "DRAFT_ONLY invariant enforced.",
-                }
-            )
+        """Centralized mail safety policy enforcement at ProviderManager boundary.
 
-        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
-        if not provider:
-            return ProviderOperationResult(
-                success=False,
-                provider="UNKNOWN",
-                account_id=account_id or "unknown",
-                operation="SEND_REPLY",
-                error_code=err_code or "UNROUTABLE_MESSAGE",
-                safe_message=f"Cannot send reply for unroutable message '{message_id}': {err_code or 'routing failed'}",
-                retryable=False
-            )
-        return provider.send_reply(
-            account_id=account_id,
-            message_id=message_id,
-            to_email=to_email,
-            subject=subject,
-            reply_body=reply_body,
-            resume_filename=resume_filename,
-            authorization=authorization,
+        FAIL-CLOSED INVARIANT:
+        ANY AURA-CONTROLLED EXECUTION -> DIRECT MAIL TRANSMISSION FORBIDDEN.
+        Aura prepares and stages drafts via save_draft_reply(); human sends via native mail client.
+        """
+        return ProviderOperationResult(
+            success=False,
+            provider="UNKNOWN",
+            account_id="unknown",
+            operation="SEND_REPLY",
+            error_code="SEND_FORBIDDEN",
+            safe_message=(
+                "Mail Transmission Blocked: Aura direct mail transmission is permanently disabled. "
+                "Outbound mail is prepared and staged in your Drafts folder for review and native client transmission."
+            ),
+            retryable=False,
+            details={
+                "safety_mode": "DRAFT_STAGING_ONLY",
+                "reason": "Direct mail transmission forbidden from Aura execution boundary.",
+            }
         )
 
     def move_message(self, message_id: str, destination_folder_id: str) -> ProviderOperationResult:

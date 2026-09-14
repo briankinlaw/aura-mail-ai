@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any, Union
 from backend.models import EmailMessage
 from backend.provider_manager import provider_manager
 from backend.desktop_helper import is_outlook_desktop_running
-from backend.safety_policy import SendAuthorizationTicket, ExecutionContext
+from backend.safety_policy import ExecutionContext
 
 logger = logging.getLogger("legacy_outlook_client")
 
@@ -57,19 +57,10 @@ class OutlookClientAdapter:
         reply_body: str,
         resume_filename: Optional[str] = None,
         message_id: Optional[str] = None,
-        authorization: Optional[Union[SendAuthorizationTicket, str]] = None,
+        authorization: Optional[Any] = None,
     ) -> Dict[str, Any]:
+        """Legacy compatibility method. Fails closed because Aura cannot transmit mail."""
         target_id = message_id or "primary"
-        if not provider_manager.is_demo_mode() and target_id == "primary":
-            return {
-                "success": False,
-                "provider": "UNKNOWN",
-                "account_id": "unknown",
-                "operation": "SEND_REPLY",
-                "error_code": "UNROUTABLE_MESSAGE",
-                "safe_message": "Direct send without a valid message or account ID is disallowed in live mode.",
-                "retryable": False
-            }
         res = provider_manager.send_reply(
             message_id=target_id,
             to_email=to_email,

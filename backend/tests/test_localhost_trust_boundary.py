@@ -172,6 +172,21 @@ def test_no_unauthenticated_session_credential_disclosure_endpoint():
     assert response.status_code in [404, 405]
 
 
+def test_no_authorize_send_endpoint():
+    """
+    CRITICAL SECURITY INVARIANT (Phase 3 Native Send Model):
+    Verifies that no authorize-send endpoint exists in the API.
+    """
+    token = get_local_session_token()
+    response = unauth_client.post(
+        "/api/emails/test_id/authorize-send",
+        json={"reply_body": "test"},
+        headers={"Authorization": f"Bearer {token}", "Origin": "https://localhost:8000"}
+    )
+    assert response.status_code == 404
+
+
+
 # --- 5. Request Authorization on Privileged Endpoints ---
 
 PRIVILEGED_POST_ENDPOINTS = [
@@ -182,7 +197,6 @@ PRIVILEGED_POST_ENDPOINTS = [
     ("/api/emails/sync", {}),
     ("/api/emails/test_id/generate-reply", {"tone": "Professional"}),
     ("/api/emails/test_id/save-draft", {"reply_body": "test"}),
-    ("/api/emails/test_id/authorize-send", {"reply_body": "test"}),
     ("/api/emails/test_id/send-reply", {"reply_body": "test"}),
     ("/api/emails/clean-noise", {}),
     ("/api/emails/test_id/trash", {}),

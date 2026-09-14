@@ -136,25 +136,6 @@ class DemoProvider(BaseEmailProvider):
             safe_message=f"[DEMO] File '{filename}' attached to draft {draft_id}."
         )
 
-    def _execute_send_reply(
-        self, 
-        account_id: str, 
-        message_id: str, 
-        to_email: str, 
-        subject: str, 
-        reply_body: str, 
-        resume_filename: Optional[str] = None
-    ) -> ProviderOperationResult:
-        msg = self._mock_messages.get(message_id)
-        if msg:
-            msg.status = "REPLIED"
-        return ProviderOperationResult(
-            success=True,
-            provider="DEMO",
-            account_id=self.account_id,
-            operation="SEND_REPLY",
-            safe_message=f"[DEMO] Simulated reply sent to {to_email} with '{resume_filename or 'resume'}' attached."
-        )
 
     def create_or_resolve_quarantine_folder(self, account_id: str, folder_name: str = "AI Cleaned - Noise") -> Optional[str]:
         return "demo_quarantine_folder_id"
