@@ -198,7 +198,6 @@ def evaluate_mail_action(
     action: Union[MailAction, str],
     context: ExecutionContext = ExecutionContext.UNAUTHENTICATED_API,
     safety_mode: Optional[MailSafetyMode] = None,
-    authorization: Optional[Any] = None,
 ) -> PolicyEvaluationResult:
     """
     Core policy decision engine implementing the Zero-Transmission Invariant:

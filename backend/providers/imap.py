@@ -1,12 +1,13 @@
-"""Aura Mail AI - Standard RFC 3501 IMAP & RFC 5321 SMTP Provider.
+"""Aura Mail AI - Standard RFC 3501 IMAP Cloud Provider.
 
 Supports custom domain, ISP (Roadrunner/Spectrum), and standard mailboxes.
 Features RFC 6154 Special-Use folder discovery, IMAP UID validity tracking,
 Keychain password storage, MIME attachment encoding, and structured error results.
+Outbound mail is staged directly to the Drafts folder via IMAP APPEND.
+Aura direct transmission is permanently disabled.
 """
 
 import imaplib
-import smtplib
 import email
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart

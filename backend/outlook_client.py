@@ -57,7 +57,6 @@ class OutlookClientAdapter:
         reply_body: str,
         resume_filename: Optional[str] = None,
         message_id: Optional[str] = None,
-        authorization: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Legacy compatibility method. Fails closed because Aura cannot transmit mail."""
         target_id = message_id or "primary"
@@ -67,7 +66,6 @@ class OutlookClientAdapter:
             subject=subject,
             reply_body=reply_body,
             resume_filename=resume_filename,
-            authorization=authorization,
         )
         return res.model_dump()
 

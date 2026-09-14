@@ -315,7 +315,6 @@ class ProviderManager:
         subject: str, 
         reply_body: str, 
         resume_filename: Optional[str] = None,
-        authorization: Optional[Any] = None,
     ) -> ProviderOperationResult:
         """Centralized mail safety policy enforcement at ProviderManager boundary.
 

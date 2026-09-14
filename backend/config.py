@@ -17,14 +17,12 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Least-privilege Graph scopes required for New Outlook / M365 Mail Sync
-# Mail.ReadWrite: read inbox and create threaded drafts in Drafts folder
-# Mail.Send: send approved email replies (SAFE_REVIEW default requires explicit user action)
+# Mail.ReadWrite: read inbox, stage reply drafts in Drafts folder, and manage folders
 # User.Read: retrieve authenticated mailbox profile and primary email
-# offline_access: token refresh via MSAL
+# Note: Mail.Send is strictly omitted under Phase 3 Native-Send architecture.
 GRAPH_SCOPES = [
     "User.Read",
-    "Mail.ReadWrite",
-    "Mail.Send"
+    "Mail.ReadWrite"
 ]
 
 def load_settings() -> Dict[str, Any]:

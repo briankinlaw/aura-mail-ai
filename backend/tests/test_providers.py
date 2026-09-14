@@ -281,3 +281,45 @@ def test_imap_rfc6154_folder_discovery():
     assert folders["drafts"] == "Borradores"
     assert folders["sent"] == "Enviados"
     assert folders["trash"] == "Papelera"
+
+
+# --- Least-Privilege OAuth Scope Tests (Phase 3.1) ---
+
+def test_graph_scopes_least_privilege():
+    """
+    CRITICAL LEAST-PRIVILEGE INVARIANT:
+    Verifies that Microsoft Graph OAuth scopes strictly exclude Mail.Send.
+    Only User.Read and Mail.ReadWrite are requested for draft staging and mailbox sync.
+    """
+    from backend.config import GRAPH_SCOPES
+    assert "Mail.Send" not in GRAPH_SCOPES
+    assert "mail.send" not in [s.lower() for s in GRAPH_SCOPES]
+    assert "User.Read" in GRAPH_SCOPES
+    assert "Mail.ReadWrite" in GRAPH_SCOPES
+
+    graph = MicrosoftGraphProvider(client_id="mock-id")
+    assert "Mail.Send" not in graph.scopes
+    assert "mail.send" not in [s.lower() for s in graph.scopes]
+
+
+def test_gmail_scopes_least_privilege():
+    """
+    CRITICAL LEAST-PRIVILEGE INVARIANT:
+    Verifies that Gmail OAuth scopes strictly exclude explicit gmail.send.
+    Only readonly, compose, and modify scopes are requested for draft staging and label management.
+    """
+    from backend.providers.gmail import GMAIL_SCOPES
+    assert "https://www.googleapis.com/auth/gmail.send" not in GMAIL_SCOPES
+    assert not any("gmail.send" in s.lower() for s in GMAIL_SCOPES)
+    assert "https://www.googleapis.com/auth/gmail.readonly" in GMAIL_SCOPES
+    assert "https://www.googleapis.com/auth/gmail.compose" in GMAIL_SCOPES
+    assert "https://www.googleapis.com/auth/gmail.modify" in GMAIL_SCOPES
+
+
+def test_imap_provider_has_no_smtplib_dependency():
+    """
+    LEAST-PRIVILEGE AUDIT:
+    Verifies that ImapProvider does not import or expose smtplib.
+    """
+    import backend.providers.imap as imap_module
+    assert not hasattr(imap_module, "smtplib")

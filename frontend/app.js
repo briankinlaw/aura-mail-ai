@@ -89,7 +89,6 @@ const elements = {
   btnRegenerateDraft: document.getElementById('btn-regenerate-draft'),
   btnSaveDraft: document.getElementById('btn-save-draft'),
   btnCopyDraft: document.getElementById('btn-copy-draft'),
-  btnSendReply: document.getElementById('btn-send-reply'),
   btnBatchCleanNoise: document.getElementById('btn-batch-clean-noise'),
   btnOpenAccounts: document.getElementById('btn-open-accounts'),
   btnAddAccountModal: document.getElementById('btn-add-account-modal'),
@@ -418,7 +417,7 @@ function renderAccountsGrid() {
       provBadge = '📮 Gmail API';
       provColor = '#ea4335';
     } else if (acc.provider === 'IMAP') {
-      provBadge = '🌐 Standard IMAP/SMTP';
+      provBadge = '🌐 Standard IMAP';
       provColor = '#10b981';
     } else if (acc.provider === 'DEMO') {
       provBadge = '🧪 Demo Sandbox';

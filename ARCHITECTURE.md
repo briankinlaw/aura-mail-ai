@@ -40,7 +40,7 @@ graph TD
     subgraph "Cloud Email Providers"
         GRAPH["Microsoft Graph API (MSAL)<br/>(Outlook.com & M365)"]
         GMAIL["Gmail API (OAuth2)<br/>(Google Accounts)"]
-        IMAP["Standard IMAP / SMTP<br/>(Spectrum / Custom Domains)"]
+        IMAP["Standard RFC 3501 IMAP<br/>(Spectrum / Custom Domains)"]
         DEMO["Demo Sandbox Provider<br/>(Offline Mock Data)"]
     end
 
@@ -84,11 +84,10 @@ graph TD
 - **Gmail Provider** (`gmail.py`):
   - Dedicated Google OAuth2 integration with Keychain token storage.
   - Composes MIME multipart in-reply-to drafts and saves them to Gmail Drafts folder. Zero Gmail transmission endpoints (`/drafts/send`) are invoked by Aura.
-- **Generic IMAP / SMTP Provider** (`imap.py`):
+- **Standard RFC 3501 IMAP Provider** (`imap.py`):
   - Implements RFC 6154 Special-Use folder discovery (`\Drafts`, `\Sent`, `\Trash`, `\Junk`).
-  - Appends prepared MIME drafts directly to IMAP Drafts folder. Outbound SMTP transmission (`smtp.sendmail`) is removed from Aura execution path.
+  - Appends prepared MIME drafts directly to IMAP Drafts folder. Outbound mail transmission is performed by the user via their native mail client.
 - **Explicit Demo Mode Provider** (`demo.py`):
-  - Isolated offline mock sandbox activated only when `demo_mode=True`.
   - Isolated offline mock sandbox activated only when `demo_mode=True`.
 
 ### 3.2 Security & macOS Keychain Vault (`backend/security.py`)
@@ -112,6 +111,6 @@ graph TD
 
 ## 4. Automated Verification & Quality Assurance
 
-- **Unit & Integration Mock Tests**: 38 tests in `backend/tests/` covering providers, multi-account merge, alias deduplication, error handling, partial failure, rate limits (429), and secret sanitization.
+- **Unit & Security Integration Tests**: 149 tests in `backend/tests/` covering safety policy, origin defense, trust boundaries, multi-account routing, providers, and factual grounding.
 - **Test Command**: `PYTHONPATH=. .venv/bin/pytest backend/tests/ -v`
-- **Result**: `38 passed` with 100% success.
+- **Result**: `149 passed` with 100% success.

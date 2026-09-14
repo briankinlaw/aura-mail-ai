@@ -42,17 +42,18 @@ Aura Mail AI v1.1 includes automatic migration logic in [backend/migration.py](f
    - `https://localhost:8000/api/auth/callback`
    - `https://login.microsoftonline.com/common/oauth2/nativeclient`
 3. Request the following delegated permissions:
-   - `Mail.ReadWrite` (Read inboxes and create cloud drafts)
-   - `Mail.Send` (Send approved recruiter replies)
+   - `Mail.ReadWrite` (Read inboxes and stage cloud drafts in Drafts folder)
    - `User.Read` (Resolve primary email and aliases)
    - `offline_access` (Token refresh)
+   *(Note: `Mail.Send` is strictly omitted as Aura uses the native draft-and-send model)*
 4. Enter your **Application (client) ID** in the **Engine Settings** tab in Aura Mail AI.
 5. In the **Cloud Accounts** tab, click **Start Microsoft Device Sign-In Flow** or sign in via browser.
 
 ### B. Spectrum / Roadrunner & Custom IMAP Accounts
-1. In the **Cloud Accounts** tab, select **Connect New Account** ➔ **IMAP / SMTP**.
+1. In the **Cloud Accounts** tab, select **Connect New Account** ➔ **IMAP**.
 2. Enter your email (e.g. `cbkinlaw@satx.rr.com` or `brian@mavencode.com`) and password.
 3. The password is automatically verified and stored in your **macOS Keychain**.
+4. Draft responses are staged directly in the IMAP `Drafts` folder for native review and dispatch.
 
 ### C. Explicit Demo Mode
 - If you wish to demonstrate the application offline or in a sandbox, enable **Demo Mode** in Settings.

@@ -14,9 +14,10 @@ An intelligent, cloud-first AI assistant and executive dashboard compatible with
 ## 🚀 Key Highlights (v1.1)
 
 1. **Cloud-First Multi-Account Architecture**:
-   - Synchronizes directly with **Microsoft Graph API (MSAL)**, **Gmail API**, and **RFC 3501 IMAP/SMTP**.
-   - Created messages and drafts automatically appear in **New Outlook for Mac**, Outlook Web, and mobile apps.
+   - Synchronizes directly with **Microsoft Graph API (MSAL)**, **Gmail API**, and **RFC 3501 IMAP**.
+   - Created messages and drafts automatically appear in **New Outlook for Mac**, Outlook Web, Gmail, and mobile apps.
    - Monitors active mailboxes simultaneously with alias de-duplication while strictly isolating and skipping historical corporate archive accounts (`dxc.com`, `cdw.com`, `revealwhy.com`).
+   - Outbound mail is drafted and staged safely in your cloud `Drafts` folder; final mail transmission is executed exclusively by the user in their native mail client.
 
 2. **macOS Keychain Vault & Security Remediation**:
    - Credentials (API keys, OAuth tokens, and mailbox passwords) are stored exclusively in **macOS Keychain** via Python `keyring`.
@@ -37,8 +38,9 @@ An intelligent, cloud-first AI assistant and executive dashboard compatible with
    - All AI draft responses are strictly bounded by verified metrics from the candidate's **Accomplishment Ledger** ($8M Google Cloud influenced, $100M+ enterprise platform revenue delivered, $2.1M CDW closed services, Promevo $2M+ pipeline).
    - Powered by **Google Gemini 3.6 Flash** with a two-tier sub-millisecond local heuristic pre-filter and 429 rate limit circuit breaker.
 
-5. **Truthful Error Handling & Safety**:
-   - Default `SAFE_REVIEW` mode prevents autonomous sending without live confirmation.
+5. **Native-Send Safety Invariant & Truthful Staging**:
+   - Invariant: `ANY AURA-CONTROLLED EXECUTION -> DIRECT MAIL TRANSMISSION FORBIDDEN`.
+   - Aura drafts and stages responses; the user retains final transmission authority.
    - Granular operation results confirm draft creation and attachment upload separately.
    - Never falls back to sample emails on live sync errors; sample data is strictly isolated to explicit **Demo Mode**.
 
@@ -65,14 +67,15 @@ outlook-ai-assistant/
 │   ├── models.py               # Pydantic Schemas & Enumerations
 │   ├── outlook_client.py       # Backward-Compatibility Adapter
 │   ├── provider_manager.py     # Multi-Account Cloud Dispatcher & Router
+│   ├── safety_policy.py        # Mail Safety Policy Engine & Native-Send Invariant
 │   ├── security.py             # macOS Keychain Vault & Security Scanner
 │   ├── providers/              # Cloud Email Providers
 │   │   ├── base.py             # Abstract BaseEmailProvider & Composite ID Codec
 │   │   ├── demo.py             # Explicit Demo Sandbox Provider
 │   │   ├── gmail.py            # Gmail API OAuth Provider
 │   │   ├── graph.py            # Microsoft Graph API Provider (MSAL)
-│   │   └── imap.py             # RFC 3501 IMAP & RFC 5321 SMTP Provider
-│   └── tests/                  # Automated Test Suite (38 Unit & Mock Tests)
+│   │   └── imap.py             # RFC 3501 IMAP Cloud Provider
+│   └── tests/                  # Automated Test Suite (149 Unit & Security Integration Tests)
 │       ├── test_analytics.py
 │       ├── test_assistant.py
 │       ├── test_canonical_engine.py
@@ -123,14 +126,14 @@ pip install -r requirements.txt
 4. Redirect URI: `Public client/native (mobile & desktop)` ➔ `https://localhost:8000/api/auth/callback`.
 5. Under **API permissions**, add delegated permissions:
    - `Mail.ReadWrite`
-   - `Mail.Send`
    - `User.Read`
    - `offline_access`
 6. Copy the **Application (client) ID** and paste it into Aura Mail AI **Engine Settings**.
 
 #### B. Spectrum / Custom IMAP Setup
-- In the **Cloud Accounts** tab, select **Connect New Account** ➔ **IMAP / SMTP**.
+- In the **Cloud Accounts** tab, select **Connect New Account** ➔ **IMAP**.
 - Passwords are saved directly to your **macOS Keychain**.
+- Outbound responses are staged directly in your cloud **Drafts** folder for native client review and sending.
 
 ### 3. Run Automated Tests
 ```bash

@@ -36,12 +36,16 @@ logger = logging.getLogger("gmail_provider")
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
-
+# Least-privilege Gmail scopes:
+# - gmail.readonly: read metadata and message content
+# - gmail.compose: create, view, and update drafts in Drafts folder
+# - gmail.modify: modify labels (noise quarantine / trash)
+# Note: gmail.send is strictly omitted. While Google's permission model grants broad API capabilities
+# to modify/compose tokens, Aura's application boundary strictly avoids calling transmission endpoints.
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.send"
+    "https://www.googleapis.com/auth/gmail.modify"
 ]
 
 class GmailProvider(BaseEmailProvider):
