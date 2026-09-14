@@ -4,24 +4,17 @@ Provides monotonic, non-downgradable second-opinion risk assessments on inbound 
 generated draft replies, and automated actions to ensure zero-hallucination,
 legal/compensation safety, and strict draft-first enforcement.
 
-SECURITY INVARIANT:
-Deterministic security findings are strictly NON-DOWNGRADABLE.
-Gemini may:
-- add warnings
-- add categories
-- increase severity
-- recommend a more restrictive action
-Gemini may never:
-- remove deterministic warnings
-- remove deterministic categories
-- decrease deterministic severity
-- convert BLOCKED to PROCEED (or REVIEW_CAUTION to PROCEED)
-- convert an identified suspicious link into clean status
+SECURITY INVARIANTS:
+1. Deterministic security findings are strictly NON-DOWNGRADABLE: FINAL_RISK >= DETERMINISTIC_RISK.
+2. The final authoritative risk result is MONOTONIC + INTERNALLY COHERENT + DETERMINISTICALLY NORMALIZED.
+3. CONTRADICTIONS RESOLVE UPWARD toward the more restrictive security posture. Never downward.
+4. Risk evaluation NEVER grants transmission authorization: AURA TRANSMISSION IS PERMANENTLY FORBIDDEN.
 """
 
 import re
 import json
 import time
+import math
 import logging
 from enum import Enum
 from typing import Optional, Dict, Any, List, Union
@@ -66,6 +59,18 @@ ACTION_ORDER: Dict[str, int] = {
     "BLOCKED": 2
 }
 
+HIGH_RISK_CATEGORIES = {
+    RiskCategory.SUSPICIOUS_LINK_OR_SPOOFING,
+    RiskCategory.CONTRACT_LEGAL_COMMITMENT,
+    RiskCategory.AUTONOMOUS_SEND_POLICY,
+    RiskCategory.PRIVACY_DATA_EXFILTRATION,
+}
+
+CAUTION_CATEGORIES = {
+    RiskCategory.UNVERIFIED_CAREER_CLAIM,
+    RiskCategory.COMPENSATION_NEGOTIATION,
+}
+
 class RiskAssessmentResult(BaseModel):
     severity: RiskSeverity = RiskSeverity.SAFE
     is_flagged: bool = False
@@ -100,83 +105,189 @@ def get_gemini_client():
         logger.warning(f"Could not initialize google-genai client for risk evaluation: {e}")
         return None
 
+def safe_parse_risk_score(val: Any, default_score: int = 0) -> int:
+    """
+    Strictly validates and parses risk score as a bounded integer in [0, 100].
+    Rejects booleans (isinstance(True, int) is True in Python), strings, nulls,
+    NaN, Infinity, and non-numeric structures, falling back to default_score.
+    """
+    if isinstance(val, bool) or val is None:
+        return default_score
+    if isinstance(val, (int, float)):
+        if math.isnan(val) or math.isinf(val):
+            return default_score
+        clamped = int(round(val))
+        if clamped < 0:
+            return 0
+        if clamped > 100:
+            return 100
+        return clamped
+    return default_score
+
+def normalize_risk_assessment(result: RiskAssessmentResult) -> RiskAssessmentResult:
+    """
+    Authoritative single normalization choke point enforcing:
+    MONOTONIC + INTERNALLY COHERENT + DETERMINISTICALLY NORMALIZED
+
+    Invariants:
+    1. CONTRADICTIONS RESOLVE UPWARD toward the more restrictive security posture.
+    2. Severity, action, score, categories, and warnings are mutually consistent.
+    3. Operation is strictly idempotent: normalize(normalize(x)) == normalize(x).
+    """
+    if not isinstance(result, RiskAssessmentResult):
+        raise TypeError("normalize_risk_assessment requires a RiskAssessmentResult instance.")
+
+    # 1. Parse & validate fields safely
+    raw_score = safe_parse_risk_score(result.risk_score, 0)
+
+    # Severity signal
+    sev_rank = SEVERITY_ORDER.get(result.severity, 0)
+
+    # Action signal
+    act_rank = ACTION_ORDER.get(result.recommended_action, 0)
+
+    # Score signal (score maps to severity: 0-39 -> 0, 40-79 -> 1, 80-100 -> 2)
+    if raw_score >= 80:
+        score_rank = 2
+    elif raw_score >= 40:
+        score_rank = 1
+    else:
+        score_rank = 0
+
+    # Categories signal
+    cat_rank = 0
+    clean_categories: List[RiskCategory] = []
+    for cat in result.detected_categories:
+        if isinstance(cat, RiskCategory):
+            clean_categories.append(cat)
+        elif isinstance(cat, str) and cat.strip().upper() in RiskCategory.__members__:
+            clean_categories.append(RiskCategory[cat.strip().upper()])
+
+    if any(c in HIGH_RISK_CATEGORIES for c in clean_categories):
+        cat_rank = 2
+    elif any(c in CAUTION_CATEGORIES or (c != RiskCategory.CLEAN) for c in clean_categories):
+        cat_rank = 1
+
+    # Flag signal
+    flag_rank = 1 if result.is_flagged else 0
+
+    # Strongest valid security rank (Universal Upward Normalization)
+    canonical_rank = max(sev_rank, act_rank, score_rank, cat_rank, flag_rank)
+
+    # 2. Derive normalized authoritative states
+    if canonical_rank == 2:
+        norm_severity = RiskSeverity.HIGH_RISK
+        norm_action = "BLOCKED"
+        norm_score = max(raw_score, 80)
+        norm_flagged = True
+        norm_categories = [c for c in clean_categories if c != RiskCategory.CLEAN]
+        if not norm_categories:
+            norm_categories = [RiskCategory.AUTONOMOUS_SEND_POLICY]
+    elif canonical_rank == 1:
+        norm_severity = RiskSeverity.CAUTION
+        norm_action = "REVIEW_CAUTION"
+        norm_score = max(raw_score, 40)
+        norm_flagged = True
+        norm_categories = [c for c in clean_categories if c != RiskCategory.CLEAN]
+        if not norm_categories:
+            norm_categories = [RiskCategory.UNVERIFIED_CAREER_CLAIM]
+    else:
+        norm_severity = RiskSeverity.SAFE
+        norm_action = "PROCEED"
+        norm_score = min(raw_score, 39)
+        norm_flagged = False
+        norm_categories = [RiskCategory.CLEAN]
+
+    # 3. Clean and deduplicate warnings
+    norm_warnings: List[str] = []
+    seen_warn = set()
+    for w in result.guardrail_warnings:
+        if isinstance(w, str) and w.strip():
+            w_clean = w.strip()
+            w_lower = w_clean.lower()
+            if w_lower not in seen_warn:
+                seen_warn.add(w_lower)
+                norm_warnings.append(w_clean)
+
+    return RiskAssessmentResult(
+        severity=norm_severity,
+        is_flagged=norm_flagged,
+        risk_score=norm_score,
+        detected_categories=norm_categories,
+        second_opinion_summary=result.second_opinion_summary,
+        evaluator=result.evaluator,
+        recommended_action=norm_action,
+        guardrail_warnings=norm_warnings,
+        timestamp=result.timestamp
+    )
+
 def merge_risk_assessments(
     heuristic: RiskAssessmentResult,
     gemini: Optional[RiskAssessmentResult] = None,
     error_note: Optional[str] = None
 ) -> RiskAssessmentResult:
     """
-    Deterministically merges heuristic pre-screen findings with Gemini second-opinion results.
-    Enforces the Monotonic Security Invariant:
-    Deterministic security findings are strictly NON-DOWNGRADABLE.
+    Deterministically merges heuristic pre-screen findings with Gemini second-opinion results,
+    then routes through canonical normalization.
+    Enforces the Monotonic Security Invariant: FINAL_RISK >= DETERMINISTIC_RISK
     """
+    # Normalize heuristic baseline first to guarantee solid floor
+    norm_heuristic = normalize_risk_assessment(heuristic)
+
     if gemini is None:
         if error_note:
-            heuristic_copy = heuristic.model_copy(deep=True)
-            heuristic_copy.second_opinion_summary = f"{heuristic.second_opinion_summary} ({error_note})"
-            return heuristic_copy
-        return heuristic
+            res_copy = norm_heuristic.model_copy(deep=True)
+            res_copy.second_opinion_summary = f"{norm_heuristic.second_opinion_summary} ({error_note})"
+            return normalize_risk_assessment(res_copy)
+        return norm_heuristic
 
     # 1. Monotonic Severity: max(heuristic, gemini)
-    h_sev_rank = SEVERITY_ORDER.get(heuristic.severity, 0)
-    g_sev_rank = SEVERITY_ORDER.get(gemini.severity, 0)
-    merged_severity = heuristic.severity if h_sev_rank >= g_sev_rank else gemini.severity
+    h_sev_rank = SEVERITY_ORDER.get(norm_heuristic.severity, 0)
+    g_sev_rank = SEVERITY_ORDER.get(gemini.severity, 0) if isinstance(gemini.severity, RiskSeverity) else 0
+    merged_severity = norm_heuristic.severity if h_sev_rank >= g_sev_rank else gemini.severity
 
     # 2. Monotonic Recommended Action: max(heuristic, gemini)
-    h_act_rank = ACTION_ORDER.get(heuristic.recommended_action, 0)
-    g_act_rank = ACTION_ORDER.get(gemini.recommended_action, 0)
-    merged_action = heuristic.recommended_action if h_act_rank >= g_act_rank else gemini.recommended_action
+    h_act_rank = ACTION_ORDER.get(norm_heuristic.recommended_action, 0)
+    g_act_rank = ACTION_ORDER.get(gemini.recommended_action, 0) if isinstance(gemini.recommended_action, str) else 0
+    merged_action = norm_heuristic.recommended_action if h_act_rank >= g_act_rank else gemini.recommended_action
 
-    # 3. Monotonic Risk Score: max(heuristic, gemini)
-    merged_score = max(heuristic.risk_score, gemini.risk_score)
-    if merged_severity == RiskSeverity.HIGH_RISK and merged_score < 80:
-        merged_score = max(heuristic.risk_score, 80)
-    elif merged_severity == RiskSeverity.CAUTION and merged_score < 40:
-        merged_score = max(heuristic.risk_score, 40)
+    # 3. Monotonic Risk Score: max(heuristic, gemini) with safe parsing
+    g_score = safe_parse_risk_score(gemini.risk_score, 0)
+    merged_score = max(norm_heuristic.risk_score, g_score)
 
-    # 4. Monotonic Categories: Deterministic categories are strictly preserved; Gemini additions merged.
-    merged_categories: List[RiskCategory] = list(heuristic.detected_categories)
+    # 4. Monotonic Categories: Deterministic categories strictly preserved; Gemini additions merged.
+    merged_categories: List[RiskCategory] = list(norm_heuristic.detected_categories)
     for cat in gemini.detected_categories:
-        if cat not in merged_categories:
+        if isinstance(cat, RiskCategory) and cat not in merged_categories:
             merged_categories.append(cat)
-
-    # If any non-CLEAN category exists, prune CLEAN
-    if any(c != RiskCategory.CLEAN for c in merged_categories):
-        merged_categories = [c for c in merged_categories if c != RiskCategory.CLEAN]
-
-    if not merged_categories:
-        merged_categories = [RiskCategory.CLEAN]
+        elif isinstance(cat, str) and cat.strip().upper() in RiskCategory.__members__:
+            parsed_cat = RiskCategory[cat.strip().upper()]
+            if parsed_cat not in merged_categories:
+                merged_categories.append(parsed_cat)
 
     # 5. Monotonic Guardrail Warnings: Deterministic warnings strictly preserved; new Gemini warnings appended.
-    merged_warnings: List[str] = list(heuristic.guardrail_warnings)
+    merged_warnings: List[str] = list(norm_heuristic.guardrail_warnings)
     existing_warn_lower = {w.strip().lower() for w in merged_warnings}
     for w in gemini.guardrail_warnings:
-        if w and w.strip().lower() not in existing_warn_lower:
+        if isinstance(w, str) and w.strip() and w.strip().lower() not in existing_warn_lower:
             merged_warnings.append(w.strip())
             existing_warn_lower.add(w.strip().lower())
 
     # 6. Flagged status
-    merged_flagged = (
-        heuristic.is_flagged
-        or gemini.is_flagged
-        or merged_severity != RiskSeverity.SAFE
-        or merged_action != "PROCEED"
-        or any(c != RiskCategory.CLEAN for c in merged_categories)
-    )
+    merged_flagged = norm_heuristic.is_flagged or bool(gemini.is_flagged)
 
     # 7. Summary
     if error_note:
-        summary = f"{heuristic.second_opinion_summary} ({error_note})"
+        summary = f"{norm_heuristic.second_opinion_summary} ({error_note})"
     elif g_sev_rank < h_sev_rank or g_act_rank < h_act_rank:
-        # Gemini attempted downgrade - retain heuristic summary and note override
         summary = (
-            f"{heuristic.second_opinion_summary} "
-            f"(Deterministic security guardrail retained: Gemini second opinion suggested {gemini.severity.value}/{gemini.recommended_action})."
+            f"{norm_heuristic.second_opinion_summary} "
+            f"(Deterministic security guardrail retained: Gemini second opinion suggested {gemini.severity.value if isinstance(gemini.severity, RiskSeverity) else gemini.severity}/{gemini.recommended_action})."
         )
     else:
-        summary = gemini.second_opinion_summary or heuristic.second_opinion_summary
+        summary = gemini.second_opinion_summary or norm_heuristic.second_opinion_summary
 
-    return RiskAssessmentResult(
+    raw_merged = RiskAssessmentResult(
         severity=merged_severity,
         is_flagged=merged_flagged,
         risk_score=merged_score,
@@ -188,13 +299,19 @@ def merge_risk_assessments(
         timestamp=time.time()
     )
 
+    # Single Authoritative Exit Point: Normalize the merged assessment
+    return normalize_risk_assessment(raw_merged)
+
 def analyze_risk_heuristics(
     email_text: str,
     draft_text: str,
     action: Union[MailAction, str] = "DRAFT",
     execution_context: Optional[Union[ExecutionContext, str]] = None
 ) -> RiskAssessmentResult:
-    """Deterministic, local heuristic pre-screen for immediate security and policy checks."""
+    """
+    Deterministic, local heuristic pre-screen for immediate security and policy checks.
+    Always returns a normalized RiskAssessmentResult.
+    """
     flags: List[RiskCategory] = []
     warnings: List[str] = []
 
@@ -212,7 +329,7 @@ def analyze_risk_heuristics(
             pass
 
     # 1. Check for autonomous send attempt or transmission action
-    # Execution context and proposed privileged action determine policy without reliance on literal 'auto_pilot' string
+    # PRIVILEGE / SEND INVARIANT: All Aura SEND proposals are HIGH_RISK + BLOCKED regardless of execution context
     is_transmission_action = (
         (resolved_action is not None and resolved_action in TRANSMISSION_ACTIONS)
         or (action_name in {a.value for a in TRANSMISSION_ACTIONS} or action_name == "SEND")
@@ -250,7 +367,7 @@ def analyze_risk_heuristics(
         warnings.append("Draft phrasing violates Accomplishment Ledger precision ('generated' vs approved 'influenced $8M').")
 
     if not flags:
-        return RiskAssessmentResult(
+        raw_res = RiskAssessmentResult(
             severity=RiskSeverity.SAFE,
             is_flagged=False,
             risk_score=5,
@@ -259,6 +376,7 @@ def analyze_risk_heuristics(
             recommended_action="PROCEED",
             guardrail_warnings=[]
         )
+        return normalize_risk_assessment(raw_res)
 
     severity = RiskSeverity.HIGH_RISK if (
         RiskCategory.SUSPICIOUS_LINK_OR_SPOOFING in flags
@@ -267,7 +385,7 @@ def analyze_risk_heuristics(
     ) else RiskSeverity.CAUTION
     score = 85 if severity == RiskSeverity.HIGH_RISK else 45
 
-    return RiskAssessmentResult(
+    raw_res = RiskAssessmentResult(
         severity=severity,
         is_flagged=True,
         risk_score=score,
@@ -276,6 +394,7 @@ def analyze_risk_heuristics(
         recommended_action="REVIEW_CAUTION" if severity == RiskSeverity.CAUTION else "BLOCKED",
         guardrail_warnings=warnings
     )
+    return normalize_risk_assessment(raw_res)
 
 def evaluate_second_opinion_risk(
     email: EmailMessage,
@@ -287,7 +406,7 @@ def evaluate_second_opinion_risk(
     """
     Evaluates inbound opportunity, proposed draft, and action using Gemini as an independent second-opinion auditor.
     Cross-checks against the Canonical Accomplishment Ledger and corporate safety boundaries.
-    Applies deterministic monotonic merge logic to guarantee security findings cannot be downgraded.
+    Applies deterministic monotonic merge logic and canonical normalization to guarantee security findings cannot be downgraded.
     """
     email_text = f"Subject: {email.subject or ''}\nFrom: {email.sender_name} <{email.sender_email}>\n\n{email.body_text or ''}"
     draft_text = draft_reply or email.draft_reply or ""
@@ -357,38 +476,49 @@ Respond STRICTLY in JSON format matching this schema:
         if not isinstance(data, dict):
             return merge_risk_assessments(heuristic_res, error_note="Malformed non-object JSON from Gemini; deterministic baseline enforced")
 
-        categories = []
-        for cat in data.get("detected_categories", []):
-            try:
-                categories.append(RiskCategory(cat))
-            except (ValueError, TypeError):
-                pass
+        # Strict extraction & type validation of Gemini fields
+        categories: List[RiskCategory] = []
+        raw_categories = data.get("detected_categories")
+        if isinstance(raw_categories, list):
+            for cat in raw_categories:
+                if isinstance(cat, str) and cat.strip().upper() in RiskCategory.__members__:
+                    categories.append(RiskCategory[cat.strip().upper()])
         if not categories:
             categories = [RiskCategory.CLEAN]
 
-        raw_severity = data.get("severity", RiskSeverity.SAFE.value)
-        try:
-            severity = RiskSeverity(raw_severity)
-        except (ValueError, TypeError):
+        raw_severity = data.get("severity")
+        if isinstance(raw_severity, str) and raw_severity.strip().upper() in RiskSeverity.__members__:
+            severity = RiskSeverity[raw_severity.strip().upper()]
+        else:
             severity = RiskSeverity.SAFE
 
-        raw_action = str(data.get("recommended_action", "PROCEED")).upper()
-        if raw_action not in ACTION_ORDER:
-            raw_action = "PROCEED"
+        raw_action = data.get("recommended_action")
+        if isinstance(raw_action, str) and raw_action.strip().upper() in ACTION_ORDER:
+            action_val = raw_action.strip().upper()
+        else:
+            action_val = "PROCEED"
 
-        try:
-            risk_score = int(data.get("risk_score", 10 if severity == RiskSeverity.SAFE else 60))
-        except (ValueError, TypeError):
-            risk_score = 10 if severity == RiskSeverity.SAFE else 60
+        raw_score_val = data.get("risk_score")
+        default_score = 10 if severity == RiskSeverity.SAFE else (85 if severity == RiskSeverity.HIGH_RISK else 45)
+        risk_score = safe_parse_risk_score(raw_score_val, default_score)
+
+        raw_flagged = data.get("is_flagged")
+        is_flagged = bool(raw_flagged) if isinstance(raw_flagged, bool) else (severity != RiskSeverity.SAFE)
+
+        raw_warnings = data.get("guardrail_warnings")
+        valid_warnings = [str(w).strip() for w in raw_warnings if isinstance(w, str) and w.strip()] if isinstance(raw_warnings, list) else []
+
+        raw_summary = data.get("second_opinion_summary")
+        summary_str = str(raw_summary).strip() if isinstance(raw_summary, str) and raw_summary.strip() else "Audited by Gemini Risk Sentinel."
 
         gemini_res = RiskAssessmentResult(
             severity=severity,
-            is_flagged=bool(data.get("is_flagged", severity != RiskSeverity.SAFE)),
+            is_flagged=is_flagged,
             risk_score=risk_score,
             detected_categories=categories,
-            second_opinion_summary=str(data.get("second_opinion_summary", "Audited by Gemini Risk Sentinel.")),
-            recommended_action=raw_action,
-            guardrail_warnings=[str(w) for w in data.get("guardrail_warnings", []) if w]
+            second_opinion_summary=summary_str,
+            recommended_action=action_val,
+            guardrail_warnings=valid_warnings
         )
 
         return merge_risk_assessments(heuristic_res, gemini_res)

@@ -422,21 +422,26 @@ async function runRiskAudit(draftText) {
 
         if (res.ok) {
             const audit = await res.json();
-            const sev = (audit.severity || "SAFE").toLowerCase().replace("_", "-");
-            el.riskSentinelBanner.className = `risk-sentinel-banner ${sev}`;
-            
-            if (sev === "safe") {
-                el.sentinelIcon.textContent = "🛡️";
-                el.sentinelStatusBadge.textContent = "VERIFIED SAFE";
-                el.sentinelStatusBadge.className = "sentinel-status-badge safe";
-            } else if (sev === "caution") {
+            const sev = String(audit.severity || "SAFE").toUpperCase();
+            const action = String(audit.recommended_action || "PROCEED").toUpperCase();
+            const isHighRisk = sev === "HIGH_RISK" || action === "BLOCKED";
+            const isCaution = !isHighRisk && (sev === "CAUTION" || action === "REVIEW_CAUTION");
+
+            if (isHighRisk) {
+                el.riskSentinelBanner.className = "risk-sentinel-banner high-risk";
+                el.sentinelIcon.textContent = "🚨";
+                el.sentinelStatusBadge.textContent = "BLOCKED / HIGH RISK";
+                el.sentinelStatusBadge.className = "sentinel-status-badge high-risk";
+            } else if (isCaution) {
+                el.riskSentinelBanner.className = "risk-sentinel-banner caution";
                 el.sentinelIcon.textContent = "⚠️";
                 el.sentinelStatusBadge.textContent = "CAUTION REQUIRED";
                 el.sentinelStatusBadge.className = "sentinel-status-badge caution";
             } else {
-                el.sentinelIcon.textContent = "🚨";
-                el.sentinelStatusBadge.textContent = "BLOCKED / HIGH RISK";
-                el.sentinelStatusBadge.className = "sentinel-status-badge high-risk";
+                el.riskSentinelBanner.className = "risk-sentinel-banner safe";
+                el.sentinelIcon.textContent = "🛡️";
+                el.sentinelStatusBadge.textContent = "VERIFIED SAFE";
+                el.sentinelStatusBadge.className = "sentinel-status-badge safe";
             }
 
             el.sentinelSummary.textContent = audit.second_opinion_summary || "Grounding verified against Accomplishment Ledger.";
