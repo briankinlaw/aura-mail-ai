@@ -46,11 +46,10 @@ from backend.canonical_grounding import (
     CANONICAL_LEDGER_SCHEMA_VERSION,
     get_active_ledger_digest,
     RecoveryStrategy,
-    RecoveryExecutionContext,
-    AdministrativeRecoveryContext,
 )
-from backend.auth import get_local_session_token, issue_administrative_recovery_token
+from backend.auth import get_local_session_token
 from backend.tests.conftest import test_reset_provenance_store
+from backend.offline_recovery import execute_offline_recovery_transaction
 
 
 @pytest.fixture(autouse=True)
@@ -274,27 +273,20 @@ def test_valid_claim_file_with_disabled_marker_remains_unavailable(tmp_path):
 
 def test_recovery_requires_explicit_supported_strategy(tmp_path):
     """
-    Proves that recover_store rejects unknown or inferred recovery strategies.
+    Proves that in-process recover_store is permanently blocked in Phase 5.6.
     """
     storage_file = tmp_path / "provenance_records.json"
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
-    admin_ctx = AdministrativeRecoveryContext(
-        actor="local_admin",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
-    )
-
-    with pytest.raises(ValueError, match="Unsupported recovery strategy"):
-        store.recover_store(strategy="AUTO_GUESS", recovery_context=admin_ctx)
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
+        store.recover_store()
 
 
 def test_recovery_strategy_reset_all_provenance(tmp_path):
     """
-    Proves RESET_ALL_PROVENANCE safely clears claim records, removes disabled marker,
-    and restores availability.
+    Proves offline recovery safely clears claim records, removes disabled marker,
+    and restores availability on subsequent store load.
     """
     storage_file = tmp_path / "provenance_records.json"
     state_file = tmp_path / "provenance_store_state.json"
@@ -309,16 +301,15 @@ def test_recovery_strategy_reset_all_provenance(tmp_path):
     assert store.is_available() is False
     assert state_file.exists() is True
 
-    admin_ctx = AdministrativeRecoveryContext(
-        actor="local_admin",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence=issue_administrative_recovery_token(actor="local_admin"),
+    # Execute offline recovery transaction
+    res = execute_offline_recovery_transaction(
+        target_dir=tmp_path,
+        interactive=False,
+        is_test_harness=True,
+        actor_override="local_admin"
     )
-
-    # Execute RESET_ALL_PROVENANCE
-    res = store.recover_store(strategy=RecoveryStrategy.RESET_ALL_PROVENANCE, recovery_context=admin_ctx)
-    assert res is True
+    assert res["success"] is True
+    store._load()
     assert store.is_available() is True
     assert state_file.exists() is False
     assert len(store._records) == 0
@@ -331,8 +322,8 @@ def test_recovery_strategy_reset_all_provenance(tmp_path):
 
 def test_recovery_strategy_validate_and_repair_is_rejected(tmp_path):
     """
-    Proves VALIDATE_AND_REPAIR is strictly rejected in Phase 5.5.8.
-    Store remains unavailable fail-closed.
+    Proves in-process recovery attempts are rejected fail-closed.
+    Store remains unavailable and marker remains.
     """
     storage_file = tmp_path / "provenance_records.json"
     state_file = tmp_path / "provenance_store_state.json"
@@ -346,16 +337,8 @@ def test_recovery_strategy_validate_and_repair_is_rejected(tmp_path):
     store.disable_store("Test disable", affected_draft_id="draft_affected")
     assert store.is_available() is False
 
-    admin_ctx = AdministrativeRecoveryContext(
-        actor="local_admin",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
-    )
-
-    # Execute VALIDATE_AND_REPAIR - must be rejected
-    with pytest.raises(ValueError, match="Unsupported recovery strategy"):
-        store.recover_store(strategy="VALIDATE_AND_REPAIR", recovery_context=admin_ctx)
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
+        store.recover_store(strategy="VALIDATE_AND_REPAIR")
 
     # Store remains unavailable and marker remains
     assert store.is_available() is False

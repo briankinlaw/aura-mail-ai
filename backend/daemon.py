@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 
 from backend.config import DATA_DIR, get_user_profile
+from backend.runtime_lock import acquire_shared_runtime_lock
 from backend.models import EmailMessage, EmailCategory, UserProfile, ReplyDraftRequest
 from backend.provider_manager import ProviderManager
 from backend.radar.triage_service import classify_email_radar, calculate_opportunity_fit_score
@@ -109,6 +110,7 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
     5. Dispatches macOS desktop alerts for high-fit roles.
     """
     logger.info(f"Starting Aura Daemon cycle (dry_run={dry_run})...")
+    lock_ctx = acquire_shared_runtime_lock()
     folders = target_folders or ["Inbox", "Jobs", "CCK Career", "AI Reachouts"]
     processed_ids = load_processed_ids()
     
@@ -260,5 +262,7 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
         logger.error(f"Daemon cycle failed with error: {e}", exc_info=True)
         summary["errors"].append(str(e))
         update_daemon_state("ERROR", summary)
+    finally:
+        lock_ctx.release()
 
     return summary

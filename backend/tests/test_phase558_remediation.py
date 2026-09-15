@@ -36,9 +36,7 @@ from backend.canonical_grounding import (
     ClaimStatus,
     InvalidationPersistenceError,
     RecoveryStrategy,
-    RecoveryExecutionContext,
     RecoveryAuthorizationError,
-    AdministrativeRecoveryContext,
     RiskEvaluationSnapshot,
     capture_risk_evaluation_snapshot,
     verify_risk_evaluation_snapshot,
@@ -54,8 +52,9 @@ from backend.canonical_grounding import (
     CANONICAL_LEDGER_SCHEMA_VERSION,
     get_active_ledger_digest,
 )
-from backend.auth import get_local_session_token, issue_administrative_recovery_token
+from backend.auth import get_local_session_token
 from backend.tests.conftest import test_reset_provenance_store
+from backend.offline_recovery import execute_offline_recovery_transaction
 
 
 @pytest.fixture(autouse=True)
@@ -81,22 +80,13 @@ def auth_client():
     return client
 
 
-def _create_valid_admin_context(actor: str = "local_root_admin") -> AdministrativeRecoveryContext:
-    return AdministrativeRecoveryContext(
-        actor=actor,
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence=issue_administrative_recovery_token(actor=actor),
-    )
-
-
 # ==============================================================================
-# SECTION A: No-Default Recovery Strategy Tests
+# SECTION A: In-Process Recovery Permanently Blocked Tests
 # ==============================================================================
 
-def test_recover_store_requires_explicit_arguments_without_defaults(tmp_path):
+def test_recover_store_is_permanently_blocked_and_mutates_nothing(tmp_path):
     """
-    Prove recover_store() with missing arguments fails before modifying:
+    Prove recover_store() is permanently blocked and mutates zero state:
     - marker bytes
     - claim-store bytes
     - availability
@@ -122,8 +112,8 @@ def test_recover_store_requires_explicit_arguments_without_defaults(tmp_path):
     initial_inv_count = store.get_invalidation_count()
     initial_quarantine = set(store._quarantined_draft_ids)
 
-    # 1. Calling recover_store() with no arguments must raise TypeError
-    with pytest.raises(TypeError):
+    # Calling recover_store() must raise RuntimeError
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
         store.recover_store()
 
     # Verify nothing changed
@@ -134,21 +124,16 @@ def test_recover_store_requires_explicit_arguments_without_defaults(tmp_path):
     assert store.get_invalidation_count() == initial_inv_count
 
 
-@pytest.mark.parametrize("invalid_strategy", [
-    None,
-    "",
-    "RESET",
-    "CLEAR",
-    "REPAIR",
-    "ENABLE",
-    "AUTO",
-    "VALIDATE_AND_REPAIR",
-    "reset_all_provenance",
+@pytest.mark.parametrize("invalid_args", [
+    {"strategy": "RESET_ALL_PROVENANCE"},
+    {"strategy": None},
+    {"strategy": "RESET"},
+    {"recovery_context": None},
+    {"strategy": "VALIDATE_AND_REPAIR"},
 ])
-def test_recover_store_rejects_invalid_strategies_fail_closed(tmp_path, invalid_strategy):
+def test_recover_store_rejects_all_in_process_invocations_fail_closed(tmp_path, invalid_args):
     """
-    Prove invalid or removed strategies (including VALIDATE_AND_REPAIR) fail closed
-    without modifying store state.
+    Prove all in-process invocations of recover_store raise RuntimeError fail closed.
     """
     storage_file = tmp_path / "provenance_records.json"
     state_file = tmp_path / "provenance_store_state.json"
@@ -156,16 +141,15 @@ def test_recover_store_rejects_invalid_strategies_fail_closed(tmp_path, invalid_
     store.create_claim_instance(
         fact_id="FACT_EMPLOYMENT_IBM_WATSON",
         template_id="TPL_EMP_IBM_WATSON",
-        draft_id="draft_strategy_test"
+        draft_id="draft_invalid_args"
     )
-    store.disable_store("Test disable", affected_draft_id="draft_strategy_test")
-    admin_ctx = _create_valid_admin_context()
+    store.disable_store("Test disable", affected_draft_id="draft_invalid_args")
 
     initial_marker_bytes = state_file.read_bytes()
     initial_store_bytes = storage_file.read_bytes()
 
-    with pytest.raises(ValueError, match="Unsupported recovery strategy"):
-        store.recover_store(strategy=invalid_strategy, recovery_context=admin_ctx)
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
+        store.recover_store(**invalid_args)
 
     assert store.is_available() is False
     assert state_file.read_bytes() == initial_marker_bytes
@@ -173,136 +157,21 @@ def test_recover_store_rejects_invalid_strategies_fail_closed(tmp_path, invalid_
 
 
 # ==============================================================================
-# SECTION B: Administrative Context Authorization Tests
+# SECTION B: In-Process Recovery Zero Authority Tests
 # ==============================================================================
 
-@pytest.mark.parametrize("bad_context,expected_error", [
-    (None, RecoveryAuthorizationError),
-    ({"actor": "admin", "execution_context": "LOCAL_ADMIN_MAINTENANCE"}, RecoveryAuthorizationError),
-    ("admin", RecoveryAuthorizationError),
-    (True, RecoveryAuthorizationError),
-    (123, RecoveryAuthorizationError),
-])
-def test_recover_store_rejects_non_typed_contexts(tmp_path, bad_context, expected_error):
-    """
-    Reject raw dictionaries, strings, booleans, and None as recovery_context.
-    """
+def test_recover_store_stub_blocks_all_callers(tmp_path):
     storage_file = tmp_path / "provenance_records.json"
     state_file = tmp_path / "provenance_store_state.json"
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
-    initial_marker_bytes = state_file.read_bytes()
-
-    with pytest.raises(expected_error):
-        store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, bad_context)
-
-    assert store.is_available() is False
-    assert state_file.read_bytes() == initial_marker_bytes
-
-
-@pytest.mark.parametrize("forbidden_context", [
-    "DAEMON",
-    "BACKGROUND_RADAR",
-    "SCHEDULED_JOB",
-    "AI_AGENT",
-    "UNAUTHENTICATED_API",
-    "OUTLOOK_INTERACTIVE_USER",
-    "DASHBOARD_INTERACTIVE_USER",
-    "ORDINARY_REQUEST",
-    "UNKNOWN_CONTEXT",
-])
-def test_recover_store_rejects_forbidden_execution_contexts(tmp_path, forbidden_context):
-    """
-    Explicitly reject all non-LOCAL_ADMIN_MAINTENANCE execution contexts.
-    """
-    storage_file = tmp_path / "provenance_records.json"
-    state_file = tmp_path / "provenance_store_state.json"
-    store = ProvenanceStore(storage_path=storage_file)
-    store.disable_store("Test disable")
-
-    ctx = AdministrativeRecoveryContext(
-        actor="admin",
-        execution_context=forbidden_context,
-        explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
-    )
-
-    with pytest.raises(RecoveryAuthorizationError, match="Forbidden recovery execution context"):
-        store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
+        store.recover_store("RESET_ALL_PROVENANCE", "any_context", actor="admin")
 
     assert store.is_available() is False
     assert state_file.exists() is True
 
-
-def test_recover_store_rejects_empty_actor(tmp_path):
-    storage_file = tmp_path / "provenance_records.json"
-    store = ProvenanceStore(storage_path=storage_file)
-    store.disable_store("Test disable")
-
-    ctx = AdministrativeRecoveryContext(
-        actor="   ",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
-    )
-
-    with pytest.raises(RecoveryAuthorizationError, match="requires a non-empty actor"):
-        store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)
-
-    assert store.is_available() is False
-
-
-def test_recover_store_rejects_unconfirmed_request(tmp_path):
-    storage_file = tmp_path / "provenance_records.json"
-    store = ProvenanceStore(storage_path=storage_file)
-    store.disable_store("Test disable")
-
-    ctx = AdministrativeRecoveryContext(
-        actor="local_admin",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=False,
-        authorization_evidence=get_local_session_token(),
-    )
-
-    with pytest.raises(RecoveryAuthorizationError, match="requires explicitly_confirmed=True"):
-        store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)
-
-    assert store.is_available() is False
-
-
-def test_recover_store_rejects_invalid_authorization_evidence(tmp_path):
-    storage_file = tmp_path / "provenance_records.json"
-    store = ProvenanceStore(storage_path=storage_file)
-    store.disable_store("Test disable")
-
-    ctx = AdministrativeRecoveryContext(
-        actor="local_admin",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence="invalid_forged_session_token_xyz",
-    )
-
-    with pytest.raises(RecoveryAuthorizationError, match="Invalid, expired, or already consumed administrative recovery authorization evidence"):
-        store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)
-
-    assert store.is_available() is False
-
-
-def test_recover_store_positive_with_valid_admin_context(tmp_path):
-    """Positive test for valid trusted local administrative recovery."""
-    storage_file = tmp_path / "provenance_records.json"
-    state_file = tmp_path / "provenance_store_state.json"
-    store = ProvenanceStore(storage_path=storage_file)
-    store.disable_store("Test disable")
-    assert store.is_available() is False
-
-    admin_ctx = _create_valid_admin_context()
-    res = store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, admin_ctx)
-
-    assert res is True
-    assert store.is_available() is True
-    assert state_file.exists() is False
 
 
 # ==============================================================================
@@ -317,7 +186,7 @@ def test_enable_store_raises_runtime_error_and_cannot_bypass_recovery(tmp_path):
 
     initial_marker_bytes = state_file.read_bytes()
 
-    with pytest.raises(RuntimeError, match="enable_store\\(\\) is removed for safety"):
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
         store.enable_store()
 
     assert store.is_available() is False
@@ -332,7 +201,7 @@ def test_reset_store_raises_runtime_error_and_cannot_bypass_recovery(tmp_path):
 
     initial_marker_bytes = state_file.read_bytes()
 
-    with pytest.raises(RuntimeError, match="reset_store\\(\\) is removed for safety"):
+    with pytest.raises(RuntimeError, match="In-process provenance recovery is forbidden"):
         store.reset_store()
 
     assert store.is_available() is False
@@ -511,10 +380,16 @@ def test_recovery_reset_all_provenance_full_lifecycle(tmp_path):
     assert store.is_available() is False
     assert state_file.exists() is True
 
-    admin_ctx = _create_valid_admin_context()
-    res = store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, admin_ctx)
+    # Execute offline recovery transaction
+    res = execute_offline_recovery_transaction(
+        target_dir=tmp_path,
+        interactive=False,
+        is_test_harness=True,
+        actor_override="local_admin"
+    )
 
-    assert res is True
+    assert res["success"] is True
+    store._load()
     assert store.is_available() is True
     assert state_file.exists() is False
     assert len(store._records) == 0
@@ -552,12 +427,15 @@ def test_recovery_failure_during_empty_write_remains_fail_closed(tmp_path):
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
-    admin_ctx = _create_valid_admin_context()
+    with pytest.raises(Exception):
+        execute_offline_recovery_transaction(
+            target_dir=tmp_path,
+            interactive=False,
+            is_test_harness=True,
+            failure_hook="fail_claim_replace"
+        )
 
-    with patch("os.replace", side_effect=OSError("Disk full / replace failed")):
-        with pytest.raises(RuntimeError, match="Administrative recovery failed"):
-            store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, admin_ctx)
-
+    store._load()
     assert store.is_available() is False
     assert state_file.exists() is True
 
@@ -568,12 +446,15 @@ def test_recovery_failure_during_marker_removal_remains_fail_closed(tmp_path):
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
-    admin_ctx = _create_valid_admin_context()
+    with pytest.raises(Exception):
+        execute_offline_recovery_transaction(
+            target_dir=tmp_path,
+            interactive=False,
+            is_test_harness=True,
+            failure_hook="fail_marker_removal"
+        )
 
-    with patch("os.remove", side_effect=OSError("Permission denied on state marker")):
-        with pytest.raises(RuntimeError, match="Administrative recovery failed"):
-            store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, admin_ctx)
-
+    store._load()
     assert store.is_available() is False
     assert state_file.exists() is True
 
@@ -597,7 +478,7 @@ def test_recovery_failure_during_marker_removal_remains_fail_closed(tmp_path):
 def test_tampered_record_recovery_via_reset_produces_clean_empty_store(tmp_path, tamper_type, tamper_mutator):
     """
     Prove that tampered claim content cannot influence recovery.
-    After authorized RESET_ALL_PROVENANCE:
+    After authorized offline reset:
     - recovery succeeds only by producing an empty store;
     - none of the tampered records remain;
     - none can verify after recovery.
@@ -624,10 +505,15 @@ def test_tampered_record_recovery_via_reset_produces_clean_empty_store(tmp_path,
     store.disable_store("Tamper detected", affected_draft_id="draft_tamper")
     assert store.is_available() is False
 
-    admin_ctx = _create_valid_admin_context()
-    res = store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, admin_ctx)
+    res = execute_offline_recovery_transaction(
+        target_dir=tmp_path,
+        interactive=False,
+        is_test_harness=True,
+        actor_override="local_admin"
+    )
 
-    assert res is True
+    assert res["success"] is True
+    store._load()
     assert store.is_available() is True
     assert len(store._records) == 0
     assert store.get_claim_instance(cid) is None
@@ -684,8 +570,13 @@ sys.exit(0)
     assert res.returncode == 0, f"Subprocess failed disabled check: {res.stderr}"
 
     # Step 2: Perform authorized recovery reset
-    admin_ctx = _create_valid_admin_context()
-    store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, admin_ctx)
+    execute_offline_recovery_transaction(
+        target_dir=tmp_path,
+        interactive=False,
+        is_test_harness=True,
+        actor_override="local_admin"
+    )
+    store._load()
     assert store.is_available() is True
 
     # Step 3: Subprocess checks store is now available and empty

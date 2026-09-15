@@ -64,13 +64,36 @@ from backend.analytics import (
     export_analytics_data
 )
 
+from contextlib import asynccontextmanager
+from backend.runtime_lock import acquire_shared_runtime_lock, AuraRuntimeLockContext
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("aura_main")
+
+_RUNTIME_LOCK_CTX: Optional[AuraRuntimeLockContext] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _RUNTIME_LOCK_CTX
+    try:
+        _RUNTIME_LOCK_CTX = acquire_shared_runtime_lock()
+        logger.info("Acquired shared runtime lock for Aura server.")
+    except Exception as e:
+        logger.critical(f"FATAL: Failed to acquire shared runtime lock: {e}")
+        raise
+    try:
+        yield
+    finally:
+        if _RUNTIME_LOCK_CTX is not None:
+            _RUNTIME_LOCK_CTX.release()
+            _RUNTIME_LOCK_CTX = None
+            logger.info("Released shared runtime lock.")
 
 app = FastAPI(
     title="Aura Mail AI - Cloud Email Assistant & Resume Co-Pilot",
     description="Multi-account Cloud Email Assistant for New Outlook for Mac, Gmail, and IMAP",
-    version="1.1.0"
+    version="1.1.0",
+    lifespan=lifespan
 )
 
 from starlette.middleware.trustedhost import TrustedHostMiddleware

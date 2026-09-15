@@ -61,25 +61,9 @@ class RecoveryStrategy(str, Enum):
     RESET_ALL_PROVENANCE = "RESET_ALL_PROVENANCE"
 
 
-class RecoveryExecutionContext(str, Enum):
-    LOCAL_ADMIN_MAINTENANCE = "LOCAL_ADMIN_MAINTENANCE"
-
-
 class RecoveryAuthorizationError(PermissionError):
     """Raised when administrative recovery authorization is missing, invalid, or unauthorized."""
     pass
-
-
-@dataclass(frozen=True)
-class AdministrativeRecoveryContext:
-    """
-    Immutable typed context object required to authorize administrative recovery.
-    Must be invoked only within LOCAL_ADMIN_MAINTENANCE execution context with valid local auth evidence.
-    """
-    actor: str
-    execution_context: RecoveryExecutionContext
-    explicitly_confirmed: bool
-    authorization_evidence: str
 
 
 
@@ -1185,104 +1169,30 @@ class ProvenanceStore:
         with self._lock:
             return self._is_available
 
-    def recover_store(
-        self,
-        strategy: RecoveryStrategy,
-        recovery_context: AdministrativeRecoveryContext
-    ) -> bool:
+    def recover_store(self, *args, **kwargs):
         """
-        Explicit administrative recovery operation.
-        Strictly requires RecoveryStrategy.RESET_ALL_PROVENANCE and a validated AdministrativeRecoveryContext.
+        Permanently blocked stub.
+        In-process provenance recovery is strictly forbidden.
+        Aura must be stopped and offline administrative maintenance used.
         """
-        with self._lock:
-            # 1. Validate Strategy: Strict Enum Instance Enforcement (No raw strings, aliases, or defaults)
-            if not isinstance(strategy, RecoveryStrategy) or strategy is not RecoveryStrategy.RESET_ALL_PROVENANCE:
-                raise ValueError(f"Unsupported recovery strategy: '{strategy}'. Only RecoveryStrategy.RESET_ALL_PROVENANCE is permitted.")
+        raise RuntimeError(
+            "In-process provenance recovery is forbidden. "
+            "Stop Aura and use the offline administrative maintenance command."
+        )
 
-            # 2. Validate Administrative Context Type
-            if not isinstance(recovery_context, AdministrativeRecoveryContext):
-                raise RecoveryAuthorizationError("recovery_context must be an AdministrativeRecoveryContext instance.")
+    def enable_store(self, *args, **kwargs):
+        """Permanently blocked stub. Generic enable shortcuts are forbidden."""
+        raise RuntimeError(
+            "In-process provenance recovery is forbidden. "
+            "Stop Aura and use the offline administrative maintenance command."
+        )
 
-            # 3. Validate Actor Identity
-            if not recovery_context.actor or not isinstance(recovery_context.actor, str) or not recovery_context.actor.strip():
-                raise RecoveryAuthorizationError("Administrative recovery requires a non-empty actor identity.")
-
-            # 4. Validate Execution Context: Strict Enum Instance Enforcement (No raw strings)
-            if not isinstance(recovery_context.execution_context, RecoveryExecutionContext) or recovery_context.execution_context is not RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE:
-                raise RecoveryAuthorizationError(
-                    f"Forbidden recovery execution context: '{recovery_context.execution_context}'. "
-                    "Only RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE is authorized."
-                )
-
-            # 5. Validate Explicit Confirmation
-            if recovery_context.explicitly_confirmed is not True or type(recovery_context.explicitly_confirmed) is not bool:
-                raise RecoveryAuthorizationError("Administrative recovery requires explicitly_confirmed=True.")
-
-            # 6. Validate Dedicated Administrative Recovery Token Authority (Single-Use, Purpose-Bound)
-            from backend.auth import verify_and_consume_recovery_token
-            if not verify_and_consume_recovery_token(recovery_context.authorization_evidence, recovery_context.actor):
-                raise RecoveryAuthorizationError("Invalid, expired, or already consumed administrative recovery authorization evidence.")
-
-            # 7. Validate Store Precondition: Recovery cannot be executed on a healthy, available store
-            if self._is_available and not self.state_path.exists():
-                raise RecoveryAuthorizationError(
-                    "Store is currently healthy and available. "
-                    "Recovery precondition failed: recovery is only permitted when the store is durably disabled or in an invalid state."
-                )
-
-            # 8. Execute Destructive RESET_ALL_PROVENANCE with full durability and fail-closed marker restoration
-            temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
-            try:
-                # Step A: Durably write empty dictionary to temporary claim store
-                with open(temp_store_path, "w", encoding="utf-8") as f:
-                    json.dump({}, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_store_path, self.storage_path)
-                self._fsync_parent_dir(self.storage_path)
-
-                # Step B: Reopen and verify stored value is exactly {}
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    parsed = json.load(f)
-                    if parsed != {}:
-                        raise RuntimeError("Failed to verify empty store after reset write")
-
-                # Step C: Remove disabled state marker
-                if self.state_path.exists():
-                    os.remove(self.state_path)
-                self._fsync_parent_dir(self.state_path)
-
-                # Step D: Verify marker is absent
-                if self.state_path.exists():
-                    raise RuntimeError("Failed to remove disabled state marker")
-
-                # Step E: Complete reload and revalidation of disk state
-                self._load()
-                if not self._is_available or len(self._records) != 0 or len(self._quarantined_draft_ids) != 0:
-                    raise RuntimeError("Post-recovery reload verification failed: store is not clean and available.")
-
-                self._invalidation_counter += 1
-                logger.info(f"Provenance store successfully recovered via RESET_ALL_PROVENANCE by actor '{recovery_context.actor}'.")
-                return True
-            except Exception as e:
-                # If failure occurs after marker removal (or during reload), restore disabled marker fail-closed
-                if not self.state_path.exists():
-                    try:
-                        self.disable_store(f"Post-recovery failure: {e}")
-                    except Exception as marker_err:
-                        logger.critical(f"FATAL: Failed to recreate disabled state marker after recovery failure: {marker_err}")
-                self._is_available = False
-                self._unavailable_reason = f"Recovery failed: {e}"
-                logger.critical(f"FATAL: Store recovery failed: {e}")
-                raise RuntimeError(f"Administrative recovery failed: {e}") from e
-
-    def enable_store(self):
-        """Removed for security. Generic enable shortcuts are forbidden."""
-        raise RuntimeError("enable_store() is removed for safety. Use recover_store(strategy, recovery_context).")
-
-    def reset_store(self):
-        """Removed for security. Generic reset shortcuts are forbidden."""
-        raise RuntimeError("reset_store() is removed for safety. Use recover_store(strategy, recovery_context).")
+    def reset_store(self, *args, **kwargs):
+        """Permanently blocked stub. Generic reset shortcuts are forbidden."""
+        raise RuntimeError(
+            "In-process provenance recovery is forbidden. "
+            "Stop Aura and use the offline administrative maintenance command."
+        )
 
     def get_invalidation_count(self) -> int:
         """Returns the monotonic invalidation counter."""

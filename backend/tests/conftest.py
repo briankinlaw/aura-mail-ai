@@ -16,25 +16,18 @@ def isolate_test_environment(monkeypatch):
 
 def test_reset_provenance_store(store=None):
     """
-    Test helper providing authorized AdministrativeRecoveryContext for test resets.
+    Test helper providing offline administrative recovery for test suite resets.
     Not exported or used in production runtime code.
     """
-    from backend.canonical_grounding import (
-        PROVENANCE_STORE,
-        RecoveryStrategy,
-        RecoveryExecutionContext,
-        AdministrativeRecoveryContext,
-    )
-    from backend.auth import issue_administrative_recovery_token
+    from backend.canonical_grounding import PROVENANCE_STORE
+    from backend.offline_recovery import execute_offline_recovery_transaction
     target_store = store or PROVENANCE_STORE
-    # Ensure store meets recovery precondition (disabled or marker exists)
     if target_store.is_available() and not target_store.state_path.exists():
         target_store.disable_store("Test suite reset")
-    token = issue_administrative_recovery_token(actor="test_suite_admin")
-    ctx = AdministrativeRecoveryContext(
-        actor="test_suite_admin",
-        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
-        explicitly_confirmed=True,
-        authorization_evidence=token,
+    execute_offline_recovery_transaction(
+        target_dir=target_store.storage_path.parent,
+        interactive=False,
+        is_test_harness=True,
+        actor_override="test_suite_admin"
     )
-    target_store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)
+    target_store._load()

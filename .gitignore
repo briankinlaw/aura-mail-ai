@@ -30,6 +30,9 @@ data/daemon_processed.json
 data/provenance_records.json
 backend/data/provenance_records.json
 backend/data/*.json
+*.lock
+data/.*lock
+data/*.lock
 
 # Distributable archives & temporary bundles
 *.zip

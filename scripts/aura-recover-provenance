@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""
+Aura Mail AI - Offline Administrative Provenance Recovery Script (Phase 5.6)
+Executes strictly offline destructive provenance store recovery while Aura is stopped.
+Requires an interactive terminal and dual exact confirmations.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+def ensure_venv():
+    # Check if running in venv
+    if hasattr(sys, "real_prefix") or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix):
+        return
+
+    # Look for candidate venvs
+    candidates = [
+        ROOT_DIR / ".venv" / "bin" / "python3",
+        ROOT_DIR / ".venv" / "bin" / "python",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            if os.environ.get("_AURA_RECOVERY_REEXEC") != "1":
+                env = os.environ.copy()
+                env["_AURA_RECOVERY_REEXEC"] = "1"
+                env["PYTHONPATH"] = str(ROOT_DIR)
+                os.execve(str(cand), [str(cand), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+ensure_venv()
+
+# Add project root to sys.path
+sys.path.insert(0, str(ROOT_DIR))
+
+from backend.offline_recovery import main
+
+if __name__ == "__main__":
+    sys.exit(main())
