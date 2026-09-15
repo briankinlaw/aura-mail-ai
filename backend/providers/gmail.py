@@ -108,7 +108,7 @@ class GmailProvider(BaseEmailProvider):
             "code": code,
             "client_id": cid,
             "client_secret": csec,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": actual_redirect_uri,
             "grant_type": "authorization_code"
         }
 

@@ -16,6 +16,7 @@ In **v1.1**, Aura Mail AI transitions to a **cloud-first, multi-account architec
 3. **Structured Composite Message Identity**: Every message ID carries its positive provider and account identity (`provider:account_id:native_id`), eliminating prefix guessing.
 4. **macOS Keychain Vault**: Secrets (Gemini keys, OAuth refresh tokens, IMAP passwords) are stored exclusively in macOS Keychain via Python `keyring`.
 5. **Zero Direct Transmission Authority & Native Send Safety**: Strict `DRAFT_ONLY` and `MANUAL_SEND_ONLY` modes. Aura prepares and stages drafts; final mail transmission is performed exclusively by the human in the native mail client (Outlook / Gmail / Webmail). Aura's local API has zero transmission authority.
+6. **Local Desktop Browser Boundary & Threat Model**: Multi-layered defense-in-depth formalizing loopback socket peer enforcement, exact loopback Host allowlisting, immutable canonical HTTPS CORS, server-side Origin/Fetch Metadata verification, and purpose-bound, single-use, expiring OAuth state transactions (see [THREAT_MODEL.md](file:///Users/briankinlaw/aura-mail-ai/THREAT_MODEL.md)).
 
 ---
 

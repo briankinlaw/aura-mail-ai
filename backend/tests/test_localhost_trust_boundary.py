@@ -116,19 +116,22 @@ def test_host_validation_dns_rebinding_rejected():
         "evil-attacker.com",
         "malicious-rebind.net",
         "attacker.com:8000",
-        "192.168.1.50:8000"
+        "192.168.1.50:8000",
+        "testserver",
+        "evil.localhost",
+        "foo.localhost",
     ]
     for host in untrusted_hosts:
-        res = unauth_client.get("/api/status", headers={"Host": host})
+        res = unauth_client.get("/api/safety-policy", headers={"Host": host})
         assert res.status_code == 400
         assert "Invalid host header" in res.text
 
 
 def test_host_validation_legitimate_hosts_accepted():
-    """Verifies that legitimate loopback hosts (localhost, 127.0.0.1, testserver) are accepted."""
-    trusted_hosts = ["localhost", "127.0.0.1", "testserver"]
+    """Verifies that legitimate loopback hosts (localhost, 127.0.0.1) are accepted."""
+    trusted_hosts = ["localhost", "127.0.0.1"]
     for host in trusted_hosts:
-        res = unauth_client.get("/api/status", headers={"Host": host})
+        res = unauth_client.get("/api/safety-policy", headers={"Host": host})
         assert res.status_code == 200
 
 
@@ -404,8 +407,8 @@ def test_session_token_not_exposed_in_unrelated_api_responses_or_static_assets()
     ]
     with patch("backend.provider_manager.provider_manager.list_all_accounts", return_value=[]):
         for endpoint in public_endpoints:
-            res = unauth_client.get(endpoint)
-            assert res.status_code == 200, f"Public endpoint {endpoint} failed to return 200"
+            res = auth_client.get(endpoint)
+            assert res.status_code == 200, f"Endpoint {endpoint} failed to return 200"
             assert token not in res.text, f"Token disclosed in response from {endpoint}!"
             assert "AURA_SESSION_TOKEN" not in res.text
 
@@ -413,31 +416,37 @@ def test_session_token_not_exposed_in_unrelated_api_responses_or_static_assets()
 
 # --- 9. OAuth Special Endpoints & Public Assets ---
 
-def test_oauth_endpoints_remain_accessible_without_bearer_token():
+def test_oauth_endpoints_authentication_and_callback_behavior():
     """
-    Verifies that external OAuth redirect callbacks and URL generation endpoints
-    remain accessible to top-level browser identity flows without requiring Bearer headers.
+    Verifies that:
+    1. OAuth URL initiation routes require local authentication (Phase 6).
+    2. OAuth redirect callbacks remain accessible without Bearer token (protected by state).
     """
-    # MSAL OAuth URL
-    msal_url_res = unauth_client.get("/api/auth/msal/url")
-    assert msal_url_res.status_code in [200, 400]
+    # MSAL OAuth URL requires auth
+    unauth_msal = unauth_client.get("/api/auth/msal/url")
+    assert unauth_msal.status_code == 401
 
-    # Google OAuth URL
-    google_url_res = unauth_client.get("/api/auth/google/url")
-    assert google_url_res.status_code in [200, 400]
+    auth_msal = auth_client.get("/api/auth/msal/url")
+    assert auth_msal.status_code in [200, 400]
 
-    # MSAL OAuth Callback (browser redirect)
+    # Google OAuth URL requires auth
+    unauth_google = unauth_client.get("/api/auth/google/url")
+    assert unauth_google.status_code == 401
+
+    auth_google = auth_client.get("/api/auth/google/url")
+    assert auth_google.status_code in [200, 400]
+
+    # MSAL OAuth Callback (browser redirect - public, protected by state)
     msal_cb_res = unauth_client.get("/api/auth/callback?error=access_denied", follow_redirects=False)
     assert msal_cb_res.status_code == 307
 
-    # Google OAuth Callback (browser redirect)
+    # Google OAuth Callback (browser redirect - public, protected by state)
     google_cb_res = unauth_client.get("/api/auth/google/callback?error=access_denied", follow_redirects=False)
     assert google_cb_res.status_code == 307
 
 
 def test_public_read_only_and_static_routes_remain_accessible():
-    """Verifies that public system status, safety policy, and static assets remain accessible."""
-    assert unauth_client.get("/api/status").status_code == 200
+    """Verifies that public safety policy and static assets remain accessible without auth."""
     assert unauth_client.get("/api/safety-policy").status_code == 200
     assert unauth_client.get("/static/icon-64.png").status_code == 200
 

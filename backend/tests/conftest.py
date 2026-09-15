@@ -1,6 +1,28 @@
 import os
 import pytest
 from unittest.mock import patch
+import starlette.testclient
+
+# In Phase 6, production ASGI middleware strictly enforces loopback client IP (127.0.0.1/::1)
+# and TrustedHostMiddleware strictly enforces loopback hostnames (localhost/127.0.0.1).
+# Patch TestClient default constructor parameters for tests so they connect via canonical loopback
+# while allowing tests to explicitly pass arbitrary base_url or client for adversarial verification.
+_orig_testclient_init = starlette.testclient.TestClient.__init__
+
+def _patched_testclient_init(
+    self,
+    app,
+    base_url: str = "https://localhost:8000",
+    client: tuple = ("127.0.0.1", 50000),
+    **kwargs
+):
+    if base_url == "http://testserver":
+        base_url = "https://localhost:8000"
+    if client == ("testclient", 50000):
+        client = ("127.0.0.1", 50000)
+    _orig_testclient_init(self, app, base_url=base_url, client=client, **kwargs)
+
+starlette.testclient.TestClient.__init__ = _patched_testclient_init
 
 @pytest.fixture(autouse=True)
 def isolate_test_environment(monkeypatch):

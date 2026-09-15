@@ -47,4 +47,4 @@ echo "📍 Canonical HTTPS Origin: https://localhost:8000"
 echo "📍 Taskpane URL: https://localhost:8000/add-in/taskpane.html"
 echo "=========================================================="
 
-PYTHONPATH=. .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 $SSL_FLAGS --reload
+PYTHONPATH=. .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 $SSL_FLAGS --no-proxy-headers --reload

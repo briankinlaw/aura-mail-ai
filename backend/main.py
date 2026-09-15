@@ -93,13 +93,19 @@ app = FastAPI(
     title="Aura Mail AI - Cloud Email Assistant & Resume Co-Pilot",
     description="Multi-account Cloud Email Assistant for New Outlook for Mac, Gmail, and IMAP",
     version="1.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
 )
 
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from backend.auth import require_local_auth, get_local_session_token, ALLOWED_ORIGINS
+from backend.auth import require_local_auth, get_local_session_token, ALLOWED_ORIGINS, LoopbackPeerMiddleware
+from backend.oauth_state import OAUTH_STATE_MANAGER
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", "*.localhost", "testserver"]
+ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+
+app.add_middleware(LoopbackPeerMiddleware)
 
 app.add_middleware(
     TrustedHostMiddleware,
@@ -172,7 +178,7 @@ load_cached_emails()
 
 # --- System & Multi-Account Endpoints ---
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(require_local_auth)])
 def get_system_status():
     settings = load_settings()
     accounts = provider_manager.list_all_accounts()
@@ -244,7 +250,7 @@ def get_safety_policy_endpoint():
         ]
     }
 
-@app.get("/api/accounts")
+@app.get("/api/accounts", dependencies=[Depends(require_local_auth)])
 def list_accounts_endpoint():
     """Returns all configured accounts with validated connection statuses and capabilities."""
     accounts = provider_manager.list_all_accounts()
@@ -262,7 +268,7 @@ def disconnect_account(account_id: str):
     res = provider.logout(account_id)
     return res.model_dump()
 
-@app.get("/api/settings")
+@app.get("/api/settings", dependencies=[Depends(require_local_auth)])
 def get_settings():
     settings = load_settings()
     raw_key = get_secret("gemini_api_key", "GEMINI_API_KEY") or ""
@@ -318,13 +324,19 @@ def update_settings_endpoint(payload: Dict[str, Any]):
 # --- Cloud OAuth Authentication Endpoints ---
 
 # Microsoft Graph (MSAL) Endpoints
-@app.get("/api/auth/msal/url")
-def get_msal_auth_url(redirect_uri: Optional[str] = None, account_id: Optional[str] = None, login_hint: Optional[str] = None):
+@app.get("/api/auth/msal/url", dependencies=[Depends(require_local_auth)])
+def get_msal_auth_url(account_id: Optional[str] = None, login_hint: Optional[str] = None):
     hint = login_hint or account_id or None
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/callback"
+    state_token = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=canonical_redirect,
+        account_id=hint
+    )
     url = provider_manager.graph_provider.get_auth_url(
-        redirect_uri=redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/callback",
+        redirect_uri=canonical_redirect,
         login_hint=hint,
-        state=hint
+        state=state_token
     )
     if not url:
         raise HTTPException(
@@ -365,23 +377,39 @@ def poll_msal_device_code(payload: Optional[Dict[str, Any]] = None):
 
 @app.get("/api/auth/callback")
 def auth_callback(code: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None, state: Optional[str] = None):
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/callback"
+    state_record = OAUTH_STATE_MANAGER.validate_and_consume(
+        state_token=state,
+        expected_provider="MICROSOFT_GRAPH",
+        expected_redirect_uri=canonical_redirect
+    )
+    if not state_record:
+        logger.warning("Microsoft OAuth callback rejected: Invalid, missing, expired, or replayed state.")
+        return RedirectResponse("/?auth_error=invalid_state")
+
     if error:
-        logger.error(f"OAuth callback error: {error} - {error_description}")
-        return RedirectResponse(f"/?auth_error={error}")
+        logger.warning(f"Microsoft OAuth provider returned error during callback.")
+        return RedirectResponse("/?auth_error=provider_error")
+
     if not code:
-        return RedirectResponse("/?auth_error=no_code")
+        logger.warning("Microsoft OAuth callback missing authorization code.")
+        return RedirectResponse("/?auth_error=missing_code")
+
     try:
-        account_id = state if state and "@" in state else None
-        res = provider_manager.graph_provider.exchange_code_for_token(code, account_id=account_id)
+        res = provider_manager.graph_provider.exchange_code_for_token(
+            code=code,
+            redirect_uri=state_record.redirect_uri,
+            account_id=state_record.account_id
+        )
         if res.success:
             CACHED_EMAILS.clear()
             sync_and_triage_inbox()
             return RedirectResponse("/?auth=success&provider=microsoft")
         else:
-            return RedirectResponse(f"/?auth_error={res.error_code}")
+            return RedirectResponse("/?auth_error=exchange_failed")
     except Exception as ex:
         logger.error(f"Auth token exchange failed: {ex}")
-        return RedirectResponse(f"/?auth_error={str(ex)}")
+        return RedirectResponse("/?auth_error=exchange_failed")
 
 @app.post("/api/auth/submit-code", dependencies=[Depends(require_local_auth)])
 def submit_auth_code(payload: Dict[str, str]):
@@ -399,7 +427,12 @@ def submit_auth_code(payload: Dict[str, str]):
         if "code" in qs:
             code = qs["code"][0]
 
-    res = provider_manager.graph_provider.exchange_code_for_token(code, account_id=account_id)
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/callback"
+    res = provider_manager.graph_provider.exchange_code_for_token(
+        code=code,
+        redirect_uri=canonical_redirect,
+        account_id=account_id
+    )
     if res.success:
         CACHED_EMAILS.clear()
         sync_and_triage_inbox()
@@ -407,10 +440,17 @@ def submit_auth_code(payload: Dict[str, str]):
     raise HTTPException(status_code=400, detail=res.safe_message)
 
 # Google OAuth (Gmail API) Endpoints
-@app.get("/api/auth/google/url")
-def get_google_auth_url(redirect_uri: Optional[str] = None):
+@app.get("/api/auth/google/url", dependencies=[Depends(require_local_auth)])
+def get_google_auth_url():
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    state_token = OAUTH_STATE_MANAGER.create_state(
+        provider="GMAIL",
+        redirect_uri=canonical_redirect,
+        account_id=None
+    )
     url = provider_manager.gmail_provider.get_auth_url(
-        redirect_uri=redirect_uri or f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+        redirect_uri=canonical_redirect,
+        state=state_token
     )
     if not url:
         raise HTTPException(
@@ -421,28 +461,44 @@ def get_google_auth_url(redirect_uri: Optional[str] = None):
 
 @app.get("/api/auth/google/callback")
 def google_auth_callback(code: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None, state: Optional[str] = None):
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    state_record = OAUTH_STATE_MANAGER.validate_and_consume(
+        state_token=state,
+        expected_provider="GMAIL",
+        expected_redirect_uri=canonical_redirect
+    )
+    if not state_record:
+        logger.warning("Google OAuth callback rejected: Invalid, missing, expired, or replayed state.")
+        return RedirectResponse("/?auth_error=invalid_state")
+
     if error:
-        logger.error(f"Google OAuth callback error: {error} - {error_description}")
-        return RedirectResponse(f"/?auth_error={error}")
+        logger.warning(f"Google OAuth provider returned error during callback.")
+        return RedirectResponse("/?auth_error=provider_error")
+
     if not code:
-        return RedirectResponse("/?auth_error=no_code")
+        logger.warning("Google OAuth callback missing authorization code.")
+        return RedirectResponse("/?auth_error=missing_code")
+
     try:
-        res = provider_manager.gmail_provider.exchange_code_for_token(code)
+        res = provider_manager.gmail_provider.exchange_code_for_token(
+            code=code,
+            redirect_uri=state_record.redirect_uri,
+            account_id=state_record.account_id
+        )
         if res.success:
             CACHED_EMAILS.clear()
             sync_and_triage_inbox()
             return RedirectResponse("/?auth=success&provider=google")
         else:
-            return RedirectResponse(f"/?auth_error={res.safe_message or res.error_code}")
+            return RedirectResponse("/?auth_error=exchange_failed")
     except Exception as ex:
         logger.error(f"Google Auth token exchange failed: {ex}")
-        return RedirectResponse(f"/?auth_error={str(ex)}")
+        return RedirectResponse("/?auth_error=exchange_failed")
 
 @app.post("/api/auth/google/submit-code", dependencies=[Depends(require_local_auth)])
 def submit_google_auth_code(payload: Dict[str, str]):
     code_raw = payload.get("code", "").strip()
     account_id = payload.get("account_id", "").strip() or None
-    redirect_uri = payload.get("redirect_uri", f"{CANONICAL_ORIGIN}/api/auth/google/callback")
 
     if not code_raw:
         raise HTTPException(status_code=400, detail="Authorization code or URL required.")
@@ -455,7 +511,12 @@ def submit_google_auth_code(payload: Dict[str, str]):
         if "code" in qs:
             code = qs["code"][0]
 
-    res = provider_manager.gmail_provider.exchange_code_for_token(code, redirect_uri=redirect_uri, account_id=account_id)
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    res = provider_manager.gmail_provider.exchange_code_for_token(
+        code=code,
+        redirect_uri=canonical_redirect,
+        account_id=account_id
+    )
     if res.success:
         CACHED_EMAILS.clear()
         sync_and_triage_inbox()
@@ -518,7 +579,7 @@ from backend.canonical_engine import (
     LOCKED_FACTS
 )
 
-@app.get("/api/profile")
+@app.get("/api/profile", dependencies=[Depends(require_local_auth)])
 def get_profile():
     return get_user_profile()
 
@@ -527,8 +588,8 @@ def update_profile(profile: UserProfile):
     update_user_profile(profile)
     return {"status": "SUCCESS", "profile": profile}
 
-@app.get("/api/canonical/resumes")
-@app.get("/api/canonical/catalog")
+@app.get("/api/canonical/resumes", dependencies=[Depends(require_local_auth)])
+@app.get("/api/canonical/catalog", dependencies=[Depends(require_local_auth)])
 def get_canonical_resumes(refresh: bool = False):
     return scan_canonical_system(force_refresh=refresh)
 
@@ -539,7 +600,7 @@ def match_canonical_resume(payload: Dict[str, Any]):
     sender = payload.get("sender", "")
     return find_best_resume_match(job_title=job_title, job_description=job_description, sender=sender)
 
-@app.get("/api/canonical/ledger")
+@app.get("/api/canonical/ledger", dependencies=[Depends(require_local_auth)])
 def get_canonical_ledger():
     return {"status": "SUCCESS", "ledger": get_canonical_ledger_summary()}
 
@@ -761,7 +822,7 @@ def validate_canonical_endpoint(payload: Dict[str, Any]):
     )
     return res.model_dump()
 
-@app.get("/api/resumes")
+@app.get("/api/resumes", dependencies=[Depends(require_local_auth)])
 def list_resumes():
     catalog = scan_canonical_system()
     return {
@@ -798,7 +859,7 @@ class ResolveItemRequest(BaseModel):
     account_id: Optional[str] = None
     item_id: str
 
-@app.get("/api/emails")
+@app.get("/api/emails", dependencies=[Depends(require_local_auth)])
 def list_emails(category: Optional[str] = None):
     results = list(CACHED_EMAILS.values())
     if category:
@@ -1482,31 +1543,31 @@ def trash_single_email(email_id: str):
 
 # --- Analytics & Observability Endpoints ---
 
-@app.get("/api/analytics/kpis")
+@app.get("/api/analytics/kpis", dependencies=[Depends(require_local_auth)])
 def get_analytics_kpis():
     return get_kpis_summary()
 
-@app.get("/api/analytics/funnel")
+@app.get("/api/analytics/funnel", dependencies=[Depends(require_local_auth)])
 def get_analytics_funnel():
     return get_funnel_metrics()
 
-@app.get("/api/analytics/compensation")
+@app.get("/api/analytics/compensation", dependencies=[Depends(require_local_auth)])
 def get_analytics_compensation():
     return get_compensation_benchmarks()
 
-@app.get("/api/analytics/resumes-roi")
+@app.get("/api/analytics/resumes-roi", dependencies=[Depends(require_local_auth)])
 def get_analytics_resumes_roi():
     return get_resume_roi_leaderboard()
 
-@app.get("/api/analytics/events")
+@app.get("/api/analytics/events", dependencies=[Depends(require_local_auth)])
 def get_analytics_events(limit: int = 50):
     return get_recent_audit_events(limit=limit)
 
-@app.get("/api/analytics/export")
+@app.get("/api/analytics/export", dependencies=[Depends(require_local_auth)])
 def get_analytics_export():
     return export_analytics_data()
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[Depends(require_local_auth)])
 def get_dashboard_stats():
     total = len(CACHED_EMAILS)
     noise_count = sum(1 for e in CACHED_EMAILS.values() if e.classification and e.classification.is_noise)
@@ -1527,7 +1588,7 @@ def get_dashboard_stats():
     }
 
 # --- Daemon Endpoints ---
-@app.get("/api/daemon/status")
+@app.get("/api/daemon/status", dependencies=[Depends(require_local_auth)])
 def get_daemon_status():
     from backend.daemon import STATE_FILE, PROCESSED_LOG_FILE
     state = {}
@@ -1818,27 +1879,38 @@ ADDIN_DIR = FRONTEND_DIR / "add-in"
 @app.api_route("/", methods=["GET", "HEAD"])
 def serve_index():
     index_file = FRONTEND_DIR / "index.html"
+    headers = {
+        "Cache-Control": "no-store, max-age=0",
+        "Pragma": "no-cache",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "frame-ancestors 'none';"
+    }
     if index_file.exists():
         content = index_file.read_text(encoding="utf-8")
         token = get_local_session_token()
         injection = f'<script>window.__AURA_SESSION_TOKEN__ = "{token}";</script>'
         content = content.replace("<head>", f"<head>\n    {injection}", 1)
-        return HTMLResponse(content)
-    return JSONResponse({"message": "Aura Mail AI v1.1 API Running."})
+        return HTMLResponse(content, headers=headers)
+    return JSONResponse({"message": "Aura Mail AI v1.1 API Running."}, headers=headers)
 
 @app.get("/add-in/taskpane.html")
 def serve_addin_taskpane():
     taskpane_file = ADDIN_DIR / "taskpane.html"
+    headers = {
+        "Cache-Control": "no-store, max-age=0",
+        "Pragma": "no-cache",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "frame-ancestors 'self' https://outlook.office.com https://outlook.office365.com https://*.office.com https://*.office365.com https://*.live.com;"
+    }
     if taskpane_file.exists():
         content = taskpane_file.read_text(encoding="utf-8")
         token = get_local_session_token()
         injection = f'<script>window.__AURA_SESSION_TOKEN__ = "{token}";</script>'
         content = content.replace("<head>", f"<head>\n    {injection}", 1)
-        headers = {
-            "Content-Security-Policy": "frame-ancestors 'self' https://outlook.office.com https://outlook.office365.com https://*.office.com https://*.office365.com https://*.live.com;"
-        }
         return HTMLResponse(content, headers=headers)
-    return JSONResponse({"error": "Taskpane file not found"}, status_code=404)
+    return JSONResponse({"error": "Taskpane file not found"}, status_code=404, headers=headers)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
@@ -1855,5 +1927,6 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         ssl_certfile=str(cert_file),
-        ssl_keyfile=str(key_file)
+        ssl_keyfile=str(key_file),
+        proxy_headers=False,
     )

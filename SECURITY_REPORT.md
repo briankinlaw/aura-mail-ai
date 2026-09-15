@@ -8,13 +8,14 @@
 
 ## 1. Executive Summary & Security Posture
 
-Aura Mail AI v1.1 implements a hardened, zero-trust architecture designed for executive recruitment workflows, cloud synchronization, and native Microsoft Outlook integration.
+Aura Mail AI implements a multi-layered local-desktop defense-in-depth architecture designed for executive recruitment workflows, cloud synchronization, and native Microsoft Outlook integration. For the complete approved threat model, boundary definitions, and route inventory, see [THREAT_MODEL.md](file:///Users/briankinlaw/aura-mail-ai/THREAT_MODEL.md).
 
 ### Core Security Principles Enforced:
 1. **Zero Secret Persistence on Disk**: All API keys, OAuth refresh tokens, and IMAP credentials are vault-isolated in the **macOS Keychain** (`keyring`).
-2. **Strict Draft-First Policy**: The system is architecturally incapable of autonomously sending outbound emails without explicit human staging and review.
-3. **Dual-Model Risk Sentinel (Second Opinion)**: Inbound opportunities and generated drafts are audited by an independent **Gemini Risk Sentinel** that flags unverified claims, compensation commitments, and external threats.
-4. **Office.js Surface Isolation**: The Native Outlook Add-in is constrained to `ReadWriteItem` permissions and serves taskpane assets via CORS-secured endpoints.
+2. **Strict Draft-First Policy & Native Send**: The system is architecturally incapable of autonomously sending outbound emails without explicit human staging and review. Aura's local API has zero transmission authority.
+3. **Localhost Trust Boundary**: Strict loopback-only peer verification, exact approved Host allowlisting, immutable canonical CORS (`https://localhost:8000`), server-side Origin verification, and purpose-bound, single-use, expiring OAuth state transactions.
+4. **Dual-Model Risk Sentinel (Second Opinion)**: Inbound opportunities and generated drafts are audited by an independent **Gemini Risk Sentinel** that flags unverified claims, compensation commitments, and external threats.
+5. **Office.js Surface Isolation**: The Native Outlook Add-in is constrained to `ReadWriteItem` permissions and serves taskpane assets via CSP frame-ancestors.
 
 ---
 
