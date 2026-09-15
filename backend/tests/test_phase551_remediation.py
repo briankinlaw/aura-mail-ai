@@ -277,7 +277,8 @@ def test_draft_invalidation_lifecycle_multi_claim():
     # Verification of both claims now fails with INVALIDATED
     is_valid1, status1, reason1, _ = verify_provenance_claim(
         c1["claim_instance_id"], c1["rendered_text"], draft_id=did,
-        start_offset=0, end_offset=len(c1["rendered_text"]), draft_text=c1["rendered_text"]
+        start_offset=0, end_offset=len(c1["rendered_text"]), draft_text=c1["rendered_text"],
+        block_id="block_0"
     )
     assert is_valid1 is False
     assert status1 == ClaimStatus.INVALIDATED
@@ -285,7 +286,8 @@ def test_draft_invalidation_lifecycle_multi_claim():
 
     is_valid2, status2, reason2, _ = verify_provenance_claim(
         c2["claim_instance_id"], c2["rendered_text"], draft_id=did,
-        start_offset=0, end_offset=len(c2["rendered_text"]), draft_text=c2["rendered_text"]
+        start_offset=0, end_offset=len(c2["rendered_text"]), draft_text=c2["rendered_text"],
+        block_id="block_1"
     )
     assert is_valid2 is False
     assert status2 == ClaimStatus.INVALIDATED
@@ -323,7 +325,8 @@ def test_provenance_record_verifies_active_digests():
 
         is_valid, status, reason, _ = verify_provenance_claim(
             rec.claim_instance_id, rec.exact_rendered_text, draft_id=did,
-            start_offset=0, end_offset=len(rec.exact_rendered_text), draft_text=rec.exact_rendered_text
+            start_offset=0, end_offset=len(rec.exact_rendered_text), draft_text=rec.exact_rendered_text,
+            block_id="block_0"
         )
         assert is_valid is False
         assert status == ClaimStatus.STALE_PROVENANCE
@@ -344,7 +347,8 @@ def test_provenance_record_tampered_rendered_text_hash_fails():
 
         is_valid, status, reason, _ = verify_provenance_claim(
             rec.claim_instance_id, "I made up a number.", draft_id=did,
-            start_offset=0, end_offset=len("I made up a number."), draft_text="I made up a number."
+            start_offset=0, end_offset=len("I made up a number."), draft_text="I made up a number.",
+            block_id="block_0"
         )
         assert is_valid is False
         assert status in [ClaimStatus.STALE_PROVENANCE, ClaimStatus.UNVERIFIED]

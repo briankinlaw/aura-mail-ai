@@ -85,6 +85,11 @@ class EmailMessage(BaseModel):
     draft_text_hash: Optional[str] = None
     selected_resume_file: Optional[str] = None
     status: str = "PENDING"  # PENDING, REPLIED, TRASHED, ARCHIVED, SKIPPED
+    risk_result: Optional[Dict[str, Any]] = None
+    risk_draft_id: Optional[str] = None
+    risk_draft_text_hash: Optional[str] = None
+    risk_is_current: bool = False
+    invalidation_issued: bool = False
 
 class UserProfile(BaseModel):
     full_name: str = "Brian K. Kinlaw"
@@ -148,6 +153,8 @@ class SaveDraftRequest(BaseModel):
     attach_resume: bool = True
     resume_filename: Optional[str] = None
     to_email: Optional[str] = None
+    draft_id: Optional[str] = None
+    claim_bindings: Optional[List[Dict[str, Any]]] = None
 
 class SendReplyRequest(BaseModel):
     reply_body: str

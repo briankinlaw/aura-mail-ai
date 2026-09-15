@@ -981,6 +981,23 @@ class ClaimBlockBinding(BaseModel):
     end_offset: int
     submitted_block_text: str
 
+    def __init__(self, **data: Any):
+        super().__init__(**data)
+        if not isinstance(self.claim_instance_id, str) or not self.claim_instance_id.strip():
+            raise ValueError("claim_instance_id must be a non-empty string")
+        if not isinstance(self.draft_id, str) or not self.draft_id.strip():
+            raise ValueError("draft_id must be a non-empty string")
+        if not isinstance(self.block_id, str) or not self.block_id.strip():
+            raise ValueError("block_id must be a non-empty string")
+        if not isinstance(self.submitted_block_text, str) or not self.submitted_block_text.strip():
+            raise ValueError("submitted_block_text must be a non-empty string")
+        if type(self.start_offset) is not int or isinstance(self.start_offset, bool):
+            raise ValueError("start_offset must be a non-boolean integer")
+        if type(self.end_offset) is not int or isinstance(self.end_offset, bool):
+            raise ValueError("end_offset must be a non-boolean integer")
+        if self.start_offset < 0 or self.end_offset <= self.start_offset:
+            raise ValueError(f"Invalid offset range [{self.start_offset}:{self.end_offset}]")
+
 
 class ProvenanceRecord(BaseModel):
     claim_instance_id: str
@@ -1260,45 +1277,87 @@ def validate_claim_manifest(
     draft_id: Optional[str] = None
 ) -> Tuple[bool, GroundingStatus, str, List[ClaimBlockBinding]]:
     """
-    Strict pre-validation of the full claim manifest before evaluating individual claims:
-    - Checks for duplicate claim_instance_id
-    - Checks for duplicate block_id
-    - Checks integer offset bounds (0 <= start < end <= len(draft_text))
-    - Checks for overlapping or nested ranges
-    - Checks draft slice matching: draft_text[start:end] == submitted_block_text
-    - Validates draft_id presence and matching
+    Authoritative, fail-closed validation of the full claim manifest.
+    Enforces that:
+    1. Every binding contains all six canonical fields explicitly:
+       claim_instance_id, draft_id, block_id, start_offset, end_offset, submitted_block_text
+    2. No fallback aliases (claim_id, start, end, text, rendered_text) or synthesized defaults.
+    3. Request-level draft_id is mandatory, non-empty, and matches every binding draft_id.
+    4. Offsets are strictly non-boolean integers with 0 <= start_offset < end_offset <= len(draft_text).
+    5. Exact draft text slice matches submitted_block_text.
+    6. claim_instance_id and block_id are unique across the manifest.
+    7. No overlapping or nested ranges.
     """
+    if draft_text is None or not isinstance(draft_text, str):
+        return False, GroundingStatus.VALIDATION_FAILED, "draft_text must be a valid string", []
+
     if not claim_bindings:
         return True, GroundingStatus.NO_CAREER_CLAIMS_DETECTED, "No claim bindings in manifest", []
+
+    if not draft_id or not isinstance(draft_id, str) or not draft_id.strip():
+        return False, GroundingStatus.VALIDATION_FAILED, "Request draft_id is mandatory and must be a non-empty string", []
+
+    request_draft_id = draft_id.strip()
+    text_len = len(draft_text)
 
     parsed_bindings: List[ClaimBlockBinding] = []
     seen_claim_ids = set()
     seen_block_ids = set()
     ranges: List[Tuple[int, int, str]] = []
 
-    text_len = len(draft_text)
-
     for i, b in enumerate(claim_bindings):
         if isinstance(b, ClaimBlockBinding):
-            b_dict = b.model_dump()
+            cid = b.claim_instance_id
+            did = b.draft_id
+            bid = b.block_id
+            start = b.start_offset
+            end = b.end_offset
+            block_text = b.submitted_block_text
         elif isinstance(b, dict):
-            b_dict = b
+            # Check mandatory canonical keys explicitly
+            canonical_keys = [
+                "claim_instance_id", "draft_id", "block_id",
+                "start_offset", "end_offset", "submitted_block_text"
+            ]
+            for k in canonical_keys:
+                if k not in b:
+                    return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} missing mandatory canonical field '{k}'", []
+
+            cid = b["claim_instance_id"]
+            did = b["draft_id"]
+            bid = b["block_id"]
+            start = b["start_offset"]
+            end = b["end_offset"]
+            block_text = b["submitted_block_text"]
         else:
-            return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} is not a valid object or dict", []
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} is not a valid ClaimBlockBinding or dict", []
 
-        cid = b_dict.get("claim_instance_id") or b_dict.get("claim_id")
-        bid = b_dict.get("block_id") or f"block_{i}"
-        did = b_dict.get("draft_id") or draft_id
-        start = b_dict.get("start_offset") if "start_offset" in b_dict else b_dict.get("start")
-        end = b_dict.get("end_offset") if "end_offset" in b_dict else b_dict.get("end")
-        block_text = b_dict.get("submitted_block_text") or b_dict.get("text") or b_dict.get("rendered_text") or ""
+        # Validate string fields: must be str, non-empty, and not whitespace-only
+        if not isinstance(cid, str) or not cid.strip():
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} has invalid claim_instance_id", []
+        if not isinstance(did, str) or not did.strip():
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' has invalid draft_id", []
+        if not isinstance(bid, str) or not bid.strip():
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' has invalid block_id", []
+        if not isinstance(block_text, str) or not block_text.strip():
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' has invalid submitted_block_text", []
 
-        if not cid or not isinstance(cid, str):
-            return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} missing claim_instance_id", []
-        if not did or not isinstance(did, str):
-            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' missing draft_id", []
-        if draft_id and did != draft_id:
-            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' draft_id '{did}' does not match request draft_id '{draft_id}'", []
+        # Validate draft_id consistency
+        if did.strip() != request_draft_id:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' draft_id '{did}' does not match request draft_id '{request_draft_id}'", []
+
+        # Validate offset types: strict non-boolean int
+        if type(start) is not int or isinstance(start, bool) or type(end) is not int or isinstance(end, bool):
+            return False, GroundingStatus.VALIDATION_FAILED, f"Offsets for claim '{cid}' must be non-boolean integers", []
+
+        # Validate bounds
+        if start < 0 or end > text_len or start >= end:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Offset range [{start}:{end}] for claim '{cid}' is invalid for draft length {text_len}", []
+
+        # Exact draft slice comparison
+        draft_slice = draft_text[start:end]
+        if draft_slice != block_text:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Draft text slice at [{start}:{end}] ('{draft_slice}') does not match submitted block text ('{block_text}')", []
 
         # Duplicate ID checks
         if cid in seen_claim_ids:
@@ -1309,23 +1368,11 @@ def validate_claim_manifest(
             return False, GroundingStatus.VALIDATION_FAILED, f"Duplicate block_id '{bid}' in manifest", []
         seen_block_ids.add(bid)
 
-        # Offset validation
-        if not isinstance(start, int) or not isinstance(end, int) or isinstance(start, bool) or isinstance(end, bool):
-            return False, GroundingStatus.VALIDATION_FAILED, f"Offsets for claim '{cid}' must be integers", []
-
-        if start < 0 or end > text_len or start >= end:
-            return False, GroundingStatus.VALIDATION_FAILED, f"Offset range [{start}:{end}] for claim '{cid}' is invalid for draft length {text_len}", []
-
-        # Exact draft slice comparison
-        draft_slice = draft_text[start:end]
-        if draft_slice != block_text:
-            return False, GroundingStatus.VALIDATION_FAILED, f"Draft text slice at [{start}:{end}] ('{draft_slice}') does not match submitted block text ('{block_text}')", []
-
         ranges.append((start, end, cid))
         parsed_bindings.append(ClaimBlockBinding(
-            claim_instance_id=cid,
-            draft_id=did,
-            block_id=bid,
+            claim_instance_id=cid.strip(),
+            draft_id=did.strip(),
+            block_id=bid.strip(),
             start_offset=start,
             end_offset=end,
             submitted_block_text=block_text
@@ -1479,41 +1526,66 @@ def verify_provenance_claim_binding(
 
 
 def verify_provenance_claim(
-    claim_instance_id: str,
-    submitted_text: str,
+    claim_instance_id: Optional[str] = None,
+    submitted_text: Optional[str] = None,
     draft_id: Optional[str] = None,
     draft_text: Optional[str] = None,
     start_offset: Optional[int] = None,
     end_offset: Optional[int] = None,
-    block_id: Optional[str] = None
+    block_id: Optional[str] = None,
+    *args,
+    **kwargs
 ) -> Tuple[bool, ClaimStatus, str, Optional[SupportedClaim]]:
     """
-    Authoritative verification wrapper for a provenance claim.
-    Strictly requires complete block binding context (draft_text, draft_id, start_offset, end_offset).
-    Fails closed immediately if any required binding context is absent (standalone verification disabled).
+    Authoritative verification compatibility wrapper for a provenance claim.
+    Strictly requires all seven arguments explicitly:
+    claim_instance_id, draft_id, block_id, draft_text, start_offset, end_offset, submitted_text.
+    Delegates strictly to validate_claim_manifest and verify_provenance_claim_binding.
+    Fails closed (VALIDATION_FAILED) if any parameter is missing, None, boolean, or malformed.
     """
+    if args or kwargs:
+        return False, ClaimStatus.VALIDATION_FAILED, "Unexpected extra arguments passed to verify_provenance_claim", None
+
     if not claim_instance_id or not isinstance(claim_instance_id, str) or not claim_instance_id.strip():
-        return False, ClaimStatus.VALIDATION_FAILED, "Missing or malformed claim_instance_id", None
+        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: Missing or malformed claim_instance_id (standalone verification disabled)", None
 
     if not draft_id or not isinstance(draft_id, str) or not draft_id.strip():
-        return False, ClaimStatus.VALIDATION_FAILED, "Missing required draft_id for provenance claim verification", None
+        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: Missing or malformed draft_id (standalone verification disabled)", None
 
-    # Standalone verification without complete draft text and explicit offsets is strictly disabled
-    if draft_text is None or start_offset is None or end_offset is None:
-        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: draft_text, start_offset, and end_offset are mandatory for authoritative claim verification (standalone verification disabled)", None
+    if not block_id or not isinstance(block_id, str) or not block_id.strip():
+        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: Missing or malformed block_id (standalone verification disabled)", None
 
-    if not isinstance(start_offset, int) or not isinstance(end_offset, int) or isinstance(start_offset, bool) or isinstance(end_offset, bool):
-        return False, ClaimStatus.VALIDATION_FAILED, "Offsets must be integers", None
+    if draft_text is None or not isinstance(draft_text, str):
+        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: Missing or malformed draft_text (standalone verification disabled)", None
 
-    binding = ClaimBlockBinding(
-        claim_instance_id=claim_instance_id.strip(),
-        draft_id=draft_id.strip(),
-        block_id=block_id or "block_0",
-        start_offset=start_offset,
-        end_offset=end_offset,
-        submitted_block_text=submitted_text
+    if submitted_text is None or not isinstance(submitted_text, str) or not submitted_text.strip():
+        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: Missing or malformed submitted_text (standalone verification disabled)", None
+
+    if (
+        start_offset is None or end_offset is None or
+        type(start_offset) is not int or isinstance(start_offset, bool) or
+        type(end_offset) is not int or isinstance(end_offset, bool)
+    ):
+        return False, ClaimStatus.VALIDATION_FAILED, "Missing required binding context: start_offset and end_offset must be non-boolean integers (standalone verification disabled)", None
+
+    binding = {
+        "claim_instance_id": claim_instance_id.strip(),
+        "draft_id": draft_id.strip(),
+        "block_id": block_id.strip(),
+        "start_offset": start_offset,
+        "end_offset": end_offset,
+        "submitted_block_text": submitted_text
+    }
+
+    is_manifest_valid, m_status, m_reason, parsed_bindings = validate_claim_manifest(
+        draft_text=draft_text,
+        claim_bindings=[binding],
+        draft_id=draft_id.strip()
     )
-    return verify_provenance_claim_binding(binding, draft_text)
+    if not is_manifest_valid or not parsed_bindings:
+        return False, ClaimStatus.VALIDATION_FAILED, f"Manifest validation failed: {m_reason}", None
+
+    return verify_provenance_claim_binding(parsed_bindings[0], draft_text)
 
 
 def get_available_templates(fact_id: Optional[str] = None) -> List[Dict[str, Any]]:

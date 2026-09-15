@@ -89,6 +89,8 @@ const elements = {
   btnRegenerateDraft: document.getElementById('btn-regenerate-draft'),
   btnSaveDraft: document.getElementById('btn-save-draft'),
   btnCopyDraft: document.getElementById('btn-copy-draft'),
+  btnRiskCheck: document.getElementById('btn-risk-check'),
+  webCockpitRiskBadge: document.getElementById('web-cockpit-risk-badge'),
   btnBatchCleanNoise: document.getElementById('btn-batch-clean-noise'),
   btnOpenAccounts: document.getElementById('btn-open-accounts'),
   btnAddAccountModal: document.getElementById('btn-add-account-modal'),
@@ -662,6 +664,7 @@ function selectRecruiterEmail(emailId) {
   // Draft Reply & Structured Grounding State
   elements.replyBodyText.value = emailMsg.draft_reply || '';
   updateGroundingBadge(emailMsg);
+  updateRiskBadge(emailMsg);
 }
 
 function updateGroundingBadge(emailMsg) {
@@ -693,6 +696,38 @@ function updateGroundingBadge(emailMsg) {
     badge.style.background = 'rgba(245, 158, 11, 0.15)';
     badge.style.color = '#f59e0b';
     badge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+  }
+}
+
+function updateRiskBadge(emailMsg) {
+  const badge = elements.webCockpitRiskBadge || document.getElementById('web-cockpit-risk-badge');
+  if (!badge) return;
+  if (!emailMsg || !emailMsg.draft_reply || !emailMsg.risk_is_current || !emailMsg.risk_result) {
+    badge.style.display = 'none';
+    badge.textContent = '';
+    return;
+  }
+  const risk = emailMsg.risk_result;
+  const sev = risk.severity || 'SAFE';
+  badge.style.display = 'inline-block';
+  if (sev === 'SAFE') {
+    badge.textContent = '🛡️ Risk: Safe';
+    badge.title = risk.second_opinion_summary || 'No risk signals detected.';
+    badge.style.background = 'rgba(16, 185, 129, 0.15)';
+    badge.style.color = '#10b981';
+    badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+  } else if (sev === 'CAUTION') {
+    badge.textContent = '⚠️ Risk: Caution';
+    badge.title = risk.second_opinion_summary || 'Review caution advisory.';
+    badge.style.background = 'rgba(245, 158, 11, 0.15)';
+    badge.style.color = '#f59e0b';
+    badge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+  } else {
+    badge.textContent = '🛑 Risk: High Risk';
+    badge.title = risk.second_opinion_summary || 'High risk signals detected.';
+    badge.style.background = 'rgba(239, 68, 68, 0.15)';
+    badge.style.color = '#ef4444';
+    badge.style.borderColor = 'rgba(239, 68, 68, 0.4)';
   }
 }
 
@@ -1100,12 +1135,31 @@ function setupEventListeners() {
       const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
       if (emailMsg) {
         emailMsg.draft_reply = elements.replyBodyText.value;
+        const hadDraftAuthority = !!emailMsg.draft_id || emailMsg.is_grounded;
+        const priorDraftId = emailMsg.draft_id;
+
+        // Immediately clear browser displayed authority (fail closed)
         emailMsg.is_grounded = false;
         emailMsg.grounding_status = 'UNVERIFIED';
         emailMsg.draft_id = null;
         emailMsg.claim_bindings = [];
         emailMsg.draft_text_hash = null;
+        emailMsg.risk_result = null;
+        emailMsg.risk_draft_id = null;
+        emailMsg.risk_draft_text_hash = null;
+        emailMsg.risk_is_current = false;
         updateGroundingBadge(emailMsg);
+        updateRiskBadge(emailMsg);
+
+        // Trigger persistent server invalidation once per draft lifecycle on first edit
+        if (hadDraftAuthority && priorDraftId && !emailMsg.invalidation_issued) {
+          emailMsg.invalidation_issued = true;
+          fetch(`/api/emails/${encodeURIComponent(emailMsg.id)}/invalidate-draft`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ draft_id: priorDraftId })
+          }).catch(err => console.error('Failed to issue draft invalidation', err));
+        }
       }
     });
   }
@@ -1133,8 +1187,14 @@ function setupEventListeners() {
         emailMsg.claim_bindings = data.claim_bindings || [];
         emailMsg.grounding_status = data.grounding_status;
         emailMsg.is_grounded = data.is_grounded || false;
-        emailMsg.draft_text_hash = null;
+        emailMsg.draft_text_hash = data.draft_text_hash || null;
+        emailMsg.risk_result = null;
+        emailMsg.risk_draft_id = null;
+        emailMsg.risk_draft_text_hash = null;
+        emailMsg.risk_is_current = false;
+        emailMsg.invalidation_issued = false;
         updateGroundingBadge(emailMsg);
+        updateRiskBadge(emailMsg);
       }
 
       if (data.is_grounded) {
@@ -1149,6 +1209,54 @@ function setupEventListeners() {
       showToast('Generation failed: ' + err.message, 'error');
     }
   });
+
+  // Risk Check Button
+  if (elements.btnRiskCheck) {
+    elements.btnRiskCheck.addEventListener('click', async () => {
+      if (!APP_STATE.selectedEmailId) return;
+      const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
+      const replyBody = elements.replyBodyText.value;
+      showToast('Running Gemini Risk Sentinel audit on current draft...', 'info');
+      elements.btnRiskCheck.disabled = true;
+
+      try {
+        const payload = {
+          draft_id: emailMsg ? emailMsg.draft_id : null,
+          draft_text: replyBody,
+          claim_bindings: emailMsg ? emailMsg.claim_bindings : []
+        };
+        const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/risk-check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (emailMsg && data) {
+          if (data.status === 'SUCCESS' && data.risk_is_current) {
+            emailMsg.risk_result = data.risk;
+            emailMsg.risk_draft_id = data.draft_id;
+            emailMsg.risk_draft_text_hash = data.draft_text_hash;
+            emailMsg.risk_is_current = true;
+            emailMsg.is_grounded = data.is_grounded;
+            emailMsg.grounding_status = data.grounding_status;
+            showToast(`Risk check: ${data.risk?.severity || 'Complete'} (${data.risk?.recommended_action || 'PROCEED'})`, 'success');
+          } else {
+            emailMsg.is_grounded = false;
+            emailMsg.grounding_status = data.grounding_status || 'UNVERIFIED';
+            emailMsg.risk_is_current = false;
+            emailMsg.risk_result = data.risk || null;
+            showToast(`Risk check: ${data.validation_summary || 'Validation Required'}`, 'warning');
+          }
+          updateGroundingBadge(emailMsg);
+          updateRiskBadge(emailMsg);
+        }
+      } catch (err) {
+        showToast('Risk check failed: ' + err.message, 'error');
+      } finally {
+        elements.btnRiskCheck.disabled = false;
+      }
+    });
+  }
 
   // Stage in Cloud Drafts
   if (elements.btnSaveDraft) {

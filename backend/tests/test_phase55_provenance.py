@@ -200,7 +200,8 @@ def test_phase55_deleted_provenance_store_fails_closed(tmp_path):
     empty_store = ProvenanceStore(storage_path=tmp_path / "empty_prov.json")
     is_valid, status, reason, supp = verify_provenance_claim(
         "claim_inst_nonexistent", "Some claim", draft_id="draft_test",
-        start_offset=0, end_offset=len("Some claim"), draft_text="Some claim"
+        start_offset=0, end_offset=len("Some claim"), draft_text="Some claim",
+        block_id="block_0"
     )
     assert is_valid is False
     assert status == ClaimStatus.UNVERIFIED
