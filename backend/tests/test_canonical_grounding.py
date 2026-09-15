@@ -843,3 +843,212 @@ def test_mutation_family_grammar(grammar_template):
     assert res.is_grounded is False, f"Grammar mutation bypassed career detection: {text}"
     assert res.status != GroundingStatus.NO_CAREER_CLAIMS
     assert res.requires_human_review is True
+
+
+# ===========================================================================
+# Phase 5.4 Remediation Test Suite (CCS v2.1 — Phase 5.4)
+# ===========================================================================
+
+@pytest.mark.parametrize("noun_modifier_claim", [
+    # Exact reproduced review cases
+    "At Google, I influenced $8M in Globex revenue.",
+    "At CDW, I influenced $4M in Globex annual revenue.",
+    "At Promevo, I achieved a 23% Globex POC-to-production conversion rate.",
+    # Grammatical variants
+    "At Google, I influenced $8M in annual Globex revenue.",
+    "While at CDW, I drove $4M of Globex pipeline.",
+    "At Promevo, I achieved Globex's 23% POC-to-production conversion rate.",
+    "During my time at Google, I influenced an $8M Globex revenue outcome.",
+    "At Google, I influenced $8M in revenue for Globex.",
+    "At Google, I influenced Globex revenue totaling $8M.",
+    # Multiword org mutation
+    "While at Promevo, I contributed to $2M+ in Stark Industries pipeline.",
+    # Reordered metric with modifier
+    "At Promevo, I saw 20% shorter Contoso sales cycles."
+])
+def test_phase54_organization_noun_modifiers_fail_closed(noun_modifier_claim):
+    """Section 7.1: Organization noun modifiers bound to metrics must fail closed when conflicting."""
+    res = validate_canonical_grounding(noun_modifier_claim)
+    assert res.is_grounded is False, f"Organization noun modifier was improperly grounded: {noun_modifier_claim}"
+    assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+    assert res.requires_human_review is True
+
+
+@pytest.mark.parametrize("temporal_signal_claim", [
+    # Exact reproduced review cases
+    "I worked at Google beginning in 2018 and ending in 2024.",
+    "I worked at Google starting in 2018.",
+    "These days, I work at Pythian.",
+    # Temporal & Status variants
+    "I worked at Google since 2018.",
+    "I worked at Google until 2024.",
+    "I worked at Google through 2024.",
+    "I worked at Google from 2018 onward.",
+    "Currently, I am employed at Pythian.",
+    "I work at Pythian now.",
+    "I still work at Pythian.",
+    "I continue to work at Pythian.",
+    "I formerly advised MavenCode."
+])
+def test_phase54_temporal_and_status_consumption(temporal_signal_claim):
+    """Section 7.2: Unparsed or contradictory temporal/status signals must fail closed."""
+    res = validate_canonical_grounding(temporal_signal_claim)
+    assert res.is_grounded is False, f"Temporal/status violation was improperly grounded: {temporal_signal_claim}"
+    assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+    assert res.requires_human_review is True
+
+
+@pytest.mark.parametrize("lookalike_employer_claim", [
+    # Exact reproduced review case
+    "I worked at Googleplex from 2019 to 2021.",
+    # Substring / compound lookalikes
+    "I worked at Google Cloudworks from 2019 to 2021.",
+    "I worked at NewGoogle from 2019 to 2021.",
+    "I worked at IBMish from 2010 to 2012.",
+    "I worked at MavenCode Labs.",
+    "I worked at CDW Global from 2023 to 2024.",
+    "I worked at Promevo Technologies in 2026.",
+    "I worked at Pythian Solutions from 2021 to 2023.",
+    "I worked at DXC Labs from 2015 to 2019."
+])
+def test_phase54_exact_employer_aliases_reject_substring_lookalikes(lookalike_employer_claim):
+    """Section 7.3: Substring employer lookalikes must fail closed (no substring containment)."""
+    res = validate_canonical_grounding(lookalike_employer_claim)
+    assert res.is_grounded is False, f"Substring lookalike employer was falsely grounded: {lookalike_employer_claim}"
+    assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+    assert res.requires_human_review is True
+
+
+def test_phase54_exact_employer_aliases_allow_registered_aliases():
+    """Section 7.3: Explicitly registered normalized aliases pass exact equality matching."""
+    valid_alias_cases = [
+        ("I worked at Google from 2019 to 2021.", "FACT_EMPLOYMENT_GOOGLE"),
+        ("I worked at Google Cloud from 2019 to 2021.", "FACT_EMPLOYMENT_GOOGLE"),
+        ("I worked at Alphabet from 2019 to 2021.", "FACT_EMPLOYMENT_GOOGLE"),
+        ("I worked at CDW Corporation from 2023 to 2024.", "FACT_EMPLOYMENT_CDW"),
+        ("I worked at DXC Technology from 2015 to 2019.", "FACT_EMPLOYMENT_DXC"),
+        ("I worked at Pythian Services from 2021 to 2023.", "FACT_EMPLOYMENT_PYTHIAN"),
+        ("I worked at IBM Software Group from 2002 to 2015.", "FACT_EMPLOYMENT_IBM")
+    ]
+    for text, expected_fact in valid_alias_cases:
+        res = validate_canonical_grounding(text)
+        assert res.is_grounded is True, f"Registered employer alias was improperly rejected: {text}"
+        assert expected_fact in res.verified_fact_ids
+
+
+@pytest.mark.parametrize("state_attack_claim", [
+    # Exact reproduced case
+    "I remain employed at Pythian.",
+    # Active, passive, employer-subject, payroll variations asserting current state for ended tenures
+    "I continue to work at Pythian.",
+    "I still work for Pythian.",
+    "Pythian still employs me.",
+    "I am currently on Pythian's payroll.",
+    "I remain on the payroll at Pythian.",
+    "My current employer is Pythian.",
+    "I am currently employed by CDW.",
+    "CDW still employs me.",
+    "I am currently on CDW's payroll."
+])
+def test_phase54_employment_state_detection_fails_closed(state_attack_claim):
+    """Section 7.4: Employment-state assertions for past employers must be extracted and rejected (never NO_CAREER_CLAIMS)."""
+    res = validate_canonical_grounding(state_attack_claim)
+    assert res.is_grounded is False, f"Employment state assertion was falsely grounded: {state_attack_claim}"
+    assert res.status != GroundingStatus.NO_CAREER_CLAIMS
+    assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+    assert res.requires_human_review is True
+
+
+def test_phase54_positive_employment_state_passes():
+    """Section 7.4: Positive affirmative current-state and former-state assertions pass."""
+    positive_cases = [
+        ("I currently serve as Strategic Advisor at MavenCode.", "FACT_EMPLOYMENT_MAVENCODE_ADVISORY"),
+        ("I am currently Strategic Advisor, Data & AI at MavenCode.", "FACT_EMPLOYMENT_MAVENCODE_ADVISORY"),
+        ("I formerly worked at Pythian.", "FACT_EMPLOYMENT_PYTHIAN"),
+        ("I used to work for Pythian.", "FACT_EMPLOYMENT_PYTHIAN"),
+        ("I am no longer employed by Pythian.", "FACT_EMPLOYMENT_PYTHIAN")
+    ]
+    for text, expected_fact in positive_cases:
+        res = validate_canonical_grounding(text)
+        assert res.is_grounded is True, f"Authentic employment state assertion failed: {text}"
+        assert expected_fact in res.verified_fact_ids
+
+
+@pytest.mark.parametrize("non_affirmative_claim", [
+    # Exact reproduced cases
+    "I cannot honestly say I influenced $8M in new Google Cloud revenue at Google.",
+    "I don't believe I influenced $8M in new Google Cloud revenue at Google.",
+    "I allegedly influenced $8M in new Google Cloud revenue at Google.",
+    # Modal / Hearsay / Disclaimer variants
+    "I cannot claim that I influenced $8M in new Google Cloud revenue at Google.",
+    "I would not say I influenced $8M in new Google Cloud revenue at Google.",
+    "I doubt that I influenced $8M in new Google Cloud revenue at Google.",
+    "I may have influenced $8M in new Google Cloud revenue at Google.",
+    "I supposedly influenced $8M in new Google Cloud revenue at Google.",
+    "I reportedly influenced $8M in new Google Cloud revenue at Google.",
+    "It was alleged that I influenced $8M in new Google Cloud revenue at Google.",
+    "Someone claimed that I influenced $8M in new Google Cloud revenue at Google.",
+    "I was said to have influenced $8M in new Google Cloud revenue at Google."
+])
+def test_phase54_attribution_polarity_non_affirmative_fails_closed(non_affirmative_claim):
+    """Section 7.5: Non-affirmative, negated, disclaimed, uncertain, or hearsay claims fail closed."""
+    res = validate_canonical_grounding(non_affirmative_claim)
+    assert res.is_grounded is False, f"Non-affirmative attribution was falsely grounded: {non_affirmative_claim}"
+    assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+    assert res.requires_human_review is True
+
+
+def test_phase54_polarity_non_interference_on_opportunity_prose():
+    """Section 7.5: Polarity checking does not corrupt safe opportunity prose or unrelated belief statements."""
+    # Standalone alignment statement
+    res_align = validate_canonical_grounding("I believe my experience aligns with the role.")
+    assert res_align.is_grounded is True
+    assert res_align.status == GroundingStatus.NO_CAREER_CLAIMS
+
+    # Grounded claim combined with alignment statement
+    combined = "At Google, I influenced $8M in new Google Cloud revenue. I believe my experience aligns with the role."
+    res_comb = validate_canonical_grounding(combined)
+    assert res_comb.is_grounded is True
+    assert "FACT_GOOGLE_REVENUE" in res_comb.verified_fact_ids
+
+
+@pytest.mark.parametrize("underspecified_multi_tenure", [
+    # Exact reproduced case
+    "I worked at MavenCode.",
+    # Underspecified variants
+    "I was with MavenCode.",
+    "MavenCode employed me.",
+    "I held a role at MavenCode.",
+    "I previously worked for MavenCode.",
+    "I have worked with MavenCode."
+])
+def test_phase54_ambiguous_multiple_tenures_return_indeterminate(underspecified_multi_tenure):
+    """Section 7.6: Underspecified multi-tenure claims return INDETERMINATE without selecting by insertion order."""
+    res = validate_canonical_grounding(underspecified_multi_tenure)
+    assert res.is_grounded is False, f"Underspecified multi-tenure was falsely grounded: {underspecified_multi_tenure}"
+    assert res.status == GroundingStatus.INDETERMINATE
+    assert res.requires_human_review is True
+    assert any(u.status == ClaimStatus.INDETERMINATE for u in res.unsupported_claims)
+
+
+def test_phase54_disambiguated_multi_tenures_pass_or_fail_correctly():
+    """Section 7.6: Multi-tenure claims disambiguated by title or dates select the exact record."""
+    # 1. Disambiguated by Director title -> FACT_EMPLOYMENT_MAVENCODE_DIRECTOR
+    res_dir_title = validate_canonical_grounding("I served as Director, Data Analytics & AI Strategy at MavenCode.")
+    assert res_dir_title.is_grounded is True
+    assert "FACT_EMPLOYMENT_MAVENCODE_DIRECTOR" in res_dir_title.verified_fact_ids
+
+    # 2. Disambiguated by Director dates (2024 to 2026) -> FACT_EMPLOYMENT_MAVENCODE_DIRECTOR
+    res_dir_dates = validate_canonical_grounding("I worked at MavenCode from 2024 to 2026.")
+    assert res_dir_dates.is_grounded is True
+    assert "FACT_EMPLOYMENT_MAVENCODE_DIRECTOR" in res_dir_dates.verified_fact_ids
+
+    # 3. Disambiguated by Strategic Advisor title -> FACT_EMPLOYMENT_MAVENCODE_ADVISORY
+    res_adv = validate_canonical_grounding("I currently serve as Strategic Advisor at MavenCode.")
+    assert res_adv.is_grounded is True
+    assert "FACT_EMPLOYMENT_MAVENCODE_ADVISORY" in res_adv.verified_fact_ids
+
+    # 4. Contradictory dates for MavenCode -> UNSUPPORTED
+    res_bad_dates = validate_canonical_grounding("I worked at MavenCode from 2010 to 2012.")
+    assert res_bad_dates.is_grounded is False
+    assert res_bad_dates.status == GroundingStatus.UNGROUNDED

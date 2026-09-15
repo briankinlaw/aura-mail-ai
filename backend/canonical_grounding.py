@@ -553,7 +553,7 @@ CANONICAL_FACT_REGISTRY: Dict[str, CanonicalFactDefinition] = {
 
 
 # ---------------------------------------------------------------------------
-# Title Normalization & Exact Alias Registry Helpers (Section 9)
+# Normalization & Exact Alias Matching Helpers (Section 3 & 9)
 # ---------------------------------------------------------------------------
 
 def normalize_title(title: str) -> str:
@@ -579,6 +579,22 @@ def normalize_title(title: str) -> str:
     return t
 
 
+def normalize_employer(name: str) -> str:
+    """
+    Deterministically normalizes an employer name for exact alias comparison.
+    Standardizes:
+    - lowercase
+    - punctuation stripped
+    - excess whitespace collapsed and trimmed
+    """
+    if not name:
+        return ""
+    n = name.lower().strip()
+    n = re.sub(r'[,.:;\'"–—\-]', ' ', n)
+    n = re.sub(r'\s+', ' ', n).strip()
+    return n
+
+
 def get_normalized_titles_for_record(rec: CanonicalEmploymentRecord) -> Set[str]:
     """Returns the set of exact normalized held titles and approved display aliases for a record."""
     titles = set()
@@ -590,14 +606,28 @@ def get_normalized_titles_for_record(rec: CanonicalEmploymentRecord) -> Set[str]
 
 
 # ---------------------------------------------------------------------------
-# Negation and Disclaimer Detection (Section 10)
+# Polarity, Negation, Uncertainty, Hearsay & Disclaimer Detection (Section 5 & 10)
 # ---------------------------------------------------------------------------
 
 NEGATION_PATTERNS = [
-    r'\b(?:did\s+not|didn[\'’]t|have\s+not|haven[\'’]t|was\s+not|wasn[\'’]t|is\s+not|isn[\'’]t|do\s+not|don[\'’]t|cannot|can[\'’]t|could\s+not|couldn[\'’]t|never|not)\s+(?:claim|state|say|influence|influencing|influenced|close|closing|closed|deliver|delivering|delivered|achieve|achieving|achieved|lead|leading|led|manage|managing|managed|reduce|reducing|reduced|improve|improving|improved|generate|generating|generated|book|booking|booked|earn|earning|earned|work|working|worked|serve|serving|served)\b',
-    r'\b(?:cannot|can[\'’]t|do\s+not|don[\'’]t|will\s+not|won[\'’]t|should\s+not|shouldn[\'’]t)\s+(?:claim|say|state)\b',
+    r'\b(?:did\s+not|didn[\'’]t|have\s+not|haven[\'’]t|was\s+not|wasn[\'’]t|is\s+not|isn[\'’]t|do\s+not|don[\'’]t|cannot|can[\'’]t|could\s+not|couldn[\'’]t|would\s+not|wouldn[\'’]t|will\s+not|won[\'’]t|should\s+not|shouldn[\'’]t|never|not)\s+(?:honestly\s+|really\s+|actually\s+)?(?:claim|state|say|believe|influence|influencing|influenced|close|closing|closed|deliver|delivering|delivered|achieve|achieving|achieved|lead|leading|led|manage|managing|managed|reduce|reducing|reduced|improve|improving|improved|generate|generating|generated|book|booking|booked|earn|earning|earned|work|working|worked|serve|serving|served)\b',
+    r'\b(?:cannot|can[\'’]t|do\s+not|don[\'’]t|will\s+not|won[\'’]t|should\s+not|shouldn[\'’]t|would\s+not|wouldn[\'’]t)\s+(?:honestly\s+|really\s+|actually\s+)?(?:claim|say|state|believe)\b',
+    r'\b(?:don[\'’]t|do\s+not)\s+believe\s+(?:i|that\s+i)?\b',
+    r'\b(?:cannot|can[\'’]t)\s+(?:honestly\s+)?say\s+(?:i|that\s+i)?\b',
+    r'\b(?:cannot|can[\'’]t)\s+claim\s+(?:that\s+i|i)?\b',
+    r'\b(?:would\s+not|wouldn[\'’]t)\s+say\s+(?:i|that\s+i)?\b',
     r'\bno\s+longer\s+claim\b',
     r'\bnever\s+(?:achieved|influenced|closed|delivered|led|managed|reduced|improved|worked|served)\b'
+]
+
+UNCERTAINTY_AND_HEARSAY_PATTERNS = [
+    r'\b(?:doubt|doubtful)\s+(?:that\s+i|i)\b',
+    r'\b(?:may\s+have|might\s+have|could\s+have)\s+(?:influenced|achieved|delivered|closed|generated|led|managed|reduced|improved)\b',
+    r'\b(?:allegedly|supposedly|reportedly)\b',
+    r'\b(?:it\s+was\s+alleged\s+that|alleged\s+that)\b',
+    r'\bsomeone\s+(?:claimed|stated|said|reported)\s+(?:that\s+i|i)?\b',
+    r'\b(?:was\s+said|said)\s+to\s+have\s+(?:influenced|achieved|delivered|closed|generated|led|managed|reduced|improved)\b',
+    r'\b(?:rumored\s+to\s+have|claimed\s+to\s+have)\b'
 ]
 
 DISCLAIMER_PATTERNS = [
@@ -608,7 +638,6 @@ DISCLAIMER_PATTERNS = [
     r'\bshould\s+not\s+say\b',
     r'\b(?:draft|r[ée]sum[ée]|resume|document)\s+(?:incorrectly|mistakenly|falsely|erroneously)\s+(?:says|states|claims|mentions)\b',
     r'\b(?:mistakenly|erroneously)\s+(?:states|claims|says|asserts)\b',
-    r'\bsomeone\s+claimed\b',
     r'\bdeny\s+that\b',
     r'\bdenies\s+that\b',
     r'\bdenied\s+that\b',
@@ -623,14 +652,18 @@ DISCLAIMER_PATTERNS = [
 
 def check_negation_or_disclaimer(text: str) -> Tuple[bool, str]:
     """
-    Detects negation, disclaimer, reported-speech, questioning, or false-attribution
-    context governing a claim. Returns (is_negated_or_disclaimed, matched_pattern).
+    Detects negation, disclaimer, modal uncertainty, hearsay, questioning, or non-affirmative
+    polarity context governing a claim. Returns (is_non_affirmative, matched_reason).
     """
     text_lower = text.lower()
     for pat in NEGATION_PATTERNS:
         m = re.search(pat, text_lower)
         if m:
             return True, f"negation ('{m.group(0)}')"
+    for pat in UNCERTAINTY_AND_HEARSAY_PATTERNS:
+        m = re.search(pat, text_lower)
+        if m:
+            return True, f"uncertainty/hearsay ('{m.group(0)}')"
     for pat in DISCLAIMER_PATTERNS:
         m = re.search(pat, text_lower)
         if m:
@@ -651,7 +684,10 @@ COMMON_NON_ORGS = {
     "time-to-value", "turnaround", "presales", "conversion", "sales", "cycles", "complexity",
     "legacy", "efficiency", "roadmap", "rate", "responsibilities", "responsibility", "deal",
     "pipeline", "role", "position", "opportunity", "opening", "background", "experience",
-    "across", "during", "while", "before", "after", "throughout", "over"
+    "across", "during", "while", "before", "after", "throughout", "over", "revenue", "portfolio",
+    "bookings", "outcome", "outcomes", "value", "growth", "in enterprise", "enterprise revenue",
+    "poc-to-production", "scoping turnaround", "sales cycles", "legacy architecture",
+    "time to value", "poc to production"
 }
 
 
@@ -686,13 +722,15 @@ def is_opportunity_or_target_role_reference(text: str, match_text: str = "") -> 
         "during my time with", "during my tenure with", "during my years with",
         "my role at", "my position at", "my work as an employee at", "as an employee at",
         "i worked at", "i worked for", "i served at", "i was at", "i have been at",
+        "i was with", "i have been with", "held a role", "held a role at", "holding the role of",
         "i was chief", "i was vp", "i was vice president", "i was head of", "i was director",
         "former ", "while working at", "while working for", "while employed by", "while employed at",
         "i generated", "i booked", "i closed", "i managed", "i earned", "i led engineering",
         "spent five years", "spent 5 years", "spent several years", "spent 3 years", "spent three years",
-        "am employed by", "was employed by", "i joined ", "hired me in", "my employer at the time",
-        "my employer was", "formerly worked for", "before joining", "on my payroll", "on their payroll",
-        "paycheck came from", "on apple's payroll", "on contoso's payroll", "on netflix's payroll"
+        "am employed by", "was employed by", "remain employed at", "still work for", "still work at",
+        "i joined ", "hired me in", "my employer at the time", "my employer was", "formerly worked for",
+        "before joining", "on my payroll", "on their payroll", "paycheck came from", "on apple's payroll",
+        "on contoso's payroll", "on netflix's payroll", "on pythian's payroll", "on cdw's payroll"
     ]
     if any(m in s_lower for m in affirmative_employment_markers):
         return False
@@ -764,8 +802,9 @@ def extract_governing_organizations(clause_text: str) -> List[str]:
     Recognizes:
     - at / for / with / while at / during tenure at / on behalf of / for clients at / within / through / as part of <ORG>
     - <ORG>'s revenue / portfolio / pipeline / team / conversion / scoping
-    - <ORG> revenue / portfolio / pipeline
+    - <ORG> revenue / portfolio / pipeline (noun modifier)
     - <ORG> achieved / delivered / closed / reduced / improved
+    - revenue / pipeline / portfolio for / at / of <ORG>
     """
     orgs = []
 
@@ -782,8 +821,10 @@ def extract_governing_organizations(clause_text: str) -> List[str]:
             if not any(stop in clean_lower for stop in ["the role", "the position", "the opportunity", "my career", "our career"]):
                 orgs.append(clean_cand)
 
-    # Pattern 2: Possessive organization attribution (e.g. Globex's revenue, Promevo's team)
-    p2 = re.compile(r'\b([A-Za-z0-9\s&.,\'-]+?)[\'’]s\s+(?:revenue|portfolio|pipeline|team|services|clients|conversion|scoping|turnaround|sales|cycles)\b', re.IGNORECASE)
+    # Pattern 2: Possessive organization attribution (e.g. Globex's revenue, Globex's 23% conversion rate, Stark Industries' pipeline)
+    p2 = re.compile(
+        r'\b([A-Z][A-Za-z0-9&.-]+(?:\s+[A-Z][A-Za-z0-9&.-]+){0,2})(?:[\'’]s|[\'’])\s+(?:\d+(?:\.\d+)?%?\s+|\$\s*\d+(?:\.\d+)?\s*[mMkKbB\+]*(?:\s+in)?\s+)?(?i:(?:annual\s+|new\s+|total\s+)?(?:revenue|portfolio|pipeline|team|services|clients|conversion|scoping|turnaround|sales\s+cycles|sales|cycles|poc|bookings|poc-to-production|customer\s+retention|deal|outcomes|outcome))\b'
+    )
     for m in p2.finditer(clause_text):
         raw_cand = m.group(1).strip()
         clean_cand = re.sub(r'[,.:;\'"]', '', raw_cand).strip()
@@ -794,6 +835,50 @@ def extract_governing_organizations(clause_text: str) -> List[str]:
     # Pattern 3: Proper noun subject agents (e.g. Contoso achieved a 40% reduction, Globex delivered ...)
     p3 = re.compile(r'\b([A-Z][A-Za-z0-9&.\'-]+(?:\s+[A-Z][A-Za-z0-9&.\'-]+)?)\s+(?:achieved|generated|delivered|closed|influenced|reduced|improved|converted|targeted)\b')
     for m in p3.finditer(clause_text):
+        raw_cand = m.group(1).strip()
+        clean_cand = re.sub(r'[,.:;\'"]', '', raw_cand).strip()
+        clean_lower = clean_cand.lower()
+        if clean_lower not in COMMON_NON_ORGS and len(clean_lower) > 1 and len(clean_lower.split()) <= 4:
+            orgs.append(clean_cand)
+
+    # Pattern 4: Noun modifiers modifying metrics (e.g. Globex revenue, Globex annual revenue, Globex pipeline)
+    p4 = re.compile(
+        r'\b([A-Z][A-Za-z0-9&.\'-]+(?:\s+[A-Z][A-Za-z0-9&.\'-]+)?)\s+(?:annual\s+|new\s+|total\s+)?(?:revenue|pipeline|portfolio|bookings|services|poc|conversion|turnaround|sales\s+cycles|customer\s+retention)\b'
+    )
+    for m in p4.finditer(clause_text):
+        raw_cand = m.group(1).strip()
+        clean_cand = re.sub(r'[,.:;\'"]', '', raw_cand).strip()
+        clean_lower = clean_cand.lower()
+        if clean_lower not in COMMON_NON_ORGS and len(clean_lower) > 1 and len(clean_lower.split()) <= 4:
+            orgs.append(clean_cand)
+
+    # Pattern 5: Reordered metric noun modifiers (e.g. annual Globex revenue, estimated Globex pipeline)
+    p5 = re.compile(
+        r'\b(?:annual|new|total|presales|estimated)\s+([A-Z][A-Za-z0-9&.\'-]+(?:\s+[A-Z][A-Za-z0-9&.\'-]+)?)\s+(?:revenue|pipeline|portfolio|bookings|services|poc|conversion|turnaround|sales\s+cycles|customer\s+retention)\b'
+    )
+    for m in p5.finditer(clause_text):
+        raw_cand = m.group(1).strip()
+        clean_cand = re.sub(r'[,.:;\'"]', '', raw_cand).strip()
+        clean_lower = clean_cand.lower()
+        if clean_lower not in COMMON_NON_ORGS and len(clean_lower) > 1 and len(clean_lower.split()) <= 4:
+            orgs.append(clean_cand)
+
+    # Pattern 6: Preposition after metric (e.g. revenue for Globex, pipeline at Globex)
+    p6 = re.compile(
+        r'\b(?:revenue|pipeline|portfolio|bookings|services|conversion|turnaround|sales\s+cycles)\s+(?:for|at|of)\s+([A-Z][A-Za-z0-9&.\'-]+(?:\s+[A-Z][A-Za-z0-9&.\'-]+){0,2}?)(?=[.,;:\n]|$)'
+    )
+    for m in p6.finditer(clause_text):
+        raw_cand = m.group(1).strip()
+        clean_cand = re.sub(r'[,.:;\'"]', '', raw_cand).strip()
+        clean_lower = clean_cand.lower()
+        if clean_lower not in COMMON_NON_ORGS and len(clean_lower) > 1 and len(clean_lower.split()) <= 4:
+            orgs.append(clean_cand)
+
+    # Pattern 7: Metric before amount (e.g. Globex revenue totaling $8M, Globex revenue amounting to $8M)
+    p7 = re.compile(
+        r'\b([A-Z][A-Za-z0-9&.\'-]+(?:\s+[A-Z][A-Za-z0-9&.\'-]+)?)\s+revenue\s+(?:totaling|amounting\s+to|of)\b'
+    )
+    for m in p7.finditer(clause_text):
         raw_cand = m.group(1).strip()
         clean_cand = re.sub(r'[,.:;\'"]', '', raw_cand).strip()
         clean_lower = clean_cand.lower()
@@ -920,7 +1005,7 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
     """
     Extracts structured chronology details from a sentence or clause:
     start_year, start_month, end_year, end_month, is_current_claim,
-    is_ended_claim, join_year, join_month, leave_year, leave_month, duration_years.
+    is_ended_claim, is_former_claim, join_year, join_month, leave_year, leave_month, duration_years.
     """
     details: Dict[str, Any] = {
         "start_year": None,
@@ -929,6 +1014,7 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
         "end_month": None,
         "is_current_claim": None,
         "is_ended_claim": None,
+        "is_former_claim": None,
         "join_year": None,
         "join_month": None,
         "leave_year": None,
@@ -937,9 +1023,14 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
     }
     t_lower = text.lower()
 
-    # 1. Current status check
-    if re.search(r'\b(?:currently\s+(?:work|working|employed|serve|serving)|am\s+currently|current\s+(?:role|position|tenure)|present\b)', t_lower):
+    # 1. Current status markers
+    if re.search(r'\b(?:currently\s+(?:work|working|employed|serve|serving|advise|advising)|am\s+currently|current\s+(?:role|position|tenure|employer)|these\s+days|now\b|still\s+(?:work|working|employed|serve|serving|advise|advising|employs)|employs\s+me|remain\s+(?:employed|on\s+the\s+payroll)|continue\s+to\s+work|present\b)', t_lower):
         details["is_current_claim"] = True
+
+    # 1b. Former status markers
+    if re.search(r'\b(?:formerly\s+(?:worked|employed|served|advised)|previously\s+(?:worked|employed|served|advised)|no\s+longer\s+employed|used\s+to\s+work|former\s+employer|past\s+employer)\b', t_lower):
+        details["is_former_claim"] = True
+        details["is_ended_claim"] = True
 
     # 2. Date ranges: from [Month] Year to/through/until/- [Month] Year/present
     m_range = re.search(r'\b(?:from\s+)?(?:([a-z]+)\s+)?(20\d\d|19\d\d)\s*(?:to|through|until|–|—|-)\s*(?:([a-z]+)\s+)?(20\d\d|19\d\d|present|current|now)\b', t_lower)
@@ -969,9 +1060,9 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
         if m2_str and m2_str.lower() in MONTH_NAMES:
             details["end_month"] = MONTH_NAMES[m2_str.lower()]
 
-    # 4. Joined / hired / started in [Month] Year (with optional company in between)
-    m_join = re.search(r'\b(?:joined|started\s+at|hired(?:\s+by|\s+me)?|brought(?:\s+me)?\s+on)\s+(?:[A-Za-z0-9&.\'-]+\s+)?(?:in\s+)?(?:([a-z]+)\s+)?(20\d\d|19\d\d)\b', t_lower)
-    if m_join:
+    # 4. Beginning / starting / joined / hired / started in [Month] Year
+    m_join = re.search(r'\b(?:beginning\s+in|starting\s+in|started\s+in|started\s+at|joined|hired(?:\s+by|\s+me)?|brought(?:\s+me)?\s+on)\s+(?:[A-Za-z0-9&.\'-]+\s+)?(?:in\s+)?(?:([a-z]+)\s+)?(20\d\d|19\d\d)\b', t_lower)
+    if m_join and not details["start_year"]:
         m_str, y_str = m_join.groups()
         details["join_year"] = int(y_str)
         details["start_year"] = int(y_str)
@@ -979,9 +1070,9 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
             details["join_month"] = MONTH_NAMES[m_str.lower()]
             details["start_month"] = MONTH_NAMES[m_str.lower()]
 
-    # 5. Left / departed / ended in [Month] Year
-    m_leave = re.search(r'\b(?:left|departed|tenure\s+ended(?:\s+in)?|ended\s+in)\s+(?:[A-Za-z0-9&.\'-]+\s+)?(?:in\s+)?(?:([a-z]+)\s+)?(20\d\d|19\d\d)\b', t_lower)
-    if m_leave:
+    # 5. Ending in / left / departed / ended in [Month] Year
+    m_leave = re.search(r'\b(?:ending\s+in|left|departed|tenure\s+ended(?:\s+in)?|ended\s+in)\s+(?:[A-Za-z0-9&.\'-]+\s+)?(?:in\s+)?(?:([a-z]+)\s+)?(20\d\d|19\d\d)\b', t_lower)
+    if m_leave and not details["end_year"]:
         m_str, y_str = m_leave.groups()
         details["leave_year"] = int(y_str)
         details["end_year"] = int(y_str)
@@ -999,12 +1090,13 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
         if m_str and m_str.lower() in MONTH_NAMES:
             details["end_month"] = MONTH_NAMES[m_str.lower()]
 
-    # 7. Since [Month] Year
-    m_since = re.search(r'\bsince\s+(?:([a-z]+)\s+)?(20\d\d|19\d\d)\b', t_lower)
+    # 7. Since [Month] Year / from Year onward
+    m_since = re.search(r'\b(?:since|from)\s+(?:([a-z]+)\s+)?(20\d\d|19\d\d)(?:\s+onward)?\b', t_lower)
     if m_since and not details["start_year"]:
         m_str, y_str = m_since.groups()
         details["start_year"] = int(y_str)
-        details["is_current_claim"] = True
+        if "onward" in t_lower or "since" in t_lower:
+            details["is_current_claim"] = True
         if m_str and m_str.lower() in MONTH_NAMES:
             details["start_month"] = MONTH_NAMES[m_str.lower()]
 
@@ -1053,12 +1145,58 @@ def extract_first_person_employment_claims(text: str) -> List[Dict[str, Any]]:
                     **chrono
                 })
 
-    # Pattern 2: First-person employment verbs with explicit preposition (worked at/for, employed by, spent N years at, etc.)
-    p_emp = re.compile(
-        r'\b(?:when i was (?:employed )?at|during my (?:time|tenure|years) (?:at|with)|my (?:role|position|tenure|employment) at|as a[n]? [a-z\s]+ at|while working (?:at|for|with)|while employed (?:by|at|with)|as an employee at|former [a-z\s]+ at|formerly worked for|i\s+(?:used\s+to\s+work|used\s+to\s+be|worked|work|currently\s+work|have\s+worked|served|was|have\s+been|hold\s+the\s+role\s+of|held\s+the\s+role\s+of|spent\s+\w+\s+years\s+(?:working\s+)?(?:at|for|with)|am\s+employed\s+by|was\s+employed\s+by|led\s+[a-z\s]+\s+while\s+employed\s+by|previously\s+worked\s+for|formerly\s+worked\s+for)\s+(?:at|with|for|by|in))\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+from|\s+where|\s+since|\s+as|\s+for|\s+leading|\s+managing|\s+building|\s+developing|\s+in\s+\d{4}|\s+after|\s+i\s+|$)',
+    # Pattern 2A: First-person active employment verbs with explicit preposition
+    p_emp_a = re.compile(
+        r'\bi\s+(?:currently\s+work|formerly\s+worked|previously\s+worked|used\s+to\s+work|used\s+to\s+be|still\s+work|continue\s+to\s+work|have\s+worked|worked|work|served|was|have\s+been|am\s+currently\s+employed|am\s+no\s+longer\s+employed|am\s+employed|was\s+employed|remain\s+employed|hold\s+the\s+role\s+of|held\s+the\s+role\s+of|held\s+a\s+role|spent\s+\w+\s+years\s+(?:working\s+)?)\s*(?:at|with|for|by|in)\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+from|\s+where|\s+since|\s+as|\s+for|\s+leading|\s+managing|\s+building|\s+developing|\s+in\s+\d{4}|\s+after|\s+i\s+|$)',
         re.IGNORECASE
     )
-    for m in p_emp.finditer(text):
+    for m in p_emp_a.finditer(text):
+        company_raw = m.group(1).strip()
+        clean_company = re.sub(r'[,.:;\'"]', '', company_raw).strip()
+        if clean_company.lower() in COMMON_NON_ORGS:
+            continue
+        if len(clean_company) > 1 and len(clean_company.split()) <= 4:
+            clause, sentence = get_clause_and_sentence(text, m.start(), m.end())
+            if not is_opportunity_or_target_role_reference(sentence, clean_company):
+                chrono = parse_chronology_details(sentence)
+                claims.append({
+                    "raw_text": m.group(0),
+                    "claimed_employer": clean_company,
+                    "claimed_title": None,
+                    "sentence": sentence,
+                    "clause": clause,
+                    **chrono
+                })
+
+    # Pattern 2B: Prepositional introductory employment phrases
+    p_emp_b = re.compile(
+        r'\b(?:when\s+i\s+was\s+(?:employed\s+)?(?:at|with|for|by)|during\s+my\s+(?:time|tenure|years)\s+(?:at|with|for)|my\s+(?:role|position|tenure|employment)\s+(?:at|with|for)|as\s+an\s+employee\s+(?:at|with|for)|while\s+working\s+(?:at|with|for)|while\s+employed\s+(?:at|with|for|by)|led\s+[a-z\s]+\s+while\s+employed\s+by)\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+from|\s+where|\s+since|\s+as|\s+for|\s+leading|\s+managing|\s+building|\s+developing|\s+in\s+\d{4}|\s+after|\s+i\s+|$)',
+        re.IGNORECASE
+    )
+    for m in p_emp_b.finditer(text):
+        company_raw = m.group(1).strip()
+        clean_company = re.sub(r'[,.:;\'"]', '', company_raw).strip()
+        if clean_company.lower() in COMMON_NON_ORGS:
+            continue
+        if len(clean_company) > 1 and len(clean_company.split()) <= 4:
+            clause, sentence = get_clause_and_sentence(text, m.start(), m.end())
+            if not is_opportunity_or_target_role_reference(sentence, clean_company):
+                chrono = parse_chronology_details(sentence)
+                claims.append({
+                    "raw_text": m.group(0),
+                    "claimed_employer": clean_company,
+                    "claimed_title": None,
+                    "sentence": sentence,
+                    "clause": clause,
+                    **chrono
+                })
+
+    # Pattern 2a: 'I was with <Company>'
+    p_with = re.compile(
+        r'\bi\s+(?:was|have\s+been)\s+with\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+from|\s+where|\s+since|\s+as|\s+in\s+\d{4}|$)',
+        re.IGNORECASE
+    )
+    for m in p_with.finditer(text):
         company_raw = m.group(1).strip()
         clean_company = re.sub(r'[,.:;\'"]', '', company_raw).strip()
         if clean_company.lower() in COMMON_NON_ORGS:
@@ -1099,9 +1237,32 @@ def extract_first_person_employment_claims(text: str) -> List[Dict[str, Any]]:
                     **chrono
                 })
 
-    # Pattern 3: Employer-subject grammar (e.g. 'Amazon has employed me since 2020', 'Netflix hired me in 2019')
+    # Pattern 2c: 'I [currently/formerly] advise[d] <Company>'
+    p_advise = re.compile(
+        r'\bi\s+(?:currently\s+advise|formerly\s+advised|previously\s+advised|advised|advise)\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+as|\s+on|\s+since|\s+from|\s+in\s+\d{4}|$)',
+        re.IGNORECASE
+    )
+    for m in p_advise.finditer(text):
+        company_raw = m.group(1).strip()
+        clean_company = re.sub(r'[,.:;\'"]', '', company_raw).strip()
+        if clean_company.lower() in COMMON_NON_ORGS:
+            continue
+        if len(clean_company) > 1 and len(clean_company.split()) <= 4:
+            clause, sentence = get_clause_and_sentence(text, m.start(), m.end())
+            if not is_opportunity_or_target_role_reference(sentence, clean_company):
+                chrono = parse_chronology_details(sentence)
+                claims.append({
+                    "raw_text": m.group(0),
+                    "claimed_employer": clean_company,
+                    "claimed_title": "Strategic Advisor",
+                    "sentence": sentence,
+                    "clause": clause,
+                    **chrono
+                })
+
+    # Pattern 3: Employer-subject grammar (e.g. 'Amazon has employed me since 2020', 'Netflix hired me in 2019', 'Pythian still employs me')
     p_hired = re.compile(
-        r'\b([A-Za-z0-9\s&.,\'-]+?)\s+(?:has\s+employed\s+me|employed\s+me|hired\s+me|recruited\s+me|brought\s+me\s+on)\b',
+        r'\b([A-Za-z0-9\s&.,\'-]+?)\s+(?:has\s+employed\s+me|employed\s+me|still\s+employs\s+me|employs\s+me|hired\s+me|recruited\s+me|brought\s+me\s+on)\b',
         re.IGNORECASE
     )
     for m in p_hired.finditer(text):
@@ -1122,9 +1283,9 @@ def extract_first_person_employment_claims(text: str) -> List[Dict[str, Any]]:
                     **chrono
                 })
 
-    # Pattern 4: Payroll / paycheck assertions (e.g. 'My paycheck came from Netflix', 'on Apple's payroll')
+    # Pattern 4: Payroll / paycheck assertions (e.g. 'My paycheck came from Netflix', 'on Apple's payroll', 'on the payroll at Pythian')
     p_payroll = re.compile(
-        r'\b(?:my\s+paycheck\s+came\s+from|my\s+salary\s+came\s+from|(?:was|spent\s+[a-z0-9\s]+)\s+on)\s+([A-Za-z0-9\s&.,\'-]+?)(?:[\'’]s\s+payroll|[.,;:\n]|\s+for|\s+where|\s+as|$)',
+        r'\b(?:my\s+paycheck\s+came\s+from|my\s+salary\s+came\s+from|(?:was|am\s+currently|remain|spent\s+[a-z0-9\s]+)\s+(?:on\s+the\s+payroll\s+at|on))\s+([A-Za-z0-9\s&.,\'-]+?)(?:[\'’]s\s+payroll|[.,;:\n]|\s+for|\s+where|\s+as|$)',
         re.IGNORECASE
     )
     for m in p_payroll.finditer(text):
@@ -1146,9 +1307,9 @@ def extract_first_person_employment_claims(text: str) -> List[Dict[str, Any]]:
                     **chrono
                 })
 
-    # Pattern 5: Relative / inverted employer identity (e.g. 'Globex was my employer', 'The company I worked for was Initech')
+    # Pattern 5: Relative / inverted employer identity (e.g. 'Globex was my employer', 'My current employer is Pythian')
     p_rel_emp = re.compile(
-        r'\b(?:([A-Za-z0-9\s&.,\'-]+?)\s+was\s+my\s+employer|the\s+(?:company|firm)\s+i\s+worked\s+for\s+was\s+([A-Za-z0-9\s&.,\'-]+?)|my\s+(?:employer|company)\s+was\s+([A-Za-z0-9\s&.,\'-]+?))\b',
+        r'\b(?:([A-Za-z0-9\s&.,\'-]+?)\s+was\s+my\s+employer|the\s+(?:company|firm)\s+i\s+worked\s+for\s+was\s+([A-Za-z0-9\s&.,\'-]+?)|my\s+(?:current\s+)?(?:employer|company)\s+(?:is|was)\s+([A-Za-z0-9\s&.,\'-]+?))\b',
         re.IGNORECASE
     )
     for m in p_rel_emp.finditer(text):
@@ -1284,15 +1445,15 @@ def detect_unparsed_career_assertions(text: str, parsed_claims: List[Dict[str, A
     Returns list of unparsed/indeterminate career assertion sentences that could not be verified.
     """
     career_signals = [
-        r'\b(?:i\s+(?:used\s+to\s+work|used\s+to\s+be|worked|work|served|joined|left|led|managed|held|built|am\s+employed|was\s+employed|spent))\b',
+        r'\b(?:i\s+(?:used\s+to\s+work|used\s+to\s+be|worked|work|served|joined|left|led|managed|held|built|am\s+employed|was\s+employed|remain\s+employed|still\s+work|continue\s+to\s+work|spent))\b',
         r'\b(?:during my (?:time|tenure|years|role|employment))\b',
         r'\b(?:when i was (?:at|employed|working|leading|managing))\b',
         r'\b(?:while (?:employed|working|leading|managing|spearheading)\s+(?:at|for|by|with|across)?)\b',
         r'\b(?:my (?:employer|role|title|position|tenure|team at|paycheck|salary))\b',
         r'\b(?:former\s+[a-z\s]+)\b',
         r'\b(?:spent\s+(?:\w+|\d+)\s+years)\b',
-        r'\b(?:hired me|employed me|payroll)\b',
-        r'\b(?:was my employer|company i worked for)\b'
+        r'\b(?:hired me|employed me|employs me|payroll)\b',
+        r'\b(?:was my employer|company i worked for|current employer)\b'
     ]
 
     unparsed = []
@@ -1381,20 +1542,20 @@ def match_claim_to_fact(
             return False, ClaimStatus.UNSUPPORTED, f"Claim in '{sentence_text}' lacks required career-wide scope context for {fact.fact_id}."
 
     elif fact.scope_policy == ScopePolicy.EMPLOYER_BOUND_REQUIRED:
-        allowed_norm = [normalize_title(a) for a in fact.allowed_employer_aliases]
+        allowed_norm = [normalize_employer(a) for a in fact.allowed_employer_aliases]
 
         # Check for any unauthorized / conflicting organizations in the local proposition
         for org in extracted_orgs:
-            norm_org = normalize_title(org)
-            is_allowed = any(norm_org == a or norm_org in a for a in allowed_norm)
+            norm_org = normalize_employer(org)
+            is_allowed = (norm_org in allowed_norm)
             if not is_allowed:
                 return False, ClaimStatus.MISATTRIBUTED, f"Claim in '{clause_text}' misattributes {fact.display_value} to unauthorized organization '{org}' (authorized: {fact.canonical_text})."
 
         # Check that required canonical employer is present in the local proposition
         has_authorized_in_clause = any(
-            normalize_title(org) in allowed_norm or any(normalize_title(org) in a for a in allowed_norm)
+            normalize_employer(org) in allowed_norm
             for org in extracted_orgs
-        ) or any(alias in clause_lower for alias in fact.allowed_employer_aliases)
+        ) or any(normalize_employer(alias) in [normalize_employer(w) for w in clause_lower.split()] or normalize_employer(alias) in clause_lower for alias in fact.allowed_employer_aliases)
 
         if not has_authorized_in_clause:
             return False, ClaimStatus.UNSUPPORTED, f"Claim in '{clause_text}' omits required canonical employer '{fact.required_employer}' for {fact.fact_id}."
@@ -1443,16 +1604,21 @@ def validate_first_person_employment_claim(
 
     # Case B: Employment assertion with claimed employer
     if raw_emp:
-        norm_claimed_emp = normalize_title(raw_emp)
+        norm_claimed_emp = normalize_employer(raw_emp)
 
-        # Resolve all matching canonical employment records
+        # Resolve all matching canonical employment records via exact normalized alias equality
         candidate_records = [
             rec for rec in CANONICAL_EMPLOYMENT_RECORDS.values()
-            if any(norm_claimed_emp == normalize_title(alias) or norm_claimed_emp in normalize_title(alias) or normalize_title(alias) in norm_claimed_emp for alias in rec.employer_aliases)
+            if any(norm_claimed_emp == normalize_employer(alias) for alias in rec.employer_aliases)
         ]
 
         if not candidate_records:
             return False, ClaimStatus.MISATTRIBUTED, f"Claim '{raw_match}' asserts employment at '{raw_emp}', which is not in Brian Kinlaw's canonical employment history.", None
+
+        # Disambiguate multi-tenure employers: require title or specific dates to select
+        has_specific_dates = bool(claim.get("start_year") or claim.get("end_year") or claim.get("join_year") or claim.get("leave_year"))
+        if len(candidate_records) > 1 and not raw_title and not has_specific_dates:
+            return False, ClaimStatus.INDETERMINATE, f"Multiple distinct canonical tenures exist for '{raw_emp}' and the claim provides no disambiguating title or chronology.", None
 
         # Evaluate compatibility with each candidate record
         compatible_records: List[CanonicalEmploymentRecord] = []
@@ -1473,7 +1639,7 @@ def validate_first_person_employment_claim(
                 incompatibility_reasons.append(f"Claim asserts current employment at {rec.employer_canonical}, but tenure ended in {rec.end_year}")
                 continue
 
-            if claim.get("is_ended_claim") is True and rec.is_current and rec.end_year is None:
+            if (claim.get("is_ended_claim") is True or claim.get("is_former_claim") is True) and rec.is_current and rec.end_year is None:
                 incompatibility_reasons.append(f"Claim asserts ended tenure at {rec.employer_canonical}, but {rec.employer_canonical} advisory is active")
                 continue
 
