@@ -34,19 +34,18 @@ from backend.canonical_grounding import (
     get_active_ledger_digest
 )
 from backend.auth import get_local_session_token
+from backend.tests.conftest import test_reset_provenance_store
 
 
 @pytest.fixture(autouse=True)
 def reset_provenance_and_cache():
     """Reset in-memory provenance store, quarantine set, and email cache between tests."""
     with _EMAIL_STATE_LOCK:
-        PROVENANCE_STORE.enable_store()
-        PROVENANCE_STORE.reset_store()
+        test_reset_provenance_store()
         CACHED_EMAILS.clear()
     yield
     with _EMAIL_STATE_LOCK:
-        PROVENANCE_STORE.enable_store()
-        PROVENANCE_STORE.reset_store()
+        test_reset_provenance_store()
         CACHED_EMAILS.clear()
 
 
@@ -502,7 +501,7 @@ def test_direct_snapshot_revalidation_checks_all_15_fields():
     # 12. Store disabled
     PROVENANCE_STORE.disable_store("Test disable")
     assert verify_risk_evaluation_snapshot(snapshot, msg)[0] is False
-    PROVENANCE_STORE.enable_store()
+    test_reset_provenance_store()
 
     # 13. Ledger version changed
     with patch("backend.canonical_grounding.CANONICAL_LEDGER_SCHEMA_VERSION", "9.9.9"):

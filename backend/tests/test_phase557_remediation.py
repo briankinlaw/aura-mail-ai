@@ -45,8 +45,12 @@ from backend.canonical_grounding import (
     CANONICAL_CLAIM_TEMPLATES,
     CANONICAL_LEDGER_SCHEMA_VERSION,
     get_active_ledger_digest,
+    RecoveryStrategy,
+    RecoveryExecutionContext,
+    AdministrativeRecoveryContext,
 )
 from backend.auth import get_local_session_token
+from backend.tests.conftest import test_reset_provenance_store
 
 
 @pytest.fixture(autouse=True)
@@ -54,11 +58,11 @@ def clean_store_environment():
     """Ensures clean provenance store and cached email state before and after every test."""
     with _EMAIL_STATE_LOCK:
         CACHED_EMAILS.clear()
-        PROVENANCE_STORE.reset_store()
+        test_reset_provenance_store()
     yield
     with _EMAIL_STATE_LOCK:
         CACHED_EMAILS.clear()
-        PROVENANCE_STORE.reset_store()
+        test_reset_provenance_store()
 
 
 @pytest.fixture
@@ -206,7 +210,7 @@ sys.exit(0)
     (json.dumps({"state": "DISABLED"}), "STATE_FILE_INVALID"),  # Missing schema_version
     (json.dumps({"schema_version": 99, "state": "DISABLED"}), "STATE_FILE_INVALID"),  # Unsupported schema
     (json.dumps({"schema_version": 1}), "STATE_FILE_INVALID"),  # Missing state field
-    (json.dumps({"schema_version": 1, "state": "UNKNOWN_STATE_XYZ"}), "UNKNOWN_STORE_STATE"),
+    (json.dumps({"schema_version": 1, "state": "UNKNOWN_STATE_XYZ"}), "STATE_FILE_INVALID"),
 ])
 def test_malformed_state_file_starts_unavailable_fail_closed(tmp_path, corrupt_content, expected_err_snippet):
     """
@@ -250,6 +254,7 @@ def test_valid_claim_file_with_disabled_marker_remains_unavailable(tmp_path):
         "schema_version": 1,
         "state": "DISABLED",
         "reason": "Administrative lockdown",
+        "affected_draft_id": None,
         "disabled_at": time.time(),
         "recovery_required": True
     }
@@ -275,8 +280,15 @@ def test_recovery_requires_explicit_supported_strategy(tmp_path):
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
+    admin_ctx = AdministrativeRecoveryContext(
+        actor="local_admin",
+        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
+        explicitly_confirmed=True,
+        authorization_evidence=get_local_session_token(),
+    )
+
     with pytest.raises(ValueError, match="Unsupported recovery strategy"):
-        store.recover_store(strategy="AUTO_GUESS")
+        store.recover_store(strategy="AUTO_GUESS", recovery_context=admin_ctx)
 
 
 def test_recovery_strategy_reset_all_provenance(tmp_path):
@@ -297,8 +309,15 @@ def test_recovery_strategy_reset_all_provenance(tmp_path):
     assert store.is_available() is False
     assert state_file.exists() is True
 
+    admin_ctx = AdministrativeRecoveryContext(
+        actor="local_admin",
+        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
+        explicitly_confirmed=True,
+        authorization_evidence=get_local_session_token(),
+    )
+
     # Execute RESET_ALL_PROVENANCE
-    res = store.recover_store(strategy="RESET_ALL_PROVENANCE")
+    res = store.recover_store(strategy=RecoveryStrategy.RESET_ALL_PROVENANCE, recovery_context=admin_ctx)
     assert res is True
     assert store.is_available() is True
     assert state_file.exists() is False
@@ -310,43 +329,37 @@ def test_recovery_strategy_reset_all_provenance(tmp_path):
     assert len(fresh._records) == 0
 
 
-def test_recovery_strategy_validate_and_repair(tmp_path):
+def test_recovery_strategy_validate_and_repair_is_rejected(tmp_path):
     """
-    Proves VALIDATE_AND_REPAIR preserves valid unaffected claims while removing
-    affected draft claims, removes disabled marker, and restores availability.
+    Proves VALIDATE_AND_REPAIR is strictly rejected in Phase 5.5.8.
+    Store remains unavailable fail-closed.
     """
     storage_file = tmp_path / "provenance_records.json"
     state_file = tmp_path / "provenance_store_state.json"
 
     store = ProvenanceStore(storage_path=storage_file)
-    rec_bad = store.create_claim_instance(
+    store.create_claim_instance(
         fact_id="FACT_EMPLOYMENT_IBM_WATSON",
         template_id="TPL_EMP_IBM_WATSON",
         draft_id="draft_affected"
     )
-    rec_good = store.create_claim_instance(
-        fact_id="FACT_EMPLOYMENT_MAVENCODE_DIRECTOR",
-        template_id="TPL_EMP_MAVENCODE_DIRECTOR",
-        draft_id="draft_unaffected"
-    )
     store.disable_store("Test disable", affected_draft_id="draft_affected")
     assert store.is_available() is False
 
-    # Execute VALIDATE_AND_REPAIR
-    res = store.recover_store(strategy="VALIDATE_AND_REPAIR")
-    assert res is True
-    assert store.is_available() is True
-    assert state_file.exists() is False
+    admin_ctx = AdministrativeRecoveryContext(
+        actor="local_admin",
+        execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
+        explicitly_confirmed=True,
+        authorization_evidence=get_local_session_token(),
+    )
 
-    # Bad draft claim is gone; good draft claim is retained
-    assert store.get_claim_instance(rec_bad.claim_instance_id) is None
-    assert store.get_claim_instance(rec_good.claim_instance_id) is not None
+    # Execute VALIDATE_AND_REPAIR - must be rejected
+    with pytest.raises(ValueError, match="Unsupported recovery strategy"):
+        store.recover_store(strategy="VALIDATE_AND_REPAIR", recovery_context=admin_ctx)
 
-    # Fresh instance verifies repaired state
-    fresh = ProvenanceStore(storage_path=storage_file)
-    assert fresh.is_available() is True
-    assert fresh.get_claim_instance(rec_good.claim_instance_id) is not None
-    assert fresh.get_claim_instance(rec_bad.claim_instance_id) is None
+    # Store remains unavailable and marker remains
+    assert store.is_available() is False
+    assert state_file.exists() is True
 
 
 # ===========================================================================

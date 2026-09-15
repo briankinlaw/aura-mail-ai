@@ -40,6 +40,7 @@ from backend.radar.risk_evaluator import (
     RiskCategory
 )
 from backend.auth import get_local_session_token
+from backend.tests.conftest import test_reset_provenance_store
 
 client = TestClient(app)
 AUTH_HEADER = {"Authorization": f"Bearer {get_local_session_token()}"}
@@ -51,7 +52,7 @@ AUTH_HEADER = {"Authorization": f"Bearer {get_local_session_token()}"}
 
 def setup_test_cached_emails():
     CACHED_EMAILS.clear()
-    PROVENANCE_STORE.reset_store()
+    test_reset_provenance_store()
 
     # Create grounded Email A
     did_a = "draft_phase554_email_a"
@@ -144,7 +145,7 @@ def test_failure_a_invalidation_persistence_failure_quarantines_draft_authority(
     claims fails closed (is_valid=False, status=INVALIDATED / VALIDATION_FAILED)
     rather than remaining SUPPORTED / is_grounded=True.
     """
-    PROVENANCE_STORE.reset_store()
+    test_reset_provenance_store()
     did = "draft_persist_fail_001"
     c1 = generate_canonical_claim("FACT_GOOGLE_REVENUE", draft_id=did)
     c2 = generate_canonical_claim("FACT_CDW_SERVICES", draft_id=did)

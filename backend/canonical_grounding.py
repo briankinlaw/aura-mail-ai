@@ -28,6 +28,7 @@ SECURITY & INFORMATION-INTEGRITY INVARIANTS:
 
 import re
 import os
+import math
 import hashlib
 import logging
 import time
@@ -54,6 +55,31 @@ class InvalidationPersistenceError(RuntimeError):
     def __init__(self, target_id: str, message: str):
         super().__init__(message)
         self.target_id = target_id
+
+
+class RecoveryStrategy(str, Enum):
+    RESET_ALL_PROVENANCE = "RESET_ALL_PROVENANCE"
+
+
+class RecoveryExecutionContext(str, Enum):
+    LOCAL_ADMIN_MAINTENANCE = "LOCAL_ADMIN_MAINTENANCE"
+
+
+class RecoveryAuthorizationError(PermissionError):
+    """Raised when administrative recovery authorization is missing, invalid, or unauthorized."""
+    pass
+
+
+@dataclass(frozen=True)
+class AdministrativeRecoveryContext:
+    """
+    Immutable typed context object required to authorize administrative recovery.
+    Must be invoked only within LOCAL_ADMIN_MAINTENANCE execution context with valid local auth evidence.
+    """
+    actor: str
+    execution_context: RecoveryExecutionContext
+    explicitly_confirmed: bool
+    authorization_evidence: str
 
 
 
@@ -1139,113 +1165,109 @@ class ProvenanceStore:
         with self._lock:
             return self._is_available
 
-    def recover_store(self, strategy: str = "RESET_ALL_PROVENANCE", admin_context: Optional[Dict[str, Any]] = None) -> bool:
+    def recover_store(
+        self,
+        strategy: RecoveryStrategy,
+        recovery_context: AdministrativeRecoveryContext
+    ) -> bool:
         """
-        Explicit administrative recovery operation. Requires an explicit recovery strategy.
-        Validates and repairs or safely resets underlying provenance data before removing the disabled state marker.
+        Explicit administrative recovery operation.
+        Strictly requires RecoveryStrategy.RESET_ALL_PROVENANCE and a validated AdministrativeRecoveryContext.
         """
         with self._lock:
-            if strategy not in ("RESET_ALL_PROVENANCE", "VALIDATE_AND_REPAIR"):
-                raise ValueError(f"Unsupported recovery strategy: '{strategy}'. Supported strategies: 'RESET_ALL_PROVENANCE', 'VALIDATE_AND_REPAIR'")
+            # 1. Validate Strategy
+            if not strategy or (strategy != RecoveryStrategy.RESET_ALL_PROVENANCE and strategy != "RESET_ALL_PROVENANCE"):
+                raise ValueError(f"Unsupported recovery strategy: '{strategy}'. Only 'RESET_ALL_PROVENANCE' is permitted.")
 
-            if strategy == "RESET_ALL_PROVENANCE":
-                self._records.clear()
-                self._quarantined_draft_ids.clear()
+            # 2. Validate Administrative Context Type
+            if not isinstance(recovery_context, AdministrativeRecoveryContext):
+                raise RecoveryAuthorizationError("recovery_context must be a valid AdministrativeRecoveryContext instance.")
 
-                # Durably write empty dictionary to claim store
-                temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
+            # 3. Validate Actor
+            if not recovery_context.actor or not isinstance(recovery_context.actor, str) or not recovery_context.actor.strip():
+                raise RecoveryAuthorizationError("Administrative recovery requires a non-empty actor identity.")
+
+            # 4. Validate Execution Context
+            if recovery_context.execution_context != RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE and recovery_context.execution_context != "LOCAL_ADMIN_MAINTENANCE":
+                raise RecoveryAuthorizationError(
+                    f"Forbidden recovery execution context: '{recovery_context.execution_context}'. "
+                    "Only 'LOCAL_ADMIN_MAINTENANCE' is authorized."
+                )
+
+            # 5. Validate Explicit Confirmation
+            if recovery_context.explicitly_confirmed is not True or not isinstance(recovery_context.explicitly_confirmed, bool):
+                raise RecoveryAuthorizationError("Administrative recovery requires explicitly_confirmed=True.")
+
+            # 6. Validate Authorization Evidence via Trusted Local Primitive
+            from backend.auth import verify_local_token
+            if not verify_local_token(recovery_context.authorization_evidence):
+                raise RecoveryAuthorizationError("Invalid administrative recovery authorization evidence.")
+
+            # 7. Execute Destructive RESET_ALL_PROVENANCE
+            # Step A: Durably write empty dictionary to claim store
+            temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
+            try:
                 with open(temp_store_path, "w", encoding="utf-8") as f:
                     json.dump({}, f, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(temp_store_path, self.storage_path)
 
-                # Verify empty store can be parsed
+                try:
+                    dir_fd = os.open(str(self.storage_path.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except Exception:
+                    pass
+
+                # Step B: Reopen and verify stored value is exactly {}
                 with open(self.storage_path, "r", encoding="utf-8") as f:
                     parsed = json.load(f)
                     if parsed != {}:
                         raise RuntimeError("Failed to verify empty store after reset write")
 
-                # Remove disabled state marker
+                # Step C: Remove disabled state marker
                 if self.state_path.exists():
                     os.remove(self.state_path)
 
+                try:
+                    dir_fd = os.open(str(self.state_path.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except Exception:
+                    pass
+
+                # Step D: Verify marker is absent
                 if self.state_path.exists():
                     raise RuntimeError("Failed to remove disabled state marker")
 
+                # Step E: Reset in-memory state and reload empty store
                 self._records = {}
                 self._quarantined_draft_ids = set()
                 self._is_available = True
                 self._load_error = None
                 self._unavailable_reason = None
                 self._invalidation_counter += 1
-                logger.info("Provenance store successfully recovered via RESET_ALL_PROVENANCE.")
+                logger.info(f"Provenance store successfully recovered via RESET_ALL_PROVENANCE by actor '{recovery_context.actor}'.")
                 return True
-
-            elif strategy == "VALIDATE_AND_REPAIR":
-                affected_draft = None
-                if self.state_path.exists():
-                    try:
-                        with open(self.state_path, "r", encoding="utf-8") as f:
-                            st_data = json.load(f)
-                            if isinstance(st_data, dict):
-                                affected_draft = st_data.get("affected_draft_id")
-                    except Exception:
-                        pass
-
-                repaired_records: Dict[str, ProvenanceRecord] = {}
-                if self.storage_path.exists():
-                    with open(self.storage_path, "r", encoding="utf-8") as f:
-                        raw_data = json.load(f)
-                        if not isinstance(raw_data, dict):
-                            raise ValueError("Cannot repair corrupt provenance store: root is not a dictionary")
-                        for cid, item in raw_data.items():
-                            if not isinstance(item, dict):
-                                continue
-                            rec = ProvenanceRecord(**item)
-                            if affected_draft and rec.draft_id == affected_draft:
-                                continue
-                            tpl = CANONICAL_CLAIM_TEMPLATES.get(rec.template_id)
-                            if not tpl:
-                                continue
-                            if rec.exact_rendered_hash != compute_sha256(rec.exact_rendered_text):
-                                continue
-                            repaired_records[cid] = rec
-
-                temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
-                with open(temp_store_path, "w", encoding="utf-8") as f:
-                    json.dump({k: v.model_dump() for k, v in repaired_records.items()}, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_store_path, self.storage_path)
-
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    verified = json.load(f)
-                    if len(verified) != len(repaired_records):
-                        raise RuntimeError("Repaired store verification mismatch")
-
-                if self.state_path.exists():
-                    os.remove(self.state_path)
-
-                if self.state_path.exists():
-                    raise RuntimeError("Failed to remove disabled state marker")
-
-                self._records = repaired_records
-                self._quarantined_draft_ids.clear()
-                self._is_available = True
-                self._load_error = None
-                self._unavailable_reason = None
-                self._invalidation_counter += 1
-                logger.info("Provenance store successfully recovered via VALIDATE_AND_REPAIR.")
-                return True
+            except Exception as e:
+                # Any failure keeps store unavailable
+                self._is_available = False
+                self._unavailable_reason = f"Recovery failed: {e}"
+                logger.critical(f"FATAL: Store recovery failed: {e}")
+                raise RuntimeError(f"Administrative recovery failed: {e}") from e
 
     def enable_store(self):
-        """Deprecated generic helper; delegates to recover_store(strategy='RESET_ALL_PROVENANCE')."""
-        return self.recover_store(strategy="RESET_ALL_PROVENANCE")
+        """Removed for security. Generic enable shortcuts are forbidden."""
+        raise RuntimeError("enable_store() is removed for safety. Use recover_store(strategy, recovery_context).")
 
     def reset_store(self):
-        """Resets the store safely via the administrative recovery contract."""
-        return self.recover_store(strategy="RESET_ALL_PROVENANCE")
+        """Removed for security. Generic reset shortcuts are forbidden."""
+        raise RuntimeError("reset_store() is removed for safety. Use recover_store(strategy, recovery_context).")
 
     def get_invalidation_count(self) -> int:
         """Returns the monotonic invalidation counter."""
@@ -1259,32 +1281,49 @@ class ProvenanceStore:
                 try:
                     with open(self.state_path, "r", encoding="utf-8") as f:
                         state_data = json.load(f)
+
+                    # Strict schema validation
                     if not isinstance(state_data, dict):
                         raise ValueError("State marker root must be a JSON object")
-                    if "schema_version" not in state_data:
-                        raise ValueError("State marker missing schema_version")
-                    if state_data.get("schema_version") != 1:
-                        raise ValueError(f"Unsupported state schema version: {state_data.get('schema_version')}")
-                    if "state" not in state_data:
-                        raise ValueError("State marker missing state field")
 
-                    state_val = state_data.get("state")
-                    if state_val == "DISABLED":
-                        self._is_available = False
-                        self._unavailable_reason = f"DURABLY_DISABLED: {state_data.get('reason', 'Store is durably disabled')}"
-                        self._load_error = None
-                        self._quarantined_draft_ids.clear()
-                        if state_data.get("affected_draft_id"):
-                            self._quarantined_draft_ids.add(str(state_data["affected_draft_id"]).strip())
-                        logger.critical(f"Provenance store is DURABLY_DISABLED per state marker at {self.state_path}. Claims will not be loaded or exposed.")
-                        return
-                    elif state_val == "ENABLED":
-                        pass
-                    else:
-                        self._is_available = False
-                        self._unavailable_reason = f"UNKNOWN_STORE_STATE: {state_val}"
-                        logger.critical(f"Provenance store state marker contains unknown state '{state_val}'. Starting unavailable fail-closed.")
-                        return
+                    allowed_keys = {"schema_version", "state", "reason", "affected_draft_id", "disabled_at", "recovery_required"}
+                    if not set(state_data.keys()).issubset(allowed_keys):
+                        raise ValueError("State marker contains unrecognized fields")
+
+                    if "schema_version" not in state_data or type(state_data["schema_version"]) is not int or isinstance(state_data["schema_version"], bool) or state_data["schema_version"] != 1:
+                        raise ValueError(f"State marker schema_version invalid or unsupported: {state_data.get('schema_version')}")
+
+                    if "state" not in state_data or state_data.get("state") != "DISABLED":
+                        raise ValueError(f"State marker state invalid: '{state_data.get('state')}'. Only 'DISABLED' is permitted.")
+
+                    reason_val = state_data.get("reason")
+                    if not isinstance(reason_val, str) or not reason_val.strip():
+                        raise ValueError("State marker reason must be a non-empty string")
+
+                    if "affected_draft_id" not in state_data:
+                        raise ValueError("State marker missing affected_draft_id field")
+                    aff_did = state_data.get("affected_draft_id")
+                    if aff_did is not None and (not isinstance(aff_did, str) or not aff_did.strip()):
+                        raise ValueError("State marker affected_draft_id must be a non-empty string or null")
+
+                    if "disabled_at" not in state_data:
+                        raise ValueError("State marker missing disabled_at")
+                    d_at = state_data.get("disabled_at")
+                    if not isinstance(d_at, (int, float)) or isinstance(d_at, bool) or not math.isfinite(d_at) or d_at <= 0:
+                        raise ValueError(f"State marker disabled_at invalid: {d_at}")
+
+                    if "recovery_required" not in state_data or state_data.get("recovery_required") is not True or not isinstance(state_data.get("recovery_required"), bool):
+                        raise ValueError(f"State marker recovery_required must be Boolean true: {state_data.get('recovery_required')}")
+
+                    # Valid DISABLED state marker: set store unavailable
+                    self._is_available = False
+                    self._unavailable_reason = f"DURABLY_DISABLED: {reason_val.strip()}"
+                    self._load_error = None
+                    self._quarantined_draft_ids.clear()
+                    if aff_did:
+                        self._quarantined_draft_ids.add(aff_did.strip())
+                    logger.critical(f"Provenance store is DURABLY_DISABLED per state marker at {self.state_path}. Claims will not be loaded or exposed.")
+                    return
                 except Exception as e:
                     logger.critical(f"Provenance store state file at {self.state_path} is invalid/unreadable: {e}. Starting unavailable fail-closed.")
                     self._is_available = False
@@ -1492,9 +1531,6 @@ class ProvenanceStore:
                     raise InvalidationPersistenceError(did_clean, f"Persistence failure during draft invalidation for {did_clean}: {e}") from e
             return count
 
-    def reset_store(self):
-        """Resets the store safely via the administrative recovery contract."""
-        return self.recover_store(strategy="RESET_ALL_PROVENANCE")
 
 
 # Global Singleton Provenance Store

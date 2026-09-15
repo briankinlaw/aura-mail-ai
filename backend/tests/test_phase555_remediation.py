@@ -36,17 +36,18 @@ from backend.canonical_grounding import (
     get_active_ledger_digest
 )
 from backend.auth import get_local_session_token
+from backend.tests.conftest import test_reset_provenance_store
 
 
 @pytest.fixture(autouse=True)
 def reset_provenance_and_cache():
     """Reset in-memory provenance store, quarantine set, and email cache between tests."""
     with _EMAIL_STATE_LOCK:
-        PROVENANCE_STORE.reset_store()
+        test_reset_provenance_store()
         CACHED_EMAILS.clear()
     yield
     with _EMAIL_STATE_LOCK:
-        PROVENANCE_STORE.reset_store()
+        test_reset_provenance_store()
         CACHED_EMAILS.clear()
 
 
@@ -379,7 +380,7 @@ def test_snapshot_revalidation_rejects_single_field_discrepancies():
     is_valid, reason = verify_risk_evaluation_snapshot(snapshot, msg)
     assert is_valid is False
     assert "quarantined" in reason.lower()
-    PROVENANCE_STORE.reset_store()
+    test_reset_provenance_store()
 
     # 2. Altered draft_id
     msg, binding, exact_text, text_hash = _setup_grounded_email()
