@@ -552,6 +552,7 @@ def safely_invalidate_draft_authority(
     Returns (status, detail_message):
     - ("DURABLY_INVALIDATED", None): invalidation successfully persisted or draft already invalidated
     - ("INVALIDATION_PERSISTENCE_FAILURE", error_msg): persistence failed and draft identity was quarantined
+    - ("PROVENANCE_STORE_UNAVAILABLE", error_msg): persistence/quarantine failed and store was disabled
     - ("NO_OP", None): no draft_id provided
     """
     if not draft_id:
@@ -570,6 +571,22 @@ def safely_invalidate_draft_authority(
         return "NO_OP", None
 
     did_clean = draft_id.strip() if isinstance(draft_id, str) else str(draft_id)
+
+    if not PROVENANCE_STORE.is_available():
+        if email_msg:
+            email_msg.draft_id = None
+            email_msg.claim_bindings = []
+            email_msg.draft_text_hash = None
+            email_msg.is_grounded = False
+            email_msg.grounding_status = GroundingStatus.VALIDATION_FAILED.value
+            email_msg.risk_result = None
+            email_msg.risk_draft_id = None
+            email_msg.risk_draft_text_hash = None
+            email_msg.risk_is_current = False
+            email_msg.invalidation_issued = True
+            email_msg.draft_version += 1
+        return "PROVENANCE_STORE_UNAVAILABLE", "Provenance store is unavailable."
+
     try:
         PROVENANCE_STORE.invalidate_draft_claims(did_clean, reason=reason)
         if email_msg:
@@ -585,9 +602,16 @@ def safely_invalidate_draft_authority(
             email_msg.invalidation_issued = True
             email_msg.draft_version += 1
         return "DURABLY_INVALIDATED", None
-    except Exception as e:
-        logger.error(f"Persistence error invalidating draft {did_clean}: {e}")
-        # Note: PROVENANCE_STORE has already added did_clean to _quarantined_draft_ids
+    except InvalidationPersistenceError as ipe:
+        logger.error(f"Persistence error invalidating draft {did_clean}: {ipe}")
+        quarantine_ok = False
+        try:
+            PROVENANCE_STORE.quarantine_draft(did_clean)
+            quarantine_ok = PROVENANCE_STORE.is_draft_quarantined(did_clean)
+        except Exception as q_err:
+            logger.critical(f"Draft quarantine failed for {did_clean}: {q_err}")
+            quarantine_ok = False
+
         if email_msg:
             email_msg.draft_id = None
             email_msg.claim_bindings = []
@@ -600,7 +624,40 @@ def safely_invalidate_draft_authority(
             email_msg.risk_is_current = False
             email_msg.invalidation_issued = True
             email_msg.draft_version += 1
-        return "INVALIDATION_PERSISTENCE_FAILURE", str(e)
+
+        if quarantine_ok:
+            return "INVALIDATION_PERSISTENCE_FAILURE", str(ipe)
+        else:
+            PROVENANCE_STORE.disable_store(f"Quarantine verification failed for draft '{did_clean}': {ipe}")
+            return "PROVENANCE_STORE_UNAVAILABLE", f"Quarantine failed; store disabled: {ipe}"
+    except Exception as e:
+        logger.critical(f"Unexpected exception during draft invalidation for {did_clean}: {e}")
+        quarantine_ok = False
+        try:
+            PROVENANCE_STORE.quarantine_draft(did_clean)
+            quarantine_ok = PROVENANCE_STORE.is_draft_quarantined(did_clean)
+        except Exception as q_err:
+            logger.critical(f"Quarantine after unexpected exception failed for {did_clean}: {q_err}")
+            quarantine_ok = False
+
+        if email_msg:
+            email_msg.draft_id = None
+            email_msg.claim_bindings = []
+            email_msg.draft_text_hash = None
+            email_msg.is_grounded = False
+            email_msg.grounding_status = GroundingStatus.VALIDATION_FAILED.value
+            email_msg.risk_result = None
+            email_msg.risk_draft_id = None
+            email_msg.risk_draft_text_hash = None
+            email_msg.risk_is_current = False
+            email_msg.invalidation_issued = True
+            email_msg.draft_version += 1
+
+        if quarantine_ok:
+            return "INVALIDATION_PERSISTENCE_FAILURE", f"Unexpected invalidation error; quarantined: {e}"
+        else:
+            PROVENANCE_STORE.disable_store(f"Unexpected invalidation error and quarantine failure for draft '{did_clean}': {e}")
+            return "PROVENANCE_STORE_UNAVAILABLE", f"Store disabled due to unexpected invalidation failure: {e}"
 
 
 @app.get("/api/canonical/templates", dependencies=[Depends(require_local_auth)])
@@ -938,16 +995,17 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
                     email_msg=email_msg,
                     reason="Draft claims validation failed during save"
                 )
-                if inv_status == "INVALIDATION_PERSISTENCE_FAILURE":
+                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
                     save_cached_emails()
                     return {
                         "success": False,
-                        "status": "INVALIDATION_PERSISTENCE_FAILURE",
+                        "status": inv_status,
+                        "error_code": inv_status,
                         "is_grounded": False,
                         "grounding_status": GroundingStatus.VALIDATION_FAILED.value,
                         "risk_is_current": False,
                         "requires_human_review": True,
-                        "validation_summary": f"Provenance invalidation persistence failed. Authority quarantined; manual review required ({inv_err}).",
+                        "validation_summary": f"Provenance invalidation persistence failed ({inv_status}). Authority quarantined; manual review required ({inv_err}).",
                         "safe_message": "Draft invalidation persistence failed. Content was not saved to prevent unpersisted state divergence."
                     }
         else:
@@ -958,16 +1016,17 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
                     email_msg=email_msg,
                     reason="Draft divergence or manifest substitution detected during save"
                 )
-                if inv_status == "INVALIDATION_PERSISTENCE_FAILURE":
+                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
                     save_cached_emails()
                     return {
                         "success": False,
-                        "status": "INVALIDATION_PERSISTENCE_FAILURE",
+                        "status": inv_status,
+                        "error_code": inv_status,
                         "is_grounded": False,
                         "grounding_status": GroundingStatus.VALIDATION_FAILED.value,
                         "risk_is_current": False,
                         "requires_human_review": True,
-                        "validation_summary": f"Draft divergence detected and invalidation persistence failed. Authority quarantined; manual review required ({inv_err}).",
+                        "validation_summary": f"Draft divergence detected and invalidation persistence failed ({inv_status}). Authority quarantined; manual review required ({inv_err}).",
                         "safe_message": "Draft invalidation persistence failed. Manual review required."
                     }
 
@@ -1064,10 +1123,11 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
                     email_msg=email_msg,
                     reason="Draft divergence or manifest mismatch detected during risk check"
                 )
-                if inv_status == "INVALIDATION_PERSISTENCE_FAILURE":
+                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
                     save_cached_emails()
                     return {
-                        "status": "INVALIDATION_PERSISTENCE_FAILURE",
+                        "status": inv_status,
+                        "error_code": inv_status,
                         "risk": None,
                         "is_grounded": False,
                         "grounding_status": GroundingStatus.VALIDATION_FAILED.value,
@@ -1076,7 +1136,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
                         "draft_text_hash": req_text_hash,
                         "risk_is_current": False,
                         "requires_human_review": True,
-                        "validation_summary": f"Provenance invalidation persistence failed during divergence detection. Authority quarantined; human review required ({inv_err})."
+                        "validation_summary": f"Provenance invalidation persistence failed during divergence detection ({inv_status}). Authority quarantined; human review required ({inv_err})."
                     }
 
             email_msg.draft_id = None
@@ -1127,10 +1187,11 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
                 email_msg=email_msg,
                 reason="Draft claims invalid during risk check"
             )
-            if inv_status == "INVALIDATION_PERSISTENCE_FAILURE":
+            if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
                 save_cached_emails()
                 return {
-                    "status": "INVALIDATION_PERSISTENCE_FAILURE",
+                    "status": inv_status,
+                    "error_code": inv_status,
                     "risk": None,
                     "is_grounded": False,
                     "grounding_status": GroundingStatus.VALIDATION_FAILED.value,
@@ -1139,7 +1200,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
                     "draft_text_hash": req_text_hash,
                     "risk_is_current": False,
                     "requires_human_review": True,
-                    "validation_summary": f"Provenance invalidation persistence failed during claim validation. Authority quarantined; human review required ({inv_err})."
+                    "validation_summary": f"Provenance invalidation persistence failed during claim validation ({inv_status}). Authority quarantined; human review required ({inv_err})."
                 }
 
             email_msg.draft_id = None
@@ -1178,6 +1239,21 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
 
         # Capture immutable snapshot BEFORE releasing lock for slow evaluation
         snapshot = capture_risk_evaluation_snapshot(email_id, email_msg)
+        if not snapshot:
+            save_cached_emails()
+            return {
+                "status": "SNAPSHOT_CAPTURE_FAILED",
+                "error_code": "SNAPSHOT_CAPTURE_FAILED",
+                "risk": None,
+                "is_grounded": False,
+                "grounding_status": email_msg.grounding_status if email_msg else GroundingStatus.VALIDATION_FAILED.value,
+                "email_id": email_id,
+                "draft_id": None,
+                "draft_text_hash": req_text_hash,
+                "risk_is_current": False,
+                "requires_human_review": True,
+                "validation_summary": "Authoritative risk snapshot capture failed; risk evaluation denied."
+            }
         eval_draft_id = email_msg.draft_id
         eval_bindings = submitted_canonical
 
@@ -1200,11 +1276,13 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
 
         if not is_valid_snapshot:
             logger.warning(f"Discarding stale risk evaluation for email '{email_id}': {snapshot_reason}")
-            if PROVENANCE_STORE.is_draft_quarantined(snapshot.draft_id):
+            if not PROVENANCE_STORE.is_available():
+                fail_status = "PROVENANCE_STORE_UNAVAILABLE"
+            elif PROVENANCE_STORE.is_draft_quarantined(snapshot.draft_id):
                 fail_status = "QUARANTINED"
             elif current_email and current_email.draft_id != snapshot.draft_id:
                 fail_status = "STALE_EVALUATION"
-            elif current_email and current_email.draft_text_hash != snapshot.draft_text_hash:
+            elif current_email and current_email.draft_text_hash != snapshot.cached_draft_text_hash:
                 fail_status = "DIVERGENCE_DETECTED"
             else:
                 fail_status = "STALE_EVALUATION"
@@ -1225,7 +1303,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
         # Snapshot verified: install authoritative risk result
         current_email.risk_result = res.model_dump()
         current_email.risk_draft_id = snapshot.draft_id
-        current_email.risk_draft_text_hash = snapshot.draft_text_hash
+        current_email.risk_draft_text_hash = snapshot.cached_draft_text_hash
         current_email.risk_is_current = True
         save_cached_emails()
 
@@ -1236,7 +1314,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
             "grounding_status": current_email.grounding_status,
             "email_id": email_id,
             "draft_id": snapshot.draft_id,
-            "draft_text_hash": snapshot.draft_text_hash,
+            "draft_text_hash": snapshot.cached_draft_text_hash,
             "risk_is_current": True,
             "validation_summary": "Risk assessment completed and bound to active draft."
         }
@@ -1295,13 +1373,15 @@ def invalidate_email_draft_endpoint(email_id: str, payload: Optional[Dict[str, A
         )
         save_cached_emails()
 
-        if inv_status == "INVALIDATION_PERSISTENCE_FAILURE":
+        if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
             raise HTTPException(
                 status_code=500,
                 detail={
-                    "error_code": "INVALIDATION_PERSISTENCE_FAILURE",
-                    "message": f"Provenance invalidation persistence failed. Authority quarantined; manual review required ({inv_err}).",
-                    "requires_human_review": True
+                    "status": inv_status,
+                    "error_code": inv_status,
+                    "message": f"Provenance invalidation persistence failed. {'Authority quarantined' if inv_status == 'INVALIDATION_PERSISTENCE_FAILURE' else 'Store disabled'}; manual review required ({inv_err}).",
+                    "requires_human_review": True,
+                    "quarantined": inv_status == "INVALIDATION_PERSISTENCE_FAILURE"
                 }
             )
 
@@ -1603,6 +1683,10 @@ from backend.radar.risk_evaluator import evaluate_second_opinion_risk
 def radar_risk_check_endpoint(payload: Dict[str, Any]):
     """
     Evaluates risk and second-opinion posture for proposed draft replies and operations.
+    Radar Add-in Second-Opinion Risk Check with strict provenance verification.
+    If cached draft has diverged or claim bindings are missing/invalid, prior
+    authority is safely invalidated. If invalidation persistence fails, the
+    endpoint stops immediately and fails closed without invoking risk evaluation.
 
     SECURITY CONTRACT:
     - execution-context type: backend.safety_policy.ExecutionContext (or string)
@@ -1623,38 +1707,58 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
 
     email_id = payload.get("email_id")
     if email_id and email_id in CACHED_EMAILS:
-        cached_msg = CACHED_EMAILS[email_id]
-        req_text_hash = compute_sha256(draft_reply) if draft_reply else None
-        submitted_canonical = canonicalize_binding_manifest(claim_bindings)
-        cached_canonical = canonicalize_binding_manifest(cached_msg.claim_bindings)
-        if (
-            not draft_id or
-            not cached_msg.draft_id or
-            draft_id != cached_msg.draft_id or
-            not req_text_hash or
-            not cached_msg.draft_text_hash or
-            req_text_hash != cached_msg.draft_text_hash or
-            submitted_canonical != cached_canonical
-        ):
-            if cached_msg.draft_id:
-                safely_invalidate_draft_authority(
-                    cached_msg.draft_id,
-                    email_msg=cached_msg,
-                    reason="Draft divergence during radar risk check"
-                )
-            cached_msg.draft_id = None
-            cached_msg.claim_bindings = []
-            cached_msg.draft_text_hash = None
-            cached_msg.is_grounded = False
-            cached_msg.grounding_status = GroundingStatus.VALIDATION_FAILED.value if draft_id else GroundingStatus.UNVERIFIED.value
-            cached_msg.risk_result = None
-            cached_msg.risk_draft_id = None
-            cached_msg.risk_draft_text_hash = None
-            cached_msg.risk_is_current = False
-            cached_msg.draft_version += 1
-            save_cached_emails()
-            draft_id = None
-            claim_bindings = None
+        with _EMAIL_STATE_LOCK:
+            cached_msg = CACHED_EMAILS[email_id]
+            req_text_hash = compute_sha256(draft_reply) if draft_reply else None
+            submitted_canonical = canonicalize_binding_manifest(claim_bindings)
+            cached_canonical = canonicalize_binding_manifest(cached_msg.claim_bindings)
+            if (
+                not draft_id or
+                not cached_msg.draft_id or
+                draft_id != cached_msg.draft_id or
+                not req_text_hash or
+                not cached_msg.draft_text_hash or
+                req_text_hash != cached_msg.draft_text_hash or
+                submitted_canonical != cached_canonical
+            ):
+                if cached_msg.draft_id:
+                    inv_status, inv_err = safely_invalidate_draft_authority(
+                        cached_msg.draft_id,
+                        email_msg=cached_msg,
+                        reason="Draft divergence during radar risk check"
+                    )
+                    if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+                        save_cached_emails()
+                        return JSONResponse(
+                            status_code=500,
+                            content={
+                                "status": inv_status,
+                                "error_code": inv_status,
+                                "is_grounded": False,
+                                "risk_is_current": False,
+                                "requires_human_review": True,
+                                "email_id": email_id,
+                                "detail": (
+                                    "Durable invalidation failed during radar risk check; "
+                                    f"{'affected draft authority was quarantined' if inv_status == 'INVALIDATION_PERSISTENCE_FAILURE' else 'provenance store was disabled'}. "
+                                    "No authoritative risk result was produced; human review is required."
+                                ),
+                                "error": inv_err
+                            }
+                        )
+                cached_msg.draft_id = None
+                cached_msg.claim_bindings = []
+                cached_msg.draft_text_hash = None
+                cached_msg.is_grounded = False
+                cached_msg.grounding_status = GroundingStatus.VALIDATION_FAILED.value if draft_id else GroundingStatus.UNVERIFIED.value
+                cached_msg.risk_result = None
+                cached_msg.risk_draft_id = None
+                cached_msg.risk_draft_text_hash = None
+                cached_msg.risk_is_current = False
+                cached_msg.draft_version += 1
+                save_cached_emails()
+                draft_id = None
+                claim_bindings = None
 
     msg = EmailMessage(
         id=email_id or "addin-risk-temp",

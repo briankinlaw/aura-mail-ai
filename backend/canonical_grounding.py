@@ -1055,18 +1055,50 @@ class ProvenanceStore:
         self._quarantined_draft_ids: Set[str] = set()
         self._is_available: bool = True
         self._load_error: Optional[str] = None
+        self._unavailable_reason: Optional[str] = None
+        self._invalidation_counter: int = 0
         self._load()
 
-    def quarantine_draft(self, draft_id: str):
+    def quarantine_draft(self, draft_id: Optional[str]):
+        """Explicitly quarantines a draft ID, preventing future claim creation or verification."""
         with self._lock:
             if draft_id and isinstance(draft_id, str):
-                self._quarantined_draft_ids.add(draft_id.strip())
+                did_clean = draft_id.strip()
+                if did_clean:
+                    self._quarantined_draft_ids.add(did_clean)
+                    self._invalidation_counter += 1
 
-    def is_draft_quarantined(self, draft_id: str) -> bool:
+    def is_draft_quarantined(self, draft_id: Optional[str]) -> bool:
+        """Returns True if the draft ID has been quarantined."""
         with self._lock:
             if not draft_id or not isinstance(draft_id, str):
                 return False
             return draft_id.strip() in self._quarantined_draft_ids
+
+    def disable_store(self, reason: Optional[str] = None):
+        """Disables the entire provenance store fail-closed upon catastrophic invalidation or quarantine failure."""
+        with self._lock:
+            self._is_available = False
+            self._unavailable_reason = reason or "Provenance store manually or defensively disabled."
+            self._invalidation_counter += 1
+            logger.critical(f"Provenance store disabled fail-closed: {self._unavailable_reason}")
+
+    def is_available(self) -> bool:
+        """Returns True if the provenance store is active and operational."""
+        with self._lock:
+            return self._is_available
+
+    def enable_store(self):
+        """Explicitly re-enables the store after administrative or test reset."""
+        with self._lock:
+            self._is_available = True
+            self._load_error = None
+            self._unavailable_reason = None
+
+    def get_invalidation_count(self) -> int:
+        """Returns the monotonic invalidation counter."""
+        with self._lock:
+            return self._invalidation_counter
 
     def _load(self):
         with self._lock:
@@ -1093,10 +1125,12 @@ class ProvenanceStore:
                             self._records[cid] = ProvenanceRecord(**item)
                     self._is_available = True
                     self._load_error = None
+                    self._unavailable_reason = None
                 except Exception as e:
                     logger.error(f"Failed to load provenance records from {self.storage_path}: {e}")
                     self._is_available = False
                     self._load_error = str(e)
+                    self._unavailable_reason = f"Startup load error: {e}"
                     # Fail closed: Do NOT overwrite corrupt or damaged store file
 
     def _persist_to_disk(self, candidate_records: Dict[str, ProvenanceRecord]):
@@ -1106,7 +1140,7 @@ class ProvenanceStore:
         -> atomic replace -> fsync parent directory where supported.
         """
         if not self._is_available:
-            raise RuntimeError(f"Provenance store is unavailable due to prior startup error: {self._load_error}")
+            raise RuntimeError(f"Provenance store is unavailable: {self._unavailable_reason or self._load_error or 'Store disabled fail-closed'}")
 
         data = {cid: rec.model_dump() for cid, rec in candidate_records.items()}
         temp_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
@@ -1142,6 +1176,9 @@ class ProvenanceStore:
         custom_params: Optional[Dict[str, Any]] = None
     ) -> ProvenanceRecord:
         with self._lock:
+            if not self._is_available:
+                raise RuntimeError(f"Provenance store is unavailable: {self._unavailable_reason or self._load_error or 'Store disabled fail-closed'}")
+
             if not draft_id or not isinstance(draft_id, str) or not draft_id.strip():
                 raise ValueError("draft_id is mandatory and must be a non-empty string for claim instance generation")
             draft_id_clean = draft_id.strip()
@@ -1225,11 +1262,13 @@ class ProvenanceStore:
             try:
                 self._persist_to_disk(candidate)
                 self._records[claim_instance_id] = updated_rec
+                self._invalidation_counter += 1
                 return True
             except Exception as e:
                 target_did = rec.draft_id or claim_instance_id
                 if rec.draft_id:
                     self._quarantined_draft_ids.add(rec.draft_id)
+                self._invalidation_counter += 1
                 logger.error(f"Persistence failure during claim invalidation for {claim_instance_id}. Quarantined draft: {e}")
                 raise InvalidationPersistenceError(target_did, f"Persistence failure during claim invalidation for {claim_instance_id}: {e}") from e
 
@@ -1240,6 +1279,7 @@ class ProvenanceStore:
             did_clean = draft_id.strip() if isinstance(draft_id, str) else str(draft_id)
             if not self._is_available:
                 self._quarantined_draft_ids.add(did_clean)
+                self._invalidation_counter += 1
                 raise InvalidationPersistenceError(did_clean, f"Provenance store is unavailable; quarantined draft '{did_clean}'")
             count = 0
             candidate = dict(self._records)
@@ -1251,8 +1291,10 @@ class ProvenanceStore:
                 try:
                     self._persist_to_disk(candidate)
                     self._records = candidate
+                    self._invalidation_counter += 1
                 except Exception as e:
                     self._quarantined_draft_ids.add(did_clean)
+                    self._invalidation_counter += 1
                     logger.error(f"Persistence failure during draft invalidation for {did_clean}. Quarantined draft authority: {e}")
                     raise InvalidationPersistenceError(did_clean, f"Persistence failure during draft invalidation for {did_clean}: {e}") from e
             return count
@@ -1263,6 +1305,9 @@ class ProvenanceStore:
             self._records.clear()
             self._quarantined_draft_ids.clear()
             self._is_available = True
+            self._load_error = None
+            self._unavailable_reason = None
+            self._invalidation_counter += 1
 
 
 # Global Singleton Provenance Store
@@ -1345,16 +1390,22 @@ class RiskEvaluationSnapshot:
     """
     Immutable server-side snapshot of draft identity and grounding authority
     captured prior to asynchronous or potentially slow risk evaluation.
+    Every field defined here represents authoritative state and is strictly
+    enforced during post-evaluation revalidation.
     """
     email_id: str
     draft_id: str
     draft_text: str
-    draft_text_hash: str
-    canonical_manifest: List[Dict[str, Any]]
+    computed_draft_text_hash: str
+    cached_draft_text_hash: str
+    canonical_manifest: Tuple[Dict[str, Any], ...]
     manifest_digest: str
     is_grounded: bool
     grounding_status: str
     draft_version: int
+    invalidation_count: int
+    is_quarantined: bool
+    store_available: bool
     ledger_version: str
     ledger_digest: str
     created_at: float = field(default_factory=time.time)
@@ -1363,42 +1414,86 @@ class RiskEvaluationSnapshot:
 def capture_risk_evaluation_snapshot(email_id: str, email_msg: Any) -> Optional[RiskEvaluationSnapshot]:
     """
     Captures an immutable snapshot of server-cached draft state prior to risk evaluation.
+    Fails closed (returns None) if any authoritative field is missing, invalid, or divergent.
     """
-    if not email_msg or not email_msg.draft_id or not email_msg.draft_text_hash:
+    if not email_id or not isinstance(email_id, str) or not email_id.strip():
+        return None
+    if not email_msg or not hasattr(email_msg, "id") or email_msg.id != email_id:
+        return None
+    if not email_msg.draft_id or not isinstance(email_msg.draft_id, str) or not email_msg.draft_id.strip():
         return None
 
+    draft_text = email_msg.draft_reply
+    if draft_text is None or not isinstance(draft_text, str):
+        return None
+
+    if not email_msg.draft_text_hash or not isinstance(email_msg.draft_text_hash, str) or not email_msg.draft_text_hash.strip():
+        return None
+
+    # Independent computation and cross-verification of draft text hash
+    computed_hash = compute_sha256(draft_text)
+    if not computed_hash or email_msg.draft_text_hash != computed_hash:
+        return None
+
+    # Validate canonical manifest
     canonical_manifest = canonicalize_binding_manifest(email_msg.claim_bindings)
+    if email_msg.is_grounded and canonical_manifest is None:
+        return None
     if canonical_manifest is None:
         canonical_manifest = []
 
     manifest_digest = compute_manifest_digest(canonical_manifest)
-    draft_text = email_msg.draft_reply or ""
+    if not is_valid_sha256(manifest_digest) and len(canonical_manifest) > 0:
+        return None
+
+    # Check store and quarantine state
+    if not PROVENANCE_STORE.is_available():
+        return None
+    if PROVENANCE_STORE.is_draft_quarantined(email_msg.draft_id):
+        return None
+    if getattr(email_msg, "invalidation_issued", False):
+        return None
+
+    ledger_version = CANONICAL_LEDGER_SCHEMA_VERSION
+    ledger_digest = get_active_ledger_digest()
+    if not ledger_version or not ledger_digest or not is_valid_sha256(ledger_digest):
+        return None
 
     return RiskEvaluationSnapshot(
-        email_id=email_id,
-        draft_id=email_msg.draft_id,
+        email_id=email_id.strip(),
+        draft_id=email_msg.draft_id.strip(),
         draft_text=draft_text,
-        draft_text_hash=email_msg.draft_text_hash,
-        canonical_manifest=canonical_manifest,
+        computed_draft_text_hash=computed_hash,
+        cached_draft_text_hash=email_msg.draft_text_hash.strip(),
+        canonical_manifest=tuple(canonical_manifest),
         manifest_digest=manifest_digest,
         is_grounded=bool(email_msg.is_grounded),
         grounding_status=str(email_msg.grounding_status or GroundingStatus.UNVERIFIED.value),
         draft_version=getattr(email_msg, "draft_version", 0),
-        ledger_version=CANONICAL_LEDGER_SCHEMA_VERSION,
-        ledger_digest=get_active_ledger_digest()
+        invalidation_count=PROVENANCE_STORE.get_invalidation_count(),
+        is_quarantined=False,
+        store_available=True,
+        ledger_version=ledger_version,
+        ledger_digest=ledger_digest
     )
 
 
 def verify_risk_evaluation_snapshot(snapshot: RiskEvaluationSnapshot, email_msg: Any) -> Tuple[bool, str]:
     """
-    Atomically re-validates a pre-evaluation snapshot against current live state.
+    Atomically re-validates every field of a pre-evaluation snapshot against current live state.
     Returns (is_valid, reason).
     """
     if not email_msg:
         return False, "Addressed email message was removed from cache."
 
+    if getattr(email_msg, "id", None) != snapshot.email_id:
+        return False, f"Email message ID changed: expected '{snapshot.email_id}', currently '{getattr(email_msg, 'id', None)}'."
+
+    if not PROVENANCE_STORE.is_available():
+        return False, "Provenance store became unavailable during risk evaluation."
+
     if PROVENANCE_STORE.is_draft_quarantined(snapshot.draft_id):
-        return False, f"Draft '{snapshot.draft_id}' was quarantined due to an invalidation persistence failure."
+        return False, f"Draft '{snapshot.draft_id}' was quarantined during risk evaluation."
 
     if email_msg.draft_id != snapshot.draft_id:
         return False, f"Draft ID changed: expected '{snapshot.draft_id}', currently '{email_msg.draft_id}'."
@@ -1406,26 +1501,58 @@ def verify_risk_evaluation_snapshot(snapshot: RiskEvaluationSnapshot, email_msg:
     if getattr(email_msg, "draft_version", 0) != snapshot.draft_version:
         return False, f"Draft version changed from {snapshot.draft_version} to {getattr(email_msg, 'draft_version', 0)}."
 
-    current_text_hash = email_msg.draft_text_hash or (compute_sha256(email_msg.draft_reply) if email_msg.draft_reply else None)
-    if current_text_hash != snapshot.draft_text_hash:
-        return False, f"Draft text hash changed: expected '{snapshot.draft_text_hash}', currently '{current_text_hash}'."
+    # Exact draft text verification
+    current_draft_text = email_msg.draft_reply
+    if current_draft_text is None or not isinstance(current_draft_text, str):
+        return False, "Current draft text is missing or invalid."
 
+    if current_draft_text != snapshot.draft_text:
+        return False, "Draft text content changed during risk evaluation."
+
+    # Independent recomputation of draft text hash
+    computed_current_hash = compute_sha256(current_draft_text)
+    if computed_current_hash != snapshot.computed_draft_text_hash:
+        return False, f"Recomputed draft text hash mismatch: expected '{snapshot.computed_draft_text_hash}', computed '{computed_current_hash}'."
+
+    if email_msg.draft_text_hash != snapshot.cached_draft_text_hash:
+        return False, f"Cached draft text hash mismatch: expected '{snapshot.cached_draft_text_hash}', currently '{email_msg.draft_text_hash}'."
+
+    if email_msg.draft_text_hash != computed_current_hash:
+        return False, f"Cached draft text hash does not match recomputed draft text hash: '{email_msg.draft_text_hash}' vs '{computed_current_hash}'."
+
+    # Canonical manifest verification
     current_canonical = canonicalize_binding_manifest(email_msg.claim_bindings)
-    if current_canonical != snapshot.canonical_manifest:
+    if current_canonical is None:
+        current_canonical = []
+    if tuple(current_canonical) != snapshot.canonical_manifest:
         return False, "Canonical claim manifest bindings changed during evaluation."
 
-    current_manifest_digest = compute_manifest_digest(email_msg.claim_bindings)
+    current_manifest_digest = compute_manifest_digest(current_canonical)
     if current_manifest_digest != snapshot.manifest_digest:
         return False, "Canonical claim manifest digest changed during evaluation."
 
-    if email_msg.is_grounded != snapshot.is_grounded:
-        return False, f"Grounding authority changed: expected {snapshot.is_grounded}, currently {email_msg.is_grounded}."
+    # Grounding boolean and status verification
+    if bool(email_msg.is_grounded) != snapshot.is_grounded:
+        return False, f"Grounding boolean changed: expected {snapshot.is_grounded}, currently {email_msg.is_grounded}."
 
+    current_grounding_status = str(email_msg.grounding_status or GroundingStatus.UNVERIFIED.value)
+    if current_grounding_status != snapshot.grounding_status:
+        return False, f"Grounding status changed: expected '{snapshot.grounding_status}', currently '{current_grounding_status}'."
+
+    # Invalidation state verification
     if getattr(email_msg, "invalidation_issued", False):
         return False, "Draft invalidation was issued during evaluation."
 
-    if get_active_ledger_digest() != snapshot.ledger_digest:
-        return False, "Canonical ledger digest changed during evaluation."
+    if PROVENANCE_STORE.get_invalidation_count() != snapshot.invalidation_count:
+        return False, "Provenance store invalidation count changed during evaluation."
+
+    # Canonical ledger version and digest verification
+    if CANONICAL_LEDGER_SCHEMA_VERSION != snapshot.ledger_version:
+        return False, f"Canonical ledger version changed: expected '{snapshot.ledger_version}', currently '{CANONICAL_LEDGER_SCHEMA_VERSION}'."
+
+    current_ledger_digest = get_active_ledger_digest()
+    if current_ledger_digest != snapshot.ledger_digest:
+        return False, f"Canonical ledger digest changed: expected '{snapshot.ledger_digest}', currently '{current_ledger_digest}'."
 
     return True, "Snapshot verified and unchanged."
 
@@ -1508,6 +1635,9 @@ def validate_claim_manifest(
 
     if not claim_bindings:
         return True, GroundingStatus.NO_CAREER_CLAIMS_DETECTED, "No claim bindings in manifest", []
+
+    if not PROVENANCE_STORE.is_available():
+        return False, GroundingStatus.VALIDATION_FAILED, f"Provenance store is unavailable: {PROVENANCE_STORE._unavailable_reason or PROVENANCE_STORE._load_error or 'Store disabled fail-closed'}", []
 
     if not draft_id or not isinstance(draft_id, str) or not draft_id.strip():
         return False, GroundingStatus.VALIDATION_FAILED, "Request draft_id is mandatory and must be a non-empty string", []
@@ -1616,6 +1746,9 @@ def verify_provenance_claim_binding(
     active versions/digests, and deterministic regeneration.
     Strictly fail-closed on any missing or mismatched evidence.
     """
+    if not PROVENANCE_STORE.is_available():
+        return False, ClaimStatus.VALIDATION_FAILED, f"Provenance store is unavailable: {PROVENANCE_STORE._unavailable_reason or PROVENANCE_STORE._load_error or 'Store disabled fail-closed'}", None
+
     if draft_text is None or not isinstance(draft_text, str):
         return False, ClaimStatus.VALIDATION_FAILED, "Draft text must be a valid string", None
 

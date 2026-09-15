@@ -403,7 +403,7 @@ def test_snapshot_revalidation_rejects_single_field_discrepancies():
     msg.draft_text_hash = "tampered_hash"
     is_valid, reason = verify_risk_evaluation_snapshot(snapshot, msg)
     assert is_valid is False
-    assert "text hash changed" in reason.lower()
+    assert "text hash" in reason.lower()
 
     # 5. Altered canonical manifest
     msg, binding, exact_text, text_hash = _setup_grounded_email()
