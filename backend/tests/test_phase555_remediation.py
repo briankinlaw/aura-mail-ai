@@ -12,6 +12,7 @@ import pytest
 import threading
 import time
 import subprocess
+import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -429,27 +430,36 @@ def test_snapshot_revalidation_rejects_single_field_discrepancies():
 
 def test_direct_javascript_test_suite_execution():
     """
-    Executes the pure JavaScript test suite using JavaScriptCore (macOS jsc).
+    Executes the pure JavaScript test suite using Node.js.
     Proves that the actual production JavaScript module (frontend/risk_validator.js)
     is executed and passes all 17 assertions.
     """
-    jsc_path = "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc"
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required to run the frontend validator suite"
+
     test_file = Path(__file__).parent / "test_frontend_risk_validator.js"
     assert test_file.exists(), f"JS test file {test_file} must exist"
 
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
     result = subprocess.run(
-        [jsc_path, str(test_file)],
+        [node, str(test_file)],
+        cwd=str(repo_root),
         capture_output=True,
         text=True,
-        cwd=str(test_file.parent.parent.parent)
+        check=False,
     )
 
-    print(result.stdout)
     if result.returncode != 0:
-        print(result.stderr)
+        print(f"stdout:\n{result.stdout}")
+        print(f"stderr:\n{result.stderr}")
 
-    assert result.returncode == 0, f"JSC execution failed: {result.stderr}"
-    assert "All 17/17 JavaScript Risk Validator tests passed successfully!" in result.stdout
+    assert result.returncode == 0, (
+        f"Node frontend validation failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "All 17/17" in result.stdout
 
 
 # ===========================================================================

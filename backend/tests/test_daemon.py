@@ -27,7 +27,8 @@ class TestAuraDaemon(unittest.TestCase):
         self.assertIn("aura-daemon", plist)
         self.assertIn("<key>RunAtLoad</key>", plist)
 
-    @patch("subprocess.run")
+    @patch("backend.daemon.sys.platform", "darwin")
+    @patch("backend.daemon.subprocess.run")
     def test_send_macos_notification(self, mock_sub):
         send_macos_notification("Aura Mail", "New Lead", "Testing notification")
         self.assertTrue(mock_sub.called)
@@ -35,6 +36,12 @@ class TestAuraDaemon(unittest.TestCase):
         cmd = args[0]
         self.assertEqual(cmd[0], "osascript")
         self.assertIn("Testing notification", cmd[2])
+
+    @patch("backend.daemon.sys.platform", "linux")
+    @patch("backend.daemon.subprocess.run")
+    def test_send_macos_notification_non_darwin(self, mock_sub):
+        send_macos_notification("Aura Mail", "New Lead", "Testing notification")
+        self.assertFalse(mock_sub.called)
 
     @patch("backend.daemon.load_processed_ids", return_value=set())
     @patch("backend.daemon.ProviderManager")
