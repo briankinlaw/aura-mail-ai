@@ -628,8 +628,11 @@ def safely_invalidate_draft_authority(
         if quarantine_ok:
             return "INVALIDATION_PERSISTENCE_FAILURE", str(ipe)
         else:
-            PROVENANCE_STORE.disable_store(f"Quarantine verification failed for draft '{did_clean}': {ipe}")
-            return "PROVENANCE_STORE_UNAVAILABLE", f"Quarantine failed; store disabled: {ipe}"
+            try:
+                PROVENANCE_STORE.disable_store(f"Quarantine verification failed for draft '{did_clean}': {ipe}", affected_draft_id=did_clean)
+                return "PROVENANCE_STORE_UNAVAILABLE", f"Quarantine failed; store durably disabled: {ipe}"
+            except Exception as dis_err:
+                return "STORE_DISABLE_PERSISTENCE_FAILURE", f"Quarantine failed and store disable persistence failed: {dis_err}"
     except Exception as e:
         logger.critical(f"Unexpected exception during draft invalidation for {did_clean}: {e}")
         quarantine_ok = False
@@ -656,8 +659,11 @@ def safely_invalidate_draft_authority(
         if quarantine_ok:
             return "INVALIDATION_PERSISTENCE_FAILURE", f"Unexpected invalidation error; quarantined: {e}"
         else:
-            PROVENANCE_STORE.disable_store(f"Unexpected invalidation error and quarantine failure for draft '{did_clean}': {e}")
-            return "PROVENANCE_STORE_UNAVAILABLE", f"Store disabled due to unexpected invalidation failure: {e}"
+            try:
+                PROVENANCE_STORE.disable_store(f"Unexpected invalidation error and quarantine failure for draft '{did_clean}': {e}", affected_draft_id=did_clean)
+                return "PROVENANCE_STORE_UNAVAILABLE", f"Store durably disabled due to unexpected invalidation failure: {e}"
+            except Exception as dis_err:
+                return "STORE_DISABLE_PERSISTENCE_FAILURE", f"Store disable persistence failed after unexpected error: {dis_err}"
 
 
 @app.get("/api/canonical/templates", dependencies=[Depends(require_local_auth)])
@@ -995,7 +1001,7 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
                     email_msg=email_msg,
                     reason="Draft claims validation failed during save"
                 )
-                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE", "STORE_DISABLE_PERSISTENCE_FAILURE"):
                     save_cached_emails()
                     return {
                         "success": False,
@@ -1016,7 +1022,7 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
                     email_msg=email_msg,
                     reason="Draft divergence or manifest substitution detected during save"
                 )
-                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE", "STORE_DISABLE_PERSISTENCE_FAILURE"):
                     save_cached_emails()
                     return {
                         "success": False,
@@ -1123,7 +1129,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
                     email_msg=email_msg,
                     reason="Draft divergence or manifest mismatch detected during risk check"
                 )
-                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+                if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE", "STORE_DISABLE_PERSISTENCE_FAILURE"):
                     save_cached_emails()
                     return {
                         "status": inv_status,
@@ -1187,7 +1193,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
                 email_msg=email_msg,
                 reason="Draft claims invalid during risk check"
             )
-            if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+            if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE", "STORE_DISABLE_PERSISTENCE_FAILURE"):
                 save_cached_emails()
                 return {
                     "status": inv_status,
@@ -1373,7 +1379,7 @@ def invalidate_email_draft_endpoint(email_id: str, payload: Optional[Dict[str, A
         )
         save_cached_emails()
 
-        if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+        if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE", "STORE_DISABLE_PERSISTENCE_FAILURE"):
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -1727,7 +1733,7 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
                         email_msg=cached_msg,
                         reason="Draft divergence during radar risk check"
                     )
-                    if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE"):
+                    if inv_status in ("INVALIDATION_PERSISTENCE_FAILURE", "PROVENANCE_STORE_UNAVAILABLE", "STORE_DISABLE_PERSISTENCE_FAILURE"):
                         save_cached_emails()
                         return JSONResponse(
                             status_code=500,

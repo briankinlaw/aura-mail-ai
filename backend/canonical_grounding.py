@@ -1047,9 +1047,14 @@ class ProvenanceStore:
             data_dir = base_dir / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             self.storage_path = data_dir / "provenance_records.json"
+            self.state_path = data_dir / "provenance_store_state.json"
         else:
             self.storage_path = Path(storage_path)
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.storage_path.name == "provenance_records.json":
+                self.state_path = self.storage_path.parent / "provenance_store_state.json"
+            else:
+                self.state_path = self.storage_path.parent / f"{self.storage_path.stem}_state.json"
         self._lock = threading.RLock()
         self._records: Dict[str, ProvenanceRecord] = {}
         self._quarantined_draft_ids: Set[str] = set()
@@ -1075,25 +1080,172 @@ class ProvenanceStore:
                 return False
             return draft_id.strip() in self._quarantined_draft_ids
 
-    def disable_store(self, reason: Optional[str] = None):
-        """Disables the entire provenance store fail-closed upon catastrophic invalidation or quarantine failure."""
+    def disable_store(self, reason: Optional[str] = None, affected_draft_id: Optional[str] = None) -> bool:
+        """
+        Durably disables the entire provenance store fail-closed upon catastrophic invalidation or quarantine failure.
+        Writes a crash-resistant state marker file to disk before returning.
+        """
         with self._lock:
             self._is_available = False
-            self._unavailable_reason = reason or "Provenance store manually or defensively disabled."
+            reason_str = str(reason or "Provenance store manually or defensively disabled.")
+            self._unavailable_reason = reason_str
             self._invalidation_counter += 1
-            logger.critical(f"Provenance store disabled fail-closed: {self._unavailable_reason}")
+            if affected_draft_id:
+                self._quarantined_draft_ids.add(str(affected_draft_id).strip())
+
+            state_data = {
+                "schema_version": 1,
+                "state": "DISABLED",
+                "reason": reason_str,
+                "affected_draft_id": str(affected_draft_id).strip() if affected_draft_id else None,
+                "disabled_at": time.time(),
+                "recovery_required": True
+            }
+
+            temp_path = self.state_path.parent / f".tmp_{uuid.uuid4().hex}_{self.state_path.name}"
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(state_data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                os.replace(temp_path, self.state_path)
+
+                try:
+                    dir_fd = os.open(str(self.state_path.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except Exception:
+                    pass
+
+                if not self.state_path.exists():
+                    raise RuntimeError("State marker file missing after atomic write")
+
+                logger.critical(f"Provenance store durably disabled fail-closed: {reason_str}")
+                return True
+            except Exception as e:
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        pass
+                logger.critical(f"FATAL: Failed to persist durable store disable marker: {e}")
+                raise RuntimeError(f"STORE_DISABLE_PERSISTENCE_FAILURE: {e}") from e
 
     def is_available(self) -> bool:
         """Returns True if the provenance store is active and operational."""
         with self._lock:
             return self._is_available
 
-    def enable_store(self):
-        """Explicitly re-enables the store after administrative or test reset."""
+    def recover_store(self, strategy: str = "RESET_ALL_PROVENANCE", admin_context: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Explicit administrative recovery operation. Requires an explicit recovery strategy.
+        Validates and repairs or safely resets underlying provenance data before removing the disabled state marker.
+        """
         with self._lock:
-            self._is_available = True
-            self._load_error = None
-            self._unavailable_reason = None
+            if strategy not in ("RESET_ALL_PROVENANCE", "VALIDATE_AND_REPAIR"):
+                raise ValueError(f"Unsupported recovery strategy: '{strategy}'. Supported strategies: 'RESET_ALL_PROVENANCE', 'VALIDATE_AND_REPAIR'")
+
+            if strategy == "RESET_ALL_PROVENANCE":
+                self._records.clear()
+                self._quarantined_draft_ids.clear()
+
+                # Durably write empty dictionary to claim store
+                temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
+                with open(temp_store_path, "w", encoding="utf-8") as f:
+                    json.dump({}, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temp_store_path, self.storage_path)
+
+                # Verify empty store can be parsed
+                with open(self.storage_path, "r", encoding="utf-8") as f:
+                    parsed = json.load(f)
+                    if parsed != {}:
+                        raise RuntimeError("Failed to verify empty store after reset write")
+
+                # Remove disabled state marker
+                if self.state_path.exists():
+                    os.remove(self.state_path)
+
+                if self.state_path.exists():
+                    raise RuntimeError("Failed to remove disabled state marker")
+
+                self._records = {}
+                self._quarantined_draft_ids = set()
+                self._is_available = True
+                self._load_error = None
+                self._unavailable_reason = None
+                self._invalidation_counter += 1
+                logger.info("Provenance store successfully recovered via RESET_ALL_PROVENANCE.")
+                return True
+
+            elif strategy == "VALIDATE_AND_REPAIR":
+                affected_draft = None
+                if self.state_path.exists():
+                    try:
+                        with open(self.state_path, "r", encoding="utf-8") as f:
+                            st_data = json.load(f)
+                            if isinstance(st_data, dict):
+                                affected_draft = st_data.get("affected_draft_id")
+                    except Exception:
+                        pass
+
+                repaired_records: Dict[str, ProvenanceRecord] = {}
+                if self.storage_path.exists():
+                    with open(self.storage_path, "r", encoding="utf-8") as f:
+                        raw_data = json.load(f)
+                        if not isinstance(raw_data, dict):
+                            raise ValueError("Cannot repair corrupt provenance store: root is not a dictionary")
+                        for cid, item in raw_data.items():
+                            if not isinstance(item, dict):
+                                continue
+                            rec = ProvenanceRecord(**item)
+                            if affected_draft and rec.draft_id == affected_draft:
+                                continue
+                            tpl = CANONICAL_CLAIM_TEMPLATES.get(rec.template_id)
+                            if not tpl:
+                                continue
+                            if rec.exact_rendered_hash != compute_sha256(rec.exact_rendered_text):
+                                continue
+                            repaired_records[cid] = rec
+
+                temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
+                with open(temp_store_path, "w", encoding="utf-8") as f:
+                    json.dump({k: v.model_dump() for k, v in repaired_records.items()}, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temp_store_path, self.storage_path)
+
+                with open(self.storage_path, "r", encoding="utf-8") as f:
+                    verified = json.load(f)
+                    if len(verified) != len(repaired_records):
+                        raise RuntimeError("Repaired store verification mismatch")
+
+                if self.state_path.exists():
+                    os.remove(self.state_path)
+
+                if self.state_path.exists():
+                    raise RuntimeError("Failed to remove disabled state marker")
+
+                self._records = repaired_records
+                self._quarantined_draft_ids.clear()
+                self._is_available = True
+                self._load_error = None
+                self._unavailable_reason = None
+                self._invalidation_counter += 1
+                logger.info("Provenance store successfully recovered via VALIDATE_AND_REPAIR.")
+                return True
+
+    def enable_store(self):
+        """Deprecated generic helper; delegates to recover_store(strategy='RESET_ALL_PROVENANCE')."""
+        return self.recover_store(strategy="RESET_ALL_PROVENANCE")
+
+    def reset_store(self):
+        """Resets the store safely via the administrative recovery contract."""
+        return self.recover_store(strategy="RESET_ALL_PROVENANCE")
 
     def get_invalidation_count(self) -> int:
         """Returns the monotonic invalidation counter."""
@@ -1102,6 +1254,45 @@ class ProvenanceStore:
 
     def _load(self):
         with self._lock:
+            # Step 1: Check separate durable state marker file first
+            if self.state_path.exists():
+                try:
+                    with open(self.state_path, "r", encoding="utf-8") as f:
+                        state_data = json.load(f)
+                    if not isinstance(state_data, dict):
+                        raise ValueError("State marker root must be a JSON object")
+                    if "schema_version" not in state_data:
+                        raise ValueError("State marker missing schema_version")
+                    if state_data.get("schema_version") != 1:
+                        raise ValueError(f"Unsupported state schema version: {state_data.get('schema_version')}")
+                    if "state" not in state_data:
+                        raise ValueError("State marker missing state field")
+
+                    state_val = state_data.get("state")
+                    if state_val == "DISABLED":
+                        self._is_available = False
+                        self._unavailable_reason = f"DURABLY_DISABLED: {state_data.get('reason', 'Store is durably disabled')}"
+                        self._load_error = None
+                        self._quarantined_draft_ids.clear()
+                        if state_data.get("affected_draft_id"):
+                            self._quarantined_draft_ids.add(str(state_data["affected_draft_id"]).strip())
+                        logger.critical(f"Provenance store is DURABLY_DISABLED per state marker at {self.state_path}. Claims will not be loaded or exposed.")
+                        return
+                    elif state_val == "ENABLED":
+                        pass
+                    else:
+                        self._is_available = False
+                        self._unavailable_reason = f"UNKNOWN_STORE_STATE: {state_val}"
+                        logger.critical(f"Provenance store state marker contains unknown state '{state_val}'. Starting unavailable fail-closed.")
+                        return
+                except Exception as e:
+                    logger.critical(f"Provenance store state file at {self.state_path} is invalid/unreadable: {e}. Starting unavailable fail-closed.")
+                    self._is_available = False
+                    self._load_error = str(e)
+                    self._unavailable_reason = f"STATE_FILE_INVALID: {e}"
+                    return
+
+            # Step 2: If state permits (no disabled state marker), load claim records
             if self.storage_path.exists():
                 try:
                     with open(self.storage_path, "r", encoding="utf-8") as f:
@@ -1111,7 +1302,6 @@ class ProvenanceStore:
                         for cid, item in data.items():
                             if not isinstance(item, dict):
                                 raise ValueError(f"Corrupt record for claim '{cid}': expected dict")
-                            # Explicitly check mandatory security integrity fields
                             mandatory_keys = [
                                 "claim_instance_id", "draft_id", "canonical_fact_id",
                                 "template_id", "template_version", "template_digest",
@@ -1131,7 +1321,10 @@ class ProvenanceStore:
                     self._is_available = False
                     self._load_error = str(e)
                     self._unavailable_reason = f"Startup load error: {e}"
-                    # Fail closed: Do NOT overwrite corrupt or damaged store file
+            else:
+                self._is_available = True
+                self._load_error = None
+                self._unavailable_reason = None
 
     def _persist_to_disk(self, candidate_records: Dict[str, ProvenanceRecord]):
         """
@@ -1300,14 +1493,8 @@ class ProvenanceStore:
             return count
 
     def reset_store(self):
-        with self._lock:
-            self._persist_to_disk({})
-            self._records.clear()
-            self._quarantined_draft_ids.clear()
-            self._is_available = True
-            self._load_error = None
-            self._unavailable_reason = None
-            self._invalidation_counter += 1
+        """Resets the store safely via the administrative recovery contract."""
+        return self.recover_store(strategy="RESET_ALL_PROVENANCE")
 
 
 # Global Singleton Provenance Store
@@ -1392,6 +1579,14 @@ class RiskEvaluationSnapshot:
     captured prior to asynchronous or potentially slow risk evaluation.
     Every field defined here represents authoritative state and is strictly
     enforced during post-evaluation revalidation.
+
+    NOTE ON created_at:
+    The created_at field is non-authoritative observational diagnostic metadata
+    recording the snapshot capture timestamp. It is excluded from authoritative
+    equality enforcement. The 15 authoritative dimensions enforced are:
+    email_id, draft_id, draft_text, computed_draft_text_hash, cached_draft_text_hash,
+    canonical_manifest, manifest_digest, is_grounded, grounding_status, draft_version,
+    invalidation_count, is_quarantined, store_available, ledger_version, ledger_digest.
     """
     email_id: str
     draft_id: str
