@@ -11,7 +11,9 @@ import logging
 
 from backend.calendar_broker.models import (
     CalendarVerificationStatus,
+    CalendarProviderOutcome,
     TimeSlot,
+    TrustedCalendarEvidence,
     BookingWindowOption,
     FreeBusyRequest,
     FreeBusyResponse,
@@ -22,48 +24,91 @@ logger = logging.getLogger("calendar_broker.availability")
 
 
 def calculate_optimal_booking_windows(
-    busy_slots: Optional[List[TimeSlot]],
-    request: FreeBusyRequest,
-    calendar_checked: bool = False,
-    verification_status: Optional[CalendarVerificationStatus] = None,
+    arg1: Any = None,
+    arg2: Any = None,
+    trusted_evidence: Optional[TrustedCalendarEvidence] = None,
+    *,
+    busy_slots: Optional[List[TimeSlot]] = None,
+    calendar_checked: Optional[bool] = None,
+    verification_status: Optional[Any] = None,
 ) -> FreeBusyResponse:
     """
     Calculates non-conflicting booking windows within preferred working hours.
-    Explicitly tracks and enforces truthful CalendarVerificationStatus:
-    - CALENDAR_NOT_CHECKED: When calendar was not queried. Output slots are proposed/tentative.
-    - CALENDAR_UNAVAILABLE / CALENDAR_ERROR: When provider/query failed or unavailable.
-    - CALENDAR_VERIFIED_CLEAR: When calendar was queried, succeeded, and has 0 conflicting events.
-    - CALENDAR_VERIFIED_WITH_CONFLICTS: When calendar was queried, succeeded, and has conflicting events.
+    Enforces strict Information-Integrity and Provenance rules:
+    - Verified states (CALENDAR_VERIFIED_CLEAR, CALENDAR_VERIFIED_WITH_CONFLICTS)
+      require authoritative TrustedCalendarEvidence with outcome == SUCCESS.
+    - Caller-supplied booleans (e.g. calendar_checked=True), status overrides
+      (e.g. verification_status=CALENDAR_VERIFIED_CLEAR), or unverified slot lists
+      CANNOT establish verification authority.
+    - In the absence of TrustedCalendarEvidence, the status strictly defaults to
+      CALENDAR_NOT_CHECKED with is_verified=False, producing truthful proposed copy.
     """
-    # 1. Determine truthful verification status
+    # 1. Resolve request and evidence from arguments
+    req: FreeBusyRequest
+    evidence: Optional[TrustedCalendarEvidence] = None
+    unverified_busy_slots: List[TimeSlot] = []
+
+    if isinstance(arg1, FreeBusyRequest):
+        req = arg1
+        if isinstance(arg2, TrustedCalendarEvidence):
+            evidence = arg2
+        elif isinstance(arg2, list):
+            unverified_busy_slots = [s if isinstance(s, TimeSlot) else TimeSlot(**s) for s in arg2]
+    elif isinstance(arg2, FreeBusyRequest):
+        req = arg2
+        if isinstance(arg1, TrustedCalendarEvidence):
+            evidence = arg1
+        elif isinstance(arg1, list):
+            unverified_busy_slots = [s if isinstance(s, TimeSlot) else TimeSlot(**s) for s in arg1]
+    else:
+        req = FreeBusyRequest(
+            start_date=datetime.now().strftime("%Y-%m-%d"),
+            end_date=(datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"),
+            timezone="America/Chicago",
+        )
+
+    if trusted_evidence is not None and isinstance(trusted_evidence, TrustedCalendarEvidence):
+        evidence = trusted_evidence
+
+    if busy_slots is not None and not unverified_busy_slots:
+        unverified_busy_slots = [s if isinstance(s, TimeSlot) else TimeSlot(**s) for s in busy_slots]
+
+    # 2. Determine verification status strictly based on TrustedCalendarEvidence
     resolved_status: CalendarVerificationStatus
     is_verified: bool = False
+    effective_busy_slots: List[TimeSlot] = []
 
-    # Check if request or caller explicitly provided status
-    if verification_status is not None:
-        resolved_status = verification_status
-    elif request.verification_status is not None:
-        resolved_status = request.verification_status
-    elif busy_slots is None and not (calendar_checked or request.calendar_checked):
+    if evidence is None or not isinstance(evidence, TrustedCalendarEvidence):
+        # Untrusted request or caller without provider provenance -> CALENDAR_NOT_CHECKED
         resolved_status = CalendarVerificationStatus.CALENDAR_NOT_CHECKED
-    elif not (calendar_checked or request.calendar_checked):
-        resolved_status = CalendarVerificationStatus.CALENDAR_NOT_CHECKED
+        is_verified = False
+        effective_busy_slots = unverified_busy_slots
     else:
-        # Calendar was queried (calendar_checked == True or request.calendar_checked == True)
-        if busy_slots is None:
+        # Trusted provider evidence present
+        if evidence.outcome == CalendarProviderOutcome.ERROR:
+            resolved_status = CalendarVerificationStatus.CALENDAR_ERROR
+            is_verified = False
+            effective_busy_slots = []
+        elif evidence.outcome == CalendarProviderOutcome.UNAVAILABLE:
             resolved_status = CalendarVerificationStatus.CALENDAR_UNAVAILABLE
-        else:
+            is_verified = False
+            effective_busy_slots = []
+        elif evidence.outcome == CalendarProviderOutcome.SUCCESS:
+            effective_busy_slots = evidence.busy_slots or []
             resolved_status = CalendarVerificationStatus.CALENDAR_VERIFIED_CLEAR
-
-    effective_busy_slots = busy_slots or []
+            is_verified = True
+        else:
+            resolved_status = CalendarVerificationStatus.CALENDAR_ERROR
+            is_verified = False
+            effective_busy_slots = []
 
     try:
-        tz = zoneinfo.ZoneInfo(request.timezone)
+        tz = zoneinfo.ZoneInfo(req.timezone)
     except Exception:
         tz = zoneinfo.ZoneInfo("America/Chicago")
 
-    start_dt = datetime.strptime(request.start_date, "%Y-%m-%d").replace(tzinfo=tz)
-    end_dt = datetime.strptime(request.end_date, "%Y-%m-%d").replace(tzinfo=tz)
+    start_dt = datetime.strptime(req.start_date, "%Y-%m-%d").replace(tzinfo=tz)
+    end_dt = datetime.strptime(req.end_date, "%Y-%m-%d").replace(tzinfo=tz)
 
     candidate_windows: List[BookingWindowOption] = []
     conflict_count = 0
@@ -72,13 +117,13 @@ def calculate_optimal_booking_windows(
     while current_day <= end_dt:
         # Skip weekends (Saturday=5, Sunday=6)
         if current_day.weekday() < 5:
-            work_start = current_day.replace(hour=request.preferred_hours_start, minute=0, second=0, microsecond=0)
-            work_end = current_day.replace(hour=request.preferred_hours_end, minute=0, second=0, microsecond=0)
+            work_start = current_day.replace(hour=req.preferred_hours_start, minute=0, second=0, microsecond=0)
+            work_end = current_day.replace(hour=req.preferred_hours_end, minute=0, second=0, microsecond=0)
 
             # Generate potential candidate blocks
             slot_cursor = work_start
-            slot_delta = timedelta(minutes=request.meeting_duration_minutes)
-            buffer_delta = timedelta(minutes=request.buffer_minutes)
+            slot_delta = timedelta(minutes=req.meeting_duration_minutes)
+            buffer_delta = timedelta(minutes=req.buffer_minutes)
 
             while slot_cursor + slot_delta <= work_end:
                 slot_end = slot_cursor + slot_delta
@@ -102,15 +147,15 @@ def calculate_optimal_booking_windows(
                         f"{slot_cursor.strftime('%A, %b %d')}: "
                         f"{slot_cursor.strftime('%I:%M %p').lstrip('0')} – "
                         f"{slot_end.strftime('%I:%M %p').lstrip('0')} "
-                        f"({request.timezone.split('/')[-1]})"
+                        f"({req.timezone.split('/')[-1]})"
                     )
                     candidate_windows.append(
                         BookingWindowOption(
                             formatted_display=display_str,
                             iso_start=slot_cursor.isoformat(),
                             iso_end=slot_end.isoformat(),
-                            duration_minutes=request.meeting_duration_minutes,
-                            timezone=request.timezone
+                            duration_minutes=req.meeting_duration_minutes,
+                            timezone=req.timezone
                         )
                     )
 
@@ -118,20 +163,12 @@ def calculate_optimal_booking_windows(
 
         current_day += timedelta(days=1)
 
-    # If calendar was checked and no explicit override, distinguish CLEAR vs WITH_CONFLICTS
-    if (calendar_checked or request.calendar_checked) and verification_status is None and request.verification_status is None:
+    # If trusted evidence was successful, distinguish CLEAR vs WITH_CONFLICTS
+    if is_verified and evidence is not None and evidence.outcome == CalendarProviderOutcome.SUCCESS:
         if conflict_count > 0 or len(effective_busy_slots) > 0:
             resolved_status = CalendarVerificationStatus.CALENDAR_VERIFIED_WITH_CONFLICTS
         else:
             resolved_status = CalendarVerificationStatus.CALENDAR_VERIFIED_CLEAR
-
-    if resolved_status in (
-        CalendarVerificationStatus.CALENDAR_VERIFIED_CLEAR,
-        CalendarVerificationStatus.CALENDAR_VERIFIED_WITH_CONFLICTS,
-    ):
-        is_verified = True
-    else:
-        is_verified = False
 
     # Pick top 3-4 diverse options across different days if possible
     selected_options: List[BookingWindowOption] = []
@@ -153,7 +190,7 @@ def calculate_optimal_booking_windows(
         available_windows=selected_options,
         busy_slots_count=len(effective_busy_slots),
         conflict_count=conflict_count,
-        timezone=request.timezone,
+        timezone=req.timezone,
         formatted_summary=summary_text,
         verification_status=resolved_status,
         is_verified=is_verified,

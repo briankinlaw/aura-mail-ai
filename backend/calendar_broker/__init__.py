@@ -5,7 +5,9 @@ Provides timezone normalization, Free-Busy slot aggregation, buffer calculation,
 
 from backend.calendar_broker.models import (
     CalendarVerificationStatus,
+    CalendarProviderOutcome,
     TimeSlot,
+    TrustedCalendarEvidence,
     FreeBusyRequest,
     FreeBusyResponse,
     BookingWindowOption,
@@ -18,7 +20,9 @@ from backend.calendar_broker.availability_service import (
 
 __all__ = [
     "CalendarVerificationStatus",
+    "CalendarProviderOutcome",
     "TimeSlot",
+    "TrustedCalendarEvidence",
     "FreeBusyRequest",
     "FreeBusyResponse",
     "BookingWindowOption",

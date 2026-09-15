@@ -1763,19 +1763,11 @@ def radar_draft_endpoint(payload: Dict[str, Any]):
 @app.post("/api/calendar/availability", dependencies=[Depends(require_local_auth)])
 def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
     from datetime import date, timedelta
-    from backend.calendar_broker.models import CalendarVerificationStatus, TimeSlot
+    from backend.calendar_broker.models import TimeSlot
     p = payload or {}
     days = p.get("days_ahead", 7)
     tz_str = p.get("timezone", "America/Chicago")
     duration = p.get("duration_minutes", 30)
-    calendar_checked = p.get("calendar_checked", False)
-    raw_status = p.get("verification_status")
-    ver_status = None
-    if raw_status:
-        try:
-            ver_status = CalendarVerificationStatus(raw_status)
-        except ValueError:
-            pass
 
     start_d = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     end_d = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
@@ -1785,22 +1777,19 @@ def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
         end_date=end_d,
         meeting_duration_minutes=duration,
         timezone=tz_str,
-        calendar_checked=calendar_checked,
-        verification_status=ver_status
     )
 
+    # Note: External caller assertions (calendar_checked, verification_status, is_verified)
+    # are untrusted and strictly ignored for verification provenance.
+    # Without trusted server-side calendar provider execution, result remains CALENDAR_NOT_CHECKED.
     raw_slots = p.get("busy_slots")
     busy_slots = None
     if raw_slots is not None:
         busy_slots = [TimeSlot(**s) if isinstance(s, dict) else s for s in raw_slots]
-    elif calendar_checked:
-        busy_slots = []
 
     res = calculate_optimal_booking_windows(
-        busy_slots,
         req,
-        calendar_checked=calendar_checked,
-        verification_status=ver_status
+        busy_slots=busy_slots,
     )
 
     return {

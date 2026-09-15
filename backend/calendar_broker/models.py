@@ -5,7 +5,7 @@ Calendar Broker Models
 from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class CalendarVerificationStatus(str, Enum):
@@ -20,12 +20,33 @@ class CalendarVerificationStatus(str, Enum):
     CALENDAR_ERROR = "CALENDAR_ERROR"
 
 
+class CalendarProviderOutcome(str, Enum):
+    """
+    Outcome of an authoritative calendar provider operation.
+    """
+    SUCCESS = "SUCCESS"
+    UNAVAILABLE = "UNAVAILABLE"
+    ERROR = "ERROR"
+
+
 class TimeSlot(BaseModel):
     start_time: datetime
     end_time: datetime
     timezone: str = "America/Chicago"
     is_busy: bool = False
     title: Optional[str] = None
+
+
+class TrustedCalendarEvidence(BaseModel):
+    """
+    Authoritative provider query evidence representing trusted calendar provenance.
+    Can only be minted by trusted application/provider layers upon real query execution.
+    """
+    outcome: CalendarProviderOutcome = CalendarProviderOutcome.SUCCESS
+    busy_slots: List[TimeSlot] = Field(default_factory=list)
+    provider_name: Optional[str] = None
+    queried_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    raw_error: Optional[str] = None
 
 
 class BookingWindowOption(BaseModel):
@@ -44,8 +65,6 @@ class FreeBusyRequest(BaseModel):
     buffer_minutes: int = 15
     preferred_hours_start: int = 9  # 9 AM
     preferred_hours_end: int = 17   # 5 PM
-    calendar_checked: bool = False
-    verification_status: Optional[CalendarVerificationStatus] = None
     busy_slots: Optional[List[TimeSlot]] = None
 
 
