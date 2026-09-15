@@ -54,7 +54,23 @@ from backend.canonical_grounding import (
 )
 from backend.auth import get_local_session_token
 from backend.tests.conftest import test_reset_provenance_store
-from backend.offline_recovery import execute_offline_recovery_transaction
+from backend.offline_recovery import (
+    run_offline_recovery,
+    _write_empty_store_atomically,
+    _remove_disabled_marker,
+)
+from unittest.mock import patch, MagicMock
+
+
+def _run_mock_recovery(data_dir):
+    mock_sin = MagicMock()
+    mock_sin.isatty.return_value = True
+    mock_sout = MagicMock()
+    mock_sout.isatty.return_value = True
+    mock_sin.readline.side_effect = ["RESET ALL AURA PROVENANCE\n", f"{data_dir}\n"]
+    with patch("sys.stdin", mock_sin), patch("sys.stdout", mock_sout), \
+         patch("backend.offline_recovery.resolve_canonical_data_dir", return_value=data_dir):
+        return run_offline_recovery()
 
 
 @pytest.fixture(autouse=True)
@@ -381,12 +397,7 @@ def test_recovery_reset_all_provenance_full_lifecycle(tmp_path):
     assert state_file.exists() is True
 
     # Execute offline recovery transaction
-    res = execute_offline_recovery_transaction(
-        target_dir=tmp_path,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="local_admin"
-    )
+    res = _run_mock_recovery(tmp_path)
 
     assert res["success"] is True
     store._load()
@@ -427,13 +438,9 @@ def test_recovery_failure_during_empty_write_remains_fail_closed(tmp_path):
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
-    with pytest.raises(Exception):
-        execute_offline_recovery_transaction(
-            target_dir=tmp_path,
-            interactive=False,
-            is_test_harness=True,
-            failure_hook="fail_claim_replace"
-        )
+    with patch("backend.offline_recovery._write_empty_store_atomically", side_effect=IOError("Injected replace failure")):
+        with pytest.raises(Exception):
+            _run_mock_recovery(tmp_path)
 
     store._load()
     assert store.is_available() is False
@@ -446,13 +453,9 @@ def test_recovery_failure_during_marker_removal_remains_fail_closed(tmp_path):
     store = ProvenanceStore(storage_path=storage_file)
     store.disable_store("Test disable")
 
-    with pytest.raises(Exception):
-        execute_offline_recovery_transaction(
-            target_dir=tmp_path,
-            interactive=False,
-            is_test_harness=True,
-            failure_hook="fail_marker_removal"
-        )
+    with patch("backend.offline_recovery._remove_disabled_marker", side_effect=IOError("Injected remove failure")):
+        with pytest.raises(Exception):
+            _run_mock_recovery(tmp_path)
 
     store._load()
     assert store.is_available() is False
@@ -505,12 +508,7 @@ def test_tampered_record_recovery_via_reset_produces_clean_empty_store(tmp_path,
     store.disable_store("Tamper detected", affected_draft_id="draft_tamper")
     assert store.is_available() is False
 
-    res = execute_offline_recovery_transaction(
-        target_dir=tmp_path,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="local_admin"
-    )
+    res = _run_mock_recovery(tmp_path)
 
     assert res["success"] is True
     store._load()
@@ -570,12 +568,7 @@ sys.exit(0)
     assert res.returncode == 0, f"Subprocess failed disabled check: {res.stderr}"
 
     # Step 2: Perform authorized recovery reset
-    execute_offline_recovery_transaction(
-        target_dir=tmp_path,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="local_admin"
-    )
+    _run_mock_recovery(tmp_path)
     store._load()
     assert store.is_available() is True
 

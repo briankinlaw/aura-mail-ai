@@ -111,12 +111,6 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
     """
     logger.info(f"Starting Aura Daemon cycle (dry_run={dry_run})...")
     lock_ctx = acquire_shared_runtime_lock()
-    folders = target_folders or ["Inbox", "Jobs", "CCK Career", "AI Reachouts"]
-    processed_ids = load_processed_ids()
-    
-    manager = ProviderManager()
-    profile = get_user_profile()
-
     summary = {
         "timestamp": datetime.utcnow().isoformat(),
         "dry_run": dry_run,
@@ -129,6 +123,10 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
     }
 
     try:
+        folders = target_folders or ["Inbox", "Jobs", "CCK Career", "AI Reachouts"]
+        processed_ids = load_processed_ids()
+        manager = ProviderManager()
+        profile = get_user_profile()
         # Fetch emails from all configured provider accounts
         emails, sync_stats = manager.sync_unified_inbox(limit_per_account=50)
         summary["messages_checked"] = len(emails)

@@ -1,23 +1,24 @@
 """
-Aura Mail AI - Runtime and Maintenance Process Locking (Phase 5.6)
+Aura Mail AI - Runtime and Maintenance Process Locking (Phase 5.6.1)
 Provides kernel-enforced mutual exclusion between active Aura runtime components
 (FastAPI server, background daemon) and offline administrative recovery.
 
 Locking Architecture:
-- POSIX fcntl.flock on .aura_runtime.lock located in the data directory.
+- POSIX fcntl.flock on .aura_runtime.lock located in the canonical data directory.
 - Runtime components acquire a SHARED lock (fcntl.LOCK_SH | fcntl.LOCK_NB).
 - Offline recovery requires an EXCLUSIVE lock (fcntl.LOCK_EX | fcntl.LOCK_NB).
 
-Invariants:
+Security Invariants:
 1. Multiple runtime processes (server, daemon) can run concurrently under shared locks.
 2. Offline recovery CANNOT run if ANY runtime process is active (fails closed).
 3. Runtime processes CANNOT start while offline recovery is executing under an exclusive lock.
 4. Stale lock files from crashed processes are automatically released by the OS kernel.
-5. Lock files cannot be symlinks (rejects symlinks fail-closed).
-6. File mode is strictly 0600 (user-read/write only).
+5. Symlink refusal before open and O_NOFOLLOW open with fstat/stat validation.
+6. File mode is strictly 0600 (user-read/write only) and ownership is validated.
 """
 
 import os
+import stat
 import fcntl
 import json
 import time
@@ -37,11 +38,15 @@ class AuraRuntimeLockContext:
     """Context manager for acquiring and safely releasing shared/exclusive process locks."""
 
     def __init__(self, lock_path: Path, is_exclusive: bool = False, actor: Optional[str] = None):
-        self.lock_path = lock_path.resolve()
+        self.raw_lock_path = Path(lock_path)
         self.is_exclusive = is_exclusive
         self.actor = actor or "unknown"
         self._fd: Optional[int] = None
         self._is_held: bool = False
+
+    @property
+    def lock_path(self) -> Path:
+        return self.raw_lock_path
 
     def __enter__(self):
         self.acquire()
@@ -54,21 +59,62 @@ class AuraRuntimeLockContext:
         if self._is_held:
             return
 
-        # Ensure parent directory exists
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Refuse symlink lock paths before opening
+        if self.raw_lock_path.is_symlink():
+            raise RuntimeLockError(f"Security violation: Lock path '{self.raw_lock_path}' is a symlink.")
 
-        # Fail closed on symlink lock file
-        if self.lock_path.is_symlink():
-            raise RuntimeLockError(f"Security violation: Lock path '{self.lock_path}' is a symlink.")
+        # Ensure parent directory exists and is not a symlink
+        parent_dir = self.raw_lock_path.parent
+        if parent_dir.is_symlink():
+            raise RuntimeLockError(f"Security violation: Lock parent directory '{parent_dir}' is a symlink.")
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        if parent_dir.is_symlink():
+            raise RuntimeLockError(f"Security violation: Lock parent directory '{parent_dir}' is a symlink.")
 
-        # Open lock file with 0600 permissions
-        flags = os.O_RDWR | os.O_CREAT
+        # Open lock file with O_NOFOLLOW and 0600 mode
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         mode = 0o600
         try:
-            self._fd = os.open(str(self.lock_path), flags, mode)
-            os.chmod(str(self.lock_path), mode)
+            self._fd = os.open(str(self.raw_lock_path), flags, mode)
         except Exception as e:
-            raise RuntimeLockError(f"Failed to open process lock file at '{self.lock_path}': {e}") from e
+            raise RuntimeLockError(f"Failed to open process lock file at '{self.raw_lock_path}': {e}") from e
+
+        # Post-open metadata validation
+        try:
+            stat_fd = os.fstat(self._fd)
+            stat_path = os.stat(str(self.raw_lock_path), follow_symlinks=False)
+
+            # Compare device and inode to defeat TOCTOU substitution
+            if (stat_fd.st_dev, stat_fd.st_ino) != (stat_path.st_dev, stat_path.st_ino):
+                raise RuntimeLockError(
+                    f"Security violation: Lock file '{self.raw_lock_path}' metadata mismatch (possible symlink attack)."
+                )
+
+            # Validate regular file
+            if not stat.S_ISREG(stat_fd.st_mode):
+                raise RuntimeLockError(
+                    f"Security violation: Lock file '{self.raw_lock_path}' is not a regular file."
+                )
+
+            # Verify ownership
+            if stat_fd.st_uid != os.getuid():
+                raise RuntimeLockError(
+                    f"Security violation: Lock file '{self.raw_lock_path}' owned by UID {stat_fd.st_uid}, expected {os.getuid()}."
+                )
+
+            # Enforce 0600 mode on open descriptor
+            try:
+                os.fchmod(self._fd, 0o600)
+            except Exception:
+                pass
+
+        except Exception as validation_err:
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+            self._fd = None
+            raise RuntimeLockError(f"Lock file validation failed: {validation_err}") from validation_err
 
         # Determine flock operation
         op = fcntl.LOCK_EX if self.is_exclusive else fcntl.LOCK_SH
@@ -82,19 +128,19 @@ class AuraRuntimeLockContext:
             lock_type = "exclusive maintenance" if self.is_exclusive else "shared runtime"
             if self.is_exclusive:
                 msg = (
-                    f"Cannot acquire {lock_type} lock on '{self.lock_path}'. "
+                    f"Cannot acquire {lock_type} lock on '{self.raw_lock_path}'. "
                     "Aura runtime (server or background daemon) is currently running. "
                     "Aura must be completely stopped before performing administrative recovery."
                 )
             else:
                 msg = (
-                    f"Cannot acquire {lock_type} lock on '{self.lock_path}'. "
+                    f"Cannot acquire {lock_type} lock on '{self.raw_lock_path}'. "
                     "Offline administrative maintenance or recovery is currently in progress."
                 )
             logger.warning(msg)
             raise RuntimeLockError(msg) from err
 
-        # Record diagnostic metadata if exclusive (without overwriting if shared)
+        # Record diagnostic metadata if exclusive
         if self.is_exclusive and self._fd is not None:
             try:
                 os.ftruncate(self._fd, 0)
@@ -106,10 +152,15 @@ class AuraRuntimeLockContext:
                     "acquired_at": time.time(),
                 }
                 payload = json.dumps(meta, indent=2).encode("utf-8")
-                os.write(self._fd, payload)
+                total = 0
+                while total < len(payload):
+                    n = os.write(self._fd, payload[total:])
+                    if n <= 0:
+                        break
+                    total += n
                 os.fsync(self._fd)
             except Exception:
-                pass  # Non-fatal metadata write
+                pass
 
     def is_held(self) -> bool:
         return self._is_held

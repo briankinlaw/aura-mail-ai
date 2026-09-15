@@ -20,14 +20,17 @@ def test_reset_provenance_store(store=None):
     Not exported or used in production runtime code.
     """
     from backend.canonical_grounding import PROVENANCE_STORE
-    from backend.offline_recovery import execute_offline_recovery_transaction
-    target_store = store or PROVENANCE_STORE
-    if target_store.is_available() and not target_store.state_path.exists():
-        target_store.disable_store("Test suite reset")
-    execute_offline_recovery_transaction(
-        target_dir=target_store.storage_path.parent,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="test_suite_admin"
+    from backend.offline_recovery import (
+        _write_empty_store_atomically,
+        _verify_empty_store,
+        _remove_disabled_marker,
+        _validate_provenance_paths,
     )
+    target_store = store or PROVENANCE_STORE
+    target_dir = target_store.storage_path.parent
+    storage_path, state_path, lock_path, audit_path = _validate_provenance_paths(target_dir)
+    _write_empty_store_atomically(target_dir, storage_path)
+    _verify_empty_store(storage_path)
+    if state_path.exists():
+        _remove_disabled_marker(state_path)
     target_store._load()

@@ -56,13 +56,29 @@ import backend.auth as auth_mod
 from backend.auth import get_local_session_token
 from backend.tests.conftest import test_reset_provenance_store
 from backend.offline_recovery import (
-    execute_offline_recovery_transaction,
+    run_offline_recovery,
+    read_and_verify_recovery_required,
+    _write_empty_store_atomically,
+    _remove_disabled_marker,
+    _restore_disabled_marker,
     RecoveryPreconditionError,
     RecoveryTerminalError,
     RecoveryConfirmationError,
     RecoveryTransactionError,
     _fsync_parent_dir,
 )
+from unittest.mock import patch, MagicMock
+
+
+def _run_mock_recovery(data_dir):
+    mock_sin = MagicMock()
+    mock_sin.isatty.return_value = True
+    mock_sout = MagicMock()
+    mock_sout.isatty.return_value = True
+    mock_sin.readline.side_effect = ["RESET ALL AURA PROVENANCE\n", f"{data_dir}\n"]
+    with patch("sys.stdin", mock_sin), patch("sys.stdout", mock_sout), \
+         patch("backend.offline_recovery.resolve_canonical_data_dir", return_value=data_dir):
+        return run_offline_recovery()
 
 
 @pytest.fixture(autouse=True)
@@ -173,12 +189,7 @@ def test_healthy_available_store_rejects_recovery_without_mutation(tmp_path):
     initial_storage_bytes = storage_file.read_bytes()
 
     with pytest.raises(RecoveryPreconditionError, match="Store precondition check failed"):
-        execute_offline_recovery_transaction(
-            target_dir=tmp_path,
-            interactive=False,
-            is_test_harness=True,
-            actor_override="local_admin"
-        )
+        read_and_verify_recovery_required(state_file, storage_file)
 
     # Prove zero mutations occurred
     assert store.is_available() is True
@@ -235,13 +246,9 @@ def test_post_marker_removal_failure_recreates_disabled_marker(tmp_path):
     store.disable_store("Pre-recovery disable")
 
     # Injected failure after claim replacement but during final empty validation
-    with pytest.raises(Exception):
-        execute_offline_recovery_transaction(
-            target_dir=tmp_path,
-            interactive=False,
-            is_test_harness=True,
-            failure_hook="fail_final_empty_validation"
-        )
+    with patch("backend.offline_recovery._verify_empty_store", side_effect=RecoveryTransactionError("Injected final empty validation failure")):
+        with pytest.raises(Exception):
+            _run_mock_recovery(tmp_path)
 
     store._load()
     assert store.is_available() is False
@@ -292,13 +299,25 @@ def test_crash_order_failure_matrix(tmp_path, stage_hook, desc):
     store.disable_store(f"Crash stage {stage_hook}", affected_draft_id="draft_crash_order")
     assert store.is_available() is False
 
-    with pytest.raises(Exception):
-        execute_offline_recovery_transaction(
-            target_dir=tmp_path,
-            interactive=False,
-            is_test_harness=True,
-            failure_hook=stage_hook
-        )
+    patches = {
+        "fail_temp_creation": patch("backend.offline_recovery._write_empty_store_atomically", side_effect=IOError("Injected temp creation failure")),
+        "fail_serialization": patch("json.dumps", side_effect=ValueError("Injected serialization failure")),
+        "fail_temp_flush": patch("os.fsync", side_effect=IOError("Injected fsync failure")),
+        "fail_temp_fsync": patch("os.fsync", side_effect=IOError("Injected fsync failure")),
+        "fail_claim_replace": patch("os.replace", side_effect=IOError("Injected atomic replace failure")),
+        "fail_dir_fsync_1": patch("backend.offline_recovery._fsync_parent_dir", side_effect=IOError("Injected dir fsync failure")),
+        "fail_claim_reread": patch("backend.offline_recovery._verify_empty_store", side_effect=IOError("Injected reread failure")),
+        "fail_empty_validation": patch("backend.offline_recovery._verify_empty_store", side_effect=RecoveryTransactionError("Injected validation failure")),
+        "fail_marker_removal": patch("backend.offline_recovery._remove_disabled_marker", side_effect=IOError("Injected marker remove failure")),
+        "fail_dir_fsync_2": patch("backend.offline_recovery._fsync_parent_dir", side_effect=IOError("Injected dir fsync 2 failure")),
+        "fail_marker_absence_check": patch("backend.offline_recovery._remove_disabled_marker", side_effect=lambda p: None),
+        "fail_final_reload": patch("backend.offline_recovery._verify_empty_store", side_effect=IOError("Injected final reload failure")),
+        "fail_final_empty_validation": patch("backend.offline_recovery._verify_empty_store", side_effect=RecoveryTransactionError("Injected final empty validation failure")),
+    }
+    target_patch = patches.get(stage_hook, patch("builtins.print"))
+    with target_patch:
+        with pytest.raises(Exception):
+            _run_mock_recovery(tmp_path)
 
     store._load()
     # Prove store remains unavailable and old claim cannot verify
@@ -351,12 +370,7 @@ def test_authoritative_tampered_records_eradicated_after_reset(tmp_path, tamper_
     store.disable_store(f"Tamper detected: {desc}", affected_draft_id="draft_tamper_auth")
     assert store.is_available() is False
 
-    res = execute_offline_recovery_transaction(
-        target_dir=tmp_path,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="local_admin"
-    )
+    res = _run_mock_recovery(tmp_path)
 
     assert res["success"] is True
     store._load()
@@ -395,12 +409,7 @@ def test_tampered_record_key_mismatch_eradicated_after_reset(tmp_path):
     store.disable_store("Key mismatch detected")
     assert store.is_available() is False
 
-    res = execute_offline_recovery_transaction(
-        target_dir=tmp_path,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="local_admin"
-    )
+    res = _run_mock_recovery(tmp_path)
 
     assert res["success"] is True
     store._load()

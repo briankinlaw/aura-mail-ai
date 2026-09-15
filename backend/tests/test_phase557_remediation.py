@@ -49,7 +49,7 @@ from backend.canonical_grounding import (
 )
 from backend.auth import get_local_session_token
 from backend.tests.conftest import test_reset_provenance_store
-from backend.offline_recovery import execute_offline_recovery_transaction
+from backend.offline_recovery import run_offline_recovery
 
 
 @pytest.fixture(autouse=True)
@@ -302,12 +302,14 @@ def test_recovery_strategy_reset_all_provenance(tmp_path):
     assert state_file.exists() is True
 
     # Execute offline recovery transaction
-    res = execute_offline_recovery_transaction(
-        target_dir=tmp_path,
-        interactive=False,
-        is_test_harness=True,
-        actor_override="local_admin"
-    )
+    mock_sin = MagicMock()
+    mock_sin.isatty.return_value = True
+    mock_sout = MagicMock()
+    mock_sout.isatty.return_value = True
+    mock_sin.readline.side_effect = ["RESET ALL AURA PROVENANCE\n", f"{tmp_path}\n"]
+    with patch("sys.stdin", mock_sin), patch("sys.stdout", mock_sout), \
+         patch("backend.offline_recovery.resolve_canonical_data_dir", return_value=tmp_path):
+        res = run_offline_recovery()
     assert res["success"] is True
     store._load()
     assert store.is_available() is True

@@ -1,26 +1,28 @@
 """
-Aura Mail AI - Offline Administrative Provenance Store Recovery (Phase 5.6)
+Aura Mail AI - Offline Administrative Provenance Store Recovery (Phase 5.6.1)
 Implements strictly offline, local, destructive administrative recovery.
 
 Security Invariants:
 1. Offline Isolation: Aura server and daemon MUST be completely stopped.
 2. Kernel-Enforced Mutual Exclusion: Requires an exclusive maintenance lock (fcntl.flock LOCK_EX).
-3. Interactive Terminal Enforcement: Standard input and output must be real TTYs.
-4. Local OS Actor Derivation: Actor identity derived directly from OS ($UID / getpass.getuser()).
-5. Dual Exact Confirmation: Operator must enter exact phrases ("RESET ALL AURA PROVENANCE" + resolved path).
-6. Recovery Precondition: Refuses to reset a healthy, marker-free store.
-7. Marker Mutation Detection: Digest captured and verified before committing destructive changes.
-8. Destructive RESET Only: In-process repair, selective recovery, and generic enable aliases are forbidden.
-9. Crash Safety & Durability: Atomic file replace with fsync, parent directory fsync, and fail-closed marker restoration.
+3. Interactive Terminal Enforcement: Standard input and output must be real TTYs (sys.stdin.isatty() and sys.stdout.isatty()).
+4. Local OS Actor Derivation: Actor identity derived directly from OS account database (os.getuid() and pwd.getpwuid()).
+5. Dual Exact Confirmation: Operator must enter exact phrases ("RESET ALL AURA PROVENANCE" + canonical path).
+6. Canonical Target Only: Operates solely on the canonical data directory; refuses caller-directed targets.
+7. Recovery Precondition: Refuses to reset a healthy, marker-free store.
+8. Marker Mutation Detection: Digest captured and verified before committing destructive changes.
+9. Destructive RESET Only: In-process repair, selective recovery, and generic enable aliases are forbidden.
+10. Crash Safety & Durability: Atomic file replace with fsync, parent directory fsync, durable local JSONL audit, and fail-closed marker restoration.
+11. Zero Production Bypass: No test-mode flags, no actor overrides, no custom streams, no failure hooks in production.
 """
 
 import os
 import sys
+import stat
 import json
 import time
 import uuid
 import errno
-import getpass
 import hashlib
 import logging
 from pathlib import Path
@@ -60,6 +62,19 @@ class RecoveryTransactionError(RecoveryError):
     pass
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """
+    Writes the complete byte buffer to a file descriptor using a loop.
+    Protects against partial/short writes.
+    """
+    total = 0
+    while total < len(data):
+        n = os.write(fd, data[total:])
+        if n <= 0:
+            raise IOError(f"Short write on file descriptor {fd}: wrote {total}/{len(data)} bytes")
+        total += n
+
+
 def _fsync_parent_dir(path: Path) -> None:
     """
     Fsyncs the parent directory of a path on POSIX platforms.
@@ -86,53 +101,60 @@ def _fsync_parent_dir(path: Path) -> None:
         raise
 
 
-def get_local_os_actor() -> str:
-    """Derives and validates local operating system actor identity."""
+def get_local_os_actor() -> Tuple[int, str]:
+    """
+    Derives actor identity strictly from the operating system account database.
+    Refuses environment variable overrides (LOGNAME, USER, USERNAME, LNAME).
+    Returns (numeric_uid, resolved_username).
+    """
+    uid = os.getuid()
+    if not isinstance(uid, int) or isinstance(uid, bool) or uid < 0:
+        raise RecoveryPreconditionError(f"Invalid operating system UID: {uid}")
     try:
-        actor = getpass.getuser()
-    except Exception:
-        actor = ""
-
-    if not actor or not isinstance(actor, str) or not actor.strip():
-        try:
-            import pwd
-            actor = pwd.getpwuid(os.getuid()).pw_name
-        except Exception:
-            actor = ""
-
-    if not actor or not actor.strip():
-        raise RecoveryError("Failed to derive local operating system actor identity.")
-
-    return actor.strip()
+        import pwd
+        pw_entry = pwd.getpwuid(uid)
+        username = pw_entry.pw_name
+    except Exception as e:
+        raise RecoveryPreconditionError(f"Failed to resolve operating system username for UID {uid}: {e}") from e
+    if not username or not isinstance(username, str) or not username.strip():
+        raise RecoveryPreconditionError(f"Empty operating system username resolved for UID {uid}")
+    return uid, username.strip()
 
 
-def resolve_and_validate_paths(target_dir: Optional[Path] = None) -> Tuple[Path, Path, Path]:
+def resolve_canonical_data_dir() -> Path:
     """
-    Resolves canonical data directory, storage file, and state marker file.
-    Strictly rejects symlinks and unexpected paths.
+    Resolves the canonical repository data directory based on installed application layout.
+    Strictly refuses symlinks, relative traversal, or caller-directed paths.
     """
-    raw_path = Path(target_dir) if target_dir is not None else (Path(__file__).resolve().parent.parent / "data")
-    if raw_path.is_symlink():
-        raise RecoveryError(f"Security violation: Target directory '{raw_path}' is a symlink.")
-
-    resolved_dir = raw_path.resolve()
-    resolved_dir.mkdir(parents=True, exist_ok=True)
-
+    app_root = Path(__file__).resolve().parent.parent
+    raw_data_dir = app_root / "data"
+    if raw_data_dir.is_symlink():
+        raise RecoveryPreconditionError(f"Security violation: Canonical data directory '{raw_data_dir}' is a symlink.")
+    resolved_dir = raw_data_dir.resolve()
     if resolved_dir.is_symlink():
-        raise RecoveryError(f"Security violation: Target directory '{resolved_dir}' is a symlink.")
+        raise RecoveryPreconditionError(f"Security violation: Resolved data directory '{resolved_dir}' is a symlink.")
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    return resolved_dir
 
-    storage_path = resolved_dir / "provenance_records.json"
-    state_path = resolved_dir / "provenance_store_state.json"
-    lock_path = resolved_dir / ".aura_runtime.lock"
 
-    if (raw_path / "provenance_records.json").is_symlink() or storage_path.is_symlink():
-        raise RecoveryError(f"Security violation: Provenance records path '{storage_path}' is a symlink.")
-    if (raw_path / "provenance_store_state.json").is_symlink() or state_path.is_symlink():
-        raise RecoveryError(f"Security violation: State marker path '{state_path}' is a symlink.")
-    if (raw_path / ".aura_runtime.lock").is_symlink() or lock_path.is_symlink():
-        raise RecoveryError(f"Security violation: Lock path '{lock_path}' is a symlink.")
+def _validate_provenance_paths(data_dir: Path) -> Tuple[Path, Path, Path, Path]:
+    """
+    Validates storage_path, state_path, lock_path, audit_path within data_dir.
+    Refuses symlinked files or directories.
+    """
+    if data_dir.is_symlink():
+        raise RecoveryPreconditionError(f"Security violation: Data directory '{data_dir}' is a symlink.")
 
-    return resolved_dir, storage_path, state_path
+    storage_path = data_dir / "provenance_records.json"
+    state_path = data_dir / "provenance_store_state.json"
+    lock_path = data_dir / ".aura_runtime.lock"
+    audit_path = data_dir / ".aura_recovery_audit.log"
+
+    for p in [storage_path, state_path, lock_path, audit_path]:
+        if p.is_symlink():
+            raise RecoveryPreconditionError(f"Security violation: Path '{p}' cannot be a symlink.")
+
+    return storage_path, state_path, lock_path, audit_path
 
 
 def read_and_verify_recovery_required(state_path: Path, storage_path: Path) -> Tuple[bytes, str]:
@@ -142,7 +164,6 @@ def read_and_verify_recovery_required(state_path: Path, storage_path: Path) -> T
     Captures exact state marker bytes and SHA-256 digest.
     """
     if not state_path.exists():
-        # Marker does not exist. Check if storage_path is healthy.
         if storage_path.exists():
             try:
                 content = storage_path.read_text(encoding="utf-8")
@@ -155,7 +176,6 @@ def read_and_verify_recovery_required(state_path: Path, storage_path: Path) -> T
             except RecoveryPreconditionError:
                 raise
             except Exception as e:
-                # Corrupt claim store without a marker
                 raise RecoveryPreconditionError(
                     f"Store contains corrupt claims without a durable disabled marker ({e}). "
                     "Start Aura or invoke store disablement before running recovery."
@@ -175,91 +195,191 @@ def read_and_verify_recovery_required(state_path: Path, storage_path: Path) -> T
     return marker_bytes, marker_digest
 
 
-def execute_offline_recovery_transaction(
-    target_dir: Optional[Path] = None,
-    interactive: bool = True,
-    stdin_stream=None,
-    stdout_stream=None,
-    is_test_harness: bool = False,
-    actor_override: Optional[str] = None,
-    failure_hook: Optional[str] = None,
-) -> Dict[str, Any]:
+def _write_empty_store_atomically(data_dir: Path, storage_path: Path) -> None:
     """
-    Executes the authoritative 26-step offline administrative provenance recovery transaction.
-    
-    Parameters:
-      - target_dir: directory containing provenance files (defaults to canonical data/)
-      - interactive: if True, validates TTY and prompts for explicit confirmation phrases
-      - stdin_stream: input stream for confirmation (defaults to sys.stdin)
-      - stdout_stream: output stream for prompts (defaults to sys.stdout)
-      - is_test_harness: allows controlled test simulation without real human interaction
-      - actor_override: test-only actor override (forbidden in CLI production)
-      - failure_hook: test-only injection point for crash-order matrix testing
+    Atomically writes an empty JSON object '{}' to the provenance claim store.
+    Uses temporary file with 0600 mode, short-write loop, fsync, atomic replace, and parent dir fsync.
     """
-    sin = stdin_stream or sys.stdin
-    sout = stdout_stream or sys.stdout
+    temp_store_path = data_dir / f".tmp_{uuid.uuid4().hex}_provenance_records.json"
+    payload = json.dumps({}, indent=2).encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    mode = 0o600
 
-    # Step 1: Terminal verification (unless running via trusted test harness)
-    if interactive and not is_test_harness:
-        if not (hasattr(sin, "isatty") and sin.isatty() and hasattr(sout, "isatty") and sout.isatty()):
-            raise RecoveryTerminalError(
-                "Offline administrative recovery requires an interactive terminal (stdin and stdout attached to TTY). "
-                "Non-interactive invocation, pipes, background execution, and redirected input are strictly forbidden."
-            )
+    fd = os.open(str(temp_store_path), flags, mode)
+    try:
+        stat_fd = os.fstat(fd)
+        if not stat.S_ISREG(stat_fd.st_mode):
+            raise RecoveryTransactionError("Temporary store file is not a regular file")
+        os.fchmod(fd, 0o600)
+        _write_all(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
-    # Step 2: Derive local operating system actor
-    actor = actor_override if (is_test_harness and actor_override) else get_local_os_actor()
+    os.replace(temp_store_path, storage_path)
+    _fsync_parent_dir(storage_path)
 
-    # Step 3: Resolve and validate paths
-    resolved_dir, storage_path, state_path = resolve_and_validate_paths(target_dir)
 
-    # Step 4 & 5: Acquire exclusive maintenance lock and prove Aura is stopped
-    if failure_hook == "fail_lock_acquisition":
-        raise RuntimeLockError("Injected failure: lock acquisition failed")
+def _verify_empty_store(storage_path: Path) -> None:
+    """
+    Reads and parses the stored claim file, verifying it contains exactly {}.
+    """
+    if not storage_path.exists():
+        raise RecoveryTransactionError(f"Storage path '{storage_path}' does not exist after reset.")
+    with open(storage_path, "r", encoding="utf-8") as f:
+        parsed_claims = json.load(f)
+    if parsed_claims != {}:
+        raise RecoveryTransactionError("Verification failed: claim store is not empty after reset.")
 
-    lock_ctx = acquire_exclusive_maintenance_lock(data_dir=resolved_dir, actor=actor)
+
+def _remove_disabled_marker(state_path: Path) -> None:
+    """
+    Removes the disabled state marker file and fsyncs parent directory.
+    """
+    if state_path.exists():
+        os.remove(state_path)
+    _fsync_parent_dir(state_path)
+
+
+def _restore_disabled_marker(data_dir: Path, state_path: Path, reason: str) -> None:
+    """
+    Recreates a strictly valid DISABLED state marker fail-closed after a recovery transaction error.
+    """
+    fallback_state = {
+        "schema_version": 1,
+        "state": "DISABLED",
+        "reason": reason,
+        "affected_draft_id": None,
+        "disabled_at": time.time(),
+        "recovery_required": True,
+    }
+    payload = json.dumps(fallback_state, indent=2).encode("utf-8")
+    tmp_state = data_dir / f".tmp_{uuid.uuid4().hex}_state.json"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    mode = 0o600
+
+    fd = os.open(str(tmp_state), flags, mode)
+    try:
+        os.fchmod(fd, 0o600)
+        _write_all(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    os.replace(tmp_state, state_path)
+    _fsync_parent_dir(state_path)
+    logger.critical(f"Recreated valid DISABLED state marker fail-closed: {reason}")
+
+
+def _append_recovery_audit(
+    data_dir: Path,
+    uid: int,
+    username: str,
+    prior_marker_digest: str,
+) -> None:
+    """
+    Durably appends a secret-free administrative recovery audit record to data/.aura_recovery_audit.log.
+    """
+    audit_path = data_dir / ".aura_recovery_audit.log"
+    if audit_path.is_symlink():
+        raise RecoveryTransactionError(f"Audit log path '{audit_path}' is a symlink.")
+
+    record = {
+        "event_type": "OFFLINE_ADMINISTRATIVE_PROVENANCE_RECOVERY",
+        "uid": uid,
+        "username": username,
+        "target_dir": str(data_dir),
+        "timestamp": time.time(),
+        "prior_marker_digest": prior_marker_digest,
+        "status": "SUCCESS",
+    }
+    line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    mode = 0o600
+
+    fd = os.open(str(audit_path), flags, mode)
+    try:
+        stat_fd = os.fstat(fd)
+        stat_path = os.stat(str(audit_path), follow_symlinks=False)
+        if (stat_fd.st_dev, stat_fd.st_ino) != (stat_path.st_dev, stat_path.st_ino):
+            raise RecoveryTransactionError(f"Audit file metadata mismatch for '{audit_path}' (symlink attack)")
+        if not stat.S_ISREG(stat_fd.st_mode):
+            raise RecoveryTransactionError(f"Audit file '{audit_path}' is not a regular file")
+        os.fchmod(fd, 0o600)
+        _write_all(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    _fsync_parent_dir(audit_path)
+
+
+def run_offline_recovery() -> Dict[str, Any]:
+    """
+    Authoritative production entrypoint for offline administrative provenance recovery.
+    Accepts NO arguments capable of changing or bypassing security controls.
+    Always enforces real TTY stdin/stdout, OS-derived actor, canonical data directory,
+    exclusive maintenance lock, dual exact interactive confirmations, destructive reset,
+    and durable crash-safe audit logging.
+    """
+    # 1. Real TTY check
+    if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty() and hasattr(sys.stdout, "isatty") and sys.stdout.isatty()):
+        raise RecoveryTerminalError(
+            "Offline administrative recovery requires an interactive terminal (stdin and stdout attached to TTY). "
+            "Non-interactive invocation, pipes, background execution, and redirected input are strictly forbidden."
+        )
+
+    # 2. Derive OS actor from account database
+    uid, username = get_local_os_actor()
+
+    # 3. Resolve canonical data directory
+    data_dir = resolve_canonical_data_dir()
+
+    # 4. Validate paths
+    storage_path, state_path, lock_path, audit_path = _validate_provenance_paths(data_dir)
+
+    # 5. Acquire exclusive maintenance lock
+    lock_ctx = acquire_exclusive_maintenance_lock(data_dir=data_dir, actor=username)
 
     try:
-        # Step 6 & 7: Re-validate paths under lock
-        if resolved_dir.is_symlink() or storage_path.is_symlink() or state_path.is_symlink():
-            raise RecoveryError("Security violation: Symlinked filesystem target detected under lock.")
+        # 6. Re-validate paths under lock
+        storage_path, state_path, lock_path, audit_path = _validate_provenance_paths(data_dir)
 
-        # Step 8, 9, 10: Read durable marker, verify recovery required, capture bytes & digest
+        # 7. Read durable marker, verify recovery required, capture bytes & digest
         marker_bytes, marker_digest = read_and_verify_recovery_required(state_path, storage_path)
 
-        # Step 11: Explicit destructive confirmation
-        if interactive and not is_test_harness:
-            sout.write("\n" + "=" * 70 + "\n")
-            sout.write("⚠️  AURA MAIL AI — OFFLINE ADMINISTRATIVE PROVENANCE RECOVERY\n")
-            sout.write("=" * 70 + "\n")
-            sout.write(f"Target Directory : {resolved_dir}\n")
-            sout.write(f"Local Operator   : {actor}\n")
-            sout.write(f"Marker Digest    : {marker_digest}\n")
-            sout.write("\nWARNING: This destructive operation will permanently erase ALL existing\n")
-            sout.write("provenance claims, manifests, and signatures. All former claim IDs will\n")
-            sout.write("be irrevocably invalidated.\n\n")
+        # 8. Interactive confirmation sequence
+        sys.stdout.write("\n" + "=" * 70 + "\n")
+        sys.stdout.write("⚠️  AURA MAIL AI — OFFLINE ADMINISTRATIVE PROVENANCE RECOVERY\n")
+        sys.stdout.write("=" * 70 + "\n")
+        sys.stdout.write(f"Target Directory : {data_dir}\n")
+        sys.stdout.write(f"Local Operator   : {username} (UID {uid})\n")
+        sys.stdout.write(f"Marker Digest    : {marker_digest}\n")
+        sys.stdout.write("\nWARNING: This destructive operation will permanently erase ALL existing\n")
+        sys.stdout.write("provenance claims, manifests, and signatures. All former claim IDs will\n")
+        sys.stdout.write("be irrevocably invalidated.\n\n")
 
-            sout.write("Confirmation 1: Type 'RESET ALL AURA PROVENANCE' to continue: ")
-            sout.flush()
-            conf1 = sin.readline()
-            if not conf1 or conf1.strip() != "RESET ALL AURA PROVENANCE":
-                raise RecoveryConfirmationError(
-                    "Recovery aborted: First confirmation failed. Expected exact phrase 'RESET ALL AURA PROVENANCE'."
-                )
+        sys.stdout.write("Confirmation 1: Type 'RESET ALL AURA PROVENANCE' to continue: ")
+        sys.stdout.flush()
+        conf1 = sys.stdin.readline()
+        if not conf1 or conf1.strip() != "RESET ALL AURA PROVENANCE":
+            raise RecoveryConfirmationError(
+                "Recovery aborted: First confirmation failed. Expected exact phrase 'RESET ALL AURA PROVENANCE'."
+            )
 
-            sout.write(f"Confirmation 2: Type the full resolved path '{resolved_dir}' to confirm target: ")
-            sout.flush()
-            conf2 = sin.readline()
-            if not conf2 or conf2.strip() != str(resolved_dir):
-                raise RecoveryConfirmationError(
-                    f"Recovery aborted: Second confirmation failed. Expected exact target directory '{resolved_dir}'."
-                )
+        sys.stdout.write(f"Confirmation 2: Type the full resolved path '{data_dir}' to confirm target: ")
+        sys.stdout.flush()
+        conf2 = sys.stdin.readline()
+        if not conf2 or conf2.strip() != str(data_dir):
+            raise RecoveryConfirmationError(
+                f"Recovery aborted: Second confirmation failed. Expected exact target directory '{data_dir}'."
+            )
 
-        # Step 12: Recheck maintenance lock
+        # 9. Recheck maintenance lock
         if not lock_ctx.is_held():
             raise RuntimeLockError("Maintenance lock lost during confirmation phase.")
 
-        # Step 13: Recheck state marker still exists and matches captured digest
+        # 10. Recheck state marker still exists and matches captured digest
         if not state_path.exists():
             raise RecoveryTransactionError("State marker vanished before destructive commit.")
         current_marker_digest = hashlib.sha256(state_path.read_bytes()).hexdigest()
@@ -269,171 +389,61 @@ def execute_offline_recovery_transaction(
                 f"Expected '{marker_digest}', found '{current_marker_digest}'. Aborting fail-closed."
             )
 
-        # Step 14: Create empty claim-store temporary file in same directory
-        if failure_hook == "fail_temp_creation":
-            raise IOError("Injected failure: temp file creation failed")
+        # 11. Execute destructive replacement
+        _write_empty_store_atomically(data_dir, storage_path)
 
-        temp_store_path = resolved_dir / f".tmp_{uuid.uuid4().hex}_provenance_records.json"
-        
+        # 12. Verify stored value is exactly {}
+        _verify_empty_store(storage_path)
+
+        # 13. Remove disabled marker and persist durable audit
         try:
-            # Step 15: Serialize exactly {}
-            if failure_hook == "fail_serialization":
-                raise ValueError("Injected failure: serialization failed")
-            payload = json.dumps({}, indent=2).encode("utf-8")
-
-            # Step 16: Write, flush, and fsync temporary file
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-            mode = 0o600
-            fd = os.open(str(temp_store_path), flags, mode)
-            try:
-                if failure_hook == "fail_temp_write":
-                    raise IOError("Injected failure: temp write failed")
-                os.write(fd, payload)
-                if failure_hook == "fail_temp_flush":
-                    raise IOError("Injected failure: temp flush failed")
-                if failure_hook == "fail_temp_fsync":
-                    raise IOError("Injected failure: temp fsync failed")
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-
-            # Step 17: Atomically replace claim store
-            if failure_hook == "fail_claim_replace":
-                raise IOError("Injected failure: atomic claim replacement failed")
-            os.replace(temp_store_path, storage_path)
-
-            # Step 18: Directory fsync parent directory
-            if failure_hook == "fail_dir_fsync_1":
-                raise IOError("Injected failure: first parent directory fsync failed")
-            _fsync_parent_dir(storage_path)
-
-            # Step 19: Reopen and verify stored value is exactly {}
-            if failure_hook == "fail_claim_reread":
-                raise IOError("Injected failure: claim reread failed")
-            with open(storage_path, "r", encoding="utf-8") as f:
-                parsed_claims = json.load(f)
-            if parsed_claims != {}:
-                raise RecoveryTransactionError("Failed to verify empty store after reset write.")
-
-            if failure_hook == "fail_empty_validation":
-                raise ValueError("Injected failure: empty store validation failed")
-
-            # Step 20: Remove disabled state marker
-            if failure_hook == "fail_marker_removal":
-                raise IOError("Injected failure: marker removal failed")
-            if failure_hook == "fail_marker_recreation":
-                if state_path.exists():
-                    os.remove(state_path)
-                raise IOError("Injected failure: error triggering marker recreation")
-            if state_path.exists():
-                os.remove(state_path)
-
-            # Step 21: Directory fsync after marker removal
-            if failure_hook == "fail_dir_fsync_2":
-                raise IOError("Injected failure: second parent directory fsync failed")
-            _fsync_parent_dir(state_path)
-
-            # Step 22: Verify marker is absent
-            if failure_hook == "fail_marker_absence_check":
-                raise RuntimeError("Injected failure: marker absence check failed")
+            _remove_disabled_marker(state_path)
             if state_path.exists():
                 raise RecoveryTransactionError("Failed to remove disabled state marker: marker still exists.")
-
-            # Step 23: Final reload and empty store revalidation
-            if failure_hook == "fail_final_reload":
-                raise IOError("Injected failure: final claim reload failed")
-            with open(storage_path, "r", encoding="utf-8") as f:
-                final_claims = json.load(f)
-            if final_claims != {}:
-                raise RecoveryTransactionError("Final validation failed: store is not empty.")
-            if failure_hook == "fail_final_empty_validation":
-                raise ValueError("Injected failure: final empty validation failed")
-
-            # Step 24: Record secret-free administrative audit event
-            if failure_hook == "fail_audit_write":
-                raise IOError("Injected failure: audit write failed")
-
-            audit_record = {
-                "event": "PROVENANCE_STORE_OFFLINE_RESET",
-                "actor": actor,
-                "target_dir": str(resolved_dir),
-                "timestamp": time.time(),
-                "status": "SUCCESS",
-                "prior_marker_digest": marker_digest,
-            }
-            logger.info(f"Offline recovery completed successfully by {actor}: {audit_record}")
-
-            return {
-                "success": True,
-                "actor": actor,
-                "target_dir": str(resolved_dir),
-                "timestamp": audit_record["timestamp"],
-                "prior_marker_digest": marker_digest,
-            }
-
-        except Exception as tx_err:
-            # Clean up temp file if present
-            if temp_store_path.exists():
-                try:
-                    temp_store_path.unlink()
-                except Exception:
-                    pass
-
-            # Fail-Closed Safety: If marker was deleted or claim replaced, recreate a valid DISABLED marker
+            _verify_empty_store(storage_path)
+            _append_recovery_audit(data_dir, uid, username, marker_digest)
+        except Exception as post_remove_err:
+            # Fail-closed marker restoration
             if not state_path.exists():
                 try:
-                    if failure_hook == "fail_marker_recreation":
-                        raise IOError("Injected failure: marker recreation failed")
-                    fallback_state = {
-                        "schema_version": 1,
-                        "state": "DISABLED",
-                        "reason": f"Post-recovery failure: {tx_err}",
-                        "affected_draft_id": None,
-                        "disabled_at": time.time(),
-                        "recovery_required": True
-                    }
-                    tmp_state = resolved_dir / f".tmp_{uuid.uuid4().hex}_state.json"
-                    with open(tmp_state, "w", encoding="utf-8") as f:
-                        json.dump(fallback_state, f, indent=2)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp_state, state_path)
-                    _fsync_parent_dir(state_path)
-                    logger.critical(f"Recreated valid DISABLED state marker fail-closed after recovery error: {tx_err}")
+                    _restore_disabled_marker(data_dir, state_path, f"Post-recovery failure: {post_remove_err}")
                 except Exception as rec_err:
                     logger.critical(f"FATAL: Failed to restore disabled marker after recovery error: {rec_err}")
+            raise RecoveryTransactionError(f"Offline recovery transaction failed after claim replacement: {post_remove_err}") from post_remove_err
 
-            raise RecoveryTransactionError(f"Offline recovery transaction failed: {tx_err}") from tx_err
+        audit_result = {
+            "success": True,
+            "actor": username,
+            "uid": uid,
+            "target_dir": str(data_dir),
+            "timestamp": time.time(),
+            "prior_marker_digest": marker_digest,
+        }
+        logger.info(f"Offline recovery completed successfully: {audit_result}")
+        return audit_result
 
     finally:
-        # Step 25: Release maintenance lock
-        if failure_hook == "fail_lock_release":
-            pass  # Simulation
         lock_ctx.release()
 
 
 def main(argv=None) -> int:
     """CLI Entrypoint for offline administrative provenance recovery."""
     args = argv if argv is not None else sys.argv[1:]
-
-    # Parse and strictly reject unsupported flags
-    forbidden_flags = [
-        "--yes", "-y", "--force", "-f", "--actor", "--strategy",
-        "--repair", "--auto", "--enable", "--clear", "--reset"
-    ]
-    for arg in args:
-        if arg.lower() in forbidden_flags or arg.startswith("--"):
-            sys.stderr.write(f"Error: Unsupported or forbidden argument '{arg}'.\n")
-            sys.stderr.write("Offline recovery does not accept bypass flags, custom actors, or strategy overrides.\n")
-            return 1
+    if len(args) > 0:
+        sys.stderr.write(f"Error: Offline recovery accepts no arguments (received: {args}).\n")
+        sys.stderr.write("Usage: python -m backend.offline_recovery (or scripts/aura-recover-provenance)\n")
+        return 2
 
     try:
-        execute_offline_recovery_transaction(target_dir=None, interactive=True)
+        res = run_offline_recovery()
         print("\n✅ Provenance store administrative recovery successfully completed.")
+        print(f"Target Directory : {res['target_dir']}")
+        print(f"Local Operator   : {res['actor']} (UID {res['uid']})")
+        print(f"Marker Digest    : {res['prior_marker_digest']}")
         print("All previous provenance claims have been permanently wiped.")
         print("Aura Mail AI may now be safely restarted.\n")
         return 0
-    except (RecoveryTerminalError, RecoveryConfirmationError, RecoveryPreconditionError, RuntimeLockError) as e:
+    except (RecoveryPreconditionError, RecoveryTerminalError, RecoveryConfirmationError, RuntimeLockError) as e:
         sys.stderr.write(f"\n❌ Recovery Aborted: {e}\n\n")
         return 1
     except Exception as e:
