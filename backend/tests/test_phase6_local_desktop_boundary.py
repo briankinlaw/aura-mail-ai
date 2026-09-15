@@ -2039,3 +2039,120 @@ def test_phase6_4_valid_navigation_and_nonbrowser_regressions():
     )
     assert res_non_browser.status_code == 200
     assert res_non_browser.json().get("status") == "ONLINE"
+
+
+# ==============================================================================
+# PHASE 6.5: TESTS-ONLY CORRECTIVE REMEDIATIONS
+# ==============================================================================
+
+
+def test_phase6_5_rejected_google_callback_does_not_consume_oauth_state():
+    """
+    SECTION 5: Proves that a Google OAuth callback rejected by browser-context middleware
+    (e.g., canonical Origin + cross-site Fetch Metadata) does not consume the server-side
+    OAuth state, allowing a subsequent conforming Origin-absent request with the same state
+    to succeed, and confirming that a third replay request is rejected as consumed.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    test_account = "user@gmail.com"
+    test_code = "mock_google_code_p65"
+
+    valid_state = OAUTH_STATE_MANAGER.create_state(
+        provider="GMAIL",
+        redirect_uri=canonical_redirect,
+        account_id=test_account
+    )
+
+    # 1. First attempt: rejected by browser-context middleware due to canonical Origin + cross-site
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_ex:
+        res_rej = client.get(
+            f"/api/auth/google/callback?code={test_code}&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Origin", "https://localhost:8000"),
+                ("Sec-Fetch-Site", "cross-site")
+            ],
+            follow_redirects=False
+        )
+        assert res_rej.status_code == 403
+        assert "access-control-allow-origin" not in res_rej.headers
+        assert not mock_ex.called
+
+    # 2. Second attempt: conforming Origin-absent cross-site request with the same state succeeds
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+        res_ok = client.get(
+            f"/api/auth/google/callback?code={test_code}&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site")
+            ],
+            follow_redirects=False
+        )
+        assert res_ok.status_code == 307
+        assert res_ok.headers["location"] == "/?auth=success&provider=google"
+        assert mock_ex.call_count == 1
+        assert mock_ex.call_args.kwargs["code"] == test_code
+        assert mock_ex.call_args.kwargs["redirect_uri"] == canonical_redirect
+        assert mock_ex.call_args.kwargs["account_id"] == test_account
+
+        # 3. Third attempt: replay with already consumed state fails
+        res_replay = client.get(
+            f"/api/auth/google/callback?code={test_code}&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site")
+            ],
+            follow_redirects=False
+        )
+        assert res_replay.status_code == 307
+        assert "auth_error=invalid_state" in res_replay.headers["location"]
+        assert mock_ex.call_count == 1  # No additional exchange on replay
+
+
+def test_phase6_5_taskpane_head_rejects_mixed_case_fetch_metadata():
+    """
+    SECTION 6: Proves that HEAD /add-in/taskpane.html fails closed with 403 on mixed-case
+    Fetch Metadata tokens (CrOsS-SiTe, CROSS-SITE, Cross-Site) without ACAO/ACAC headers,
+    while reaffirming that valid lowercase Sec-Fetch-Site: cross-site returns 200
+    and canonical Origin + cross-site returns 403.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    mixed_case_tokens = ["CrOsS-SiTe", "CROSS-SITE", "Cross-Site"]
+    for token_val in mixed_case_tokens:
+        res = client.head(
+            "/add-in/taskpane.html",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", token_val)
+            ]
+        )
+        assert res.status_code == 403, f"HEAD taskpane with '{token_val}' expected 403, got {res.status_code}"
+        assert "access-control-allow-origin" not in res.headers
+        assert "access-control-allow-credentials" not in res.headers
+
+    # Preserved valid HEAD behavior
+    res_valid = client.head(
+        "/add-in/taskpane.html",
+        headers=[
+            ("Host", "localhost"),
+            ("Sec-Fetch-Site", "cross-site")
+        ]
+    )
+    assert res_valid.status_code == 200
+    assert "access-control-allow-origin" not in res_valid.headers
+
+    # Preserved canonical Origin + cross-site HEAD rejection
+    res_canonical = client.head(
+        "/add-in/taskpane.html",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Sec-Fetch-Site", "cross-site")
+        ]
+    )
+    assert res_canonical.status_code == 403
+    assert "access-control-allow-origin" not in res_canonical.headers
