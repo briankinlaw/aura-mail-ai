@@ -17,19 +17,19 @@ from backend.canonical_grounding import validate_canonical_grounding
 logger = logging.getLogger("radar.scribe")
 
 def generate_executive_reply(
-    email: EmailMessage, 
-    user_profile: UserProfile, 
+    email: EmailMessage,
+    user_profile: UserProfile,
     request_params: Optional[ReplyDraftRequest] = None
 ) -> str:
     """Generates an executive, strictly grounded, personalized reply to recruiter with matching canonical resume attached."""
     client = get_gemini_client()
     tone = request_params.tone if request_params else "Professional & Warm"
-    custom_instr = (request_params.custom_instructions if request_params and request_params.custom_instructions 
+    custom_instr = (request_params.custom_instructions if request_params and request_params.custom_instructions
                     else user_profile.custom_reply_instructions)
-    
-    details = (email.classification.recruiter_details if email.classification and email.classification.recruiter_details 
+
+    details = (email.classification.recruiter_details if email.classification and email.classification.recruiter_details
                else extract_recruiter_details(email))
-    
+
     selected_resume = None
     if request_params and request_params.selected_resume:
         selected_resume = request_params.selected_resume
@@ -144,13 +144,13 @@ def compose_grounded_response(
     """Deterministic, fallback template strictly grounded in verified accomplishments."""
     recruiter_first = recruiter_name.split()[0] if recruiter_name and recruiter_name != "there" else "there"
     skills_bullet = ", ".join(required_skills[:4]) if required_skills else "enterprise cloud, data architectures, and AI systems"
-    
+
     draft = (
         f"Hi {recruiter_first},\n\n"
         f"Thank you for reaching out regarding the {role_title} opportunity at {company_name}. "
         f"The scope aligns directly with my background in {skills_bullet}.\n\n"
-        f"Over my career across Google Cloud, CDW, and enterprise advisory, I have influenced and delivered $100M+ in enterprise revenue, "
-        f"including influencing $8M in new Google Cloud revenue and accelerating complex data & AI architectures from concept to production.\n\n"
+        f"Across my career, I have influenced and delivered $100M+ in enterprise revenue, "
+        f"including influencing $8M in new Google Cloud revenue at Google and closing $2.1M in services at CDW.\n\n"
         f"I have attached my updated resume ({selected_resume}) for your review. "
         f"It details my track record across enterprise solutions architecture, AI platform strategy, and technical delivery.\n\n"
         f"I would be glad to connect for a brief 15-minute conversation to discuss how my background aligns with {company_name}'s goals. "

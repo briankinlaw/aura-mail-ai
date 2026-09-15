@@ -88,21 +88,28 @@ LENS_DEFINITIONS = {
 
 # Locked Metrics and Career Facts from Canonical Ledger with Stable Fact IDs
 LOCKED_FACTS = {
-    "FACT_GOOGLE_REVENUE": "Influenced $8M in new Google Cloud revenue (never 'generated $8M')",
-    "FACT_CDW_REVENUE": "Closed $2.1M in services; Influenced $4M in annual revenue",
-    "FACT_PROMEVO_PIPELINE": "Pipeline contribution estimated $2M+; Presales efficiency roadmap targeting a 30% improvement",
-    "FACT_PROMEVO_RESULTS": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value",
-    "FACT_DXC_PORTFOLIO": "$22M portfolio with shared GTM P&L responsibility between OCTO and LOB Sales",
+    "FACT_GOOGLE_REVENUE": "Influenced $8M in new Google Cloud revenue at Google (never 'generated $8M')",
+    "FACT_CDW_SERVICES": "Closed $2.1M in services at CDW",
+    "FACT_CDW_REVENUE": "Influenced $4M in annual revenue at CDW",
+    "FACT_PROMEVO_PIPELINE": "Pipeline contribution estimated $2M+ at Promevo",
+    "FACT_PROMEVO_RESULTS": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value at Promevo",
+    "FACT_DXC_PORTFOLIO": "$22M portfolio with shared GTM P&L responsibility at DXC",
     "FACT_CAREER_IMPACT": "$100M+ enterprise revenue influenced and delivered across career",
     "FACT_CERTIFICATIONS": ["PMP (Project Management Professional)", "Google Cloud Certified Professional Cloud Architect", "Google Cloud Certified Professional Data Engineer"],
-    "FACT_EMPLOYMENT_MAVENCODE": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present)",
-    "FACT_EMPLOYMENT_PROMEVO": "Senior Solutions Architect at Promevo (2024 - Aug 2026; ended August 2026)",
-    "google": "Influenced $8M in new Google Cloud revenue (never 'generated $8M')",
-    "cdw": "Closed $2.1M in services; Influenced $4M in annual revenue",
-    "promevo_pipeline": "Pipeline contribution estimated $2M+; Presales efficiency roadmap targeting a 30% improvement",
-    "promevo_results": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value",
-    "dxc": "$22M portfolio with shared GTM P&L responsibility between OCTO and LOB Sales",
-    "career_impact": "$100M+ enterprise revenue influenced and delivered",
+    "FACT_EMPLOYMENT_MAVENCODE_ADVISORY": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present)",
+    "FACT_EMPLOYMENT_MAVENCODE_DIRECTOR": "Director, Data Analytics & AI Strategy / Principal Solutions Architect at MavenCode (Oct 2024-Feb 2026)",
+    "FACT_EMPLOYMENT_PROMEVO": "Advisory Solutions Architect, Data Cloud & AI SME at Promevo (Mar 2026-Aug 2026)",
+    "FACT_EMPLOYMENT_CDW": "Senior Solutions Architect — Digital Data & Analytics Strategist at CDW (Nov 2023-Oct 2024)",
+    "FACT_EMPLOYMENT_PYTHIAN": "Principal Cloud Solutions Architect — GCP PDE at Pythian (Nov 2021-May 2023)",
+    "FACT_EMPLOYMENT_GOOGLE": "Cloud Customer Engineer — Data & AI Solutions at Google (Oct 2019-Nov 2021)",
+    "FACT_EMPLOYMENT_DXC": "Principal Solution Architect — OTCO Analytics & AI Lead at DXC Technology (Mar 2015-Oct 2019)",
+    "FACT_EMPLOYMENT_IBM": "Watson Analytics Solution Architect — Big Data PaaS SME at IBM (Jan 2002 / Feb 2007-Mar 2015)",
+    "google": "Influenced $8M in new Google Cloud revenue at Google (never 'generated $8M')",
+    "cdw": "Closed $2.1M in services; Influenced $4M in annual revenue at CDW",
+    "promevo_pipeline": "Pipeline contribution estimated $2M+ at Promevo",
+    "promevo_results": "23% POC-to-production conversion, 40% reduced scoping turnaround, 20% shorter sales cycles, 25% reduction in legacy architecture complexity, 33% faster time-to-value at Promevo",
+    "dxc": "$22M portfolio with shared GTM P&L responsibility at DXC",
+    "career_impact": "$100M+ enterprise revenue influenced and delivered across career",
     "certifications": ["PMP (Project Management Professional)", "Google Cloud Certified Professional Cloud Architect", "Google Cloud Certified Professional Data Engineer"],
     "current_status": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present)"
 }
@@ -110,7 +117,7 @@ LOCKED_FACTS = {
 def resolve_resume_file(identifier: Optional[str]) -> Optional[Path]:
     """Finds the absolute path of a resume given an absolute path, filename, or stem."""
     search_dirs = [CANONICAL_ACTIVE_DIR, TARGETED_APPS_DIR, DOWNLOADS_VARIANTS_DIR, RESUMES_DIR]
-    
+
     if not identifier:
         # Default to level 3A advisor canonical if available
         for d in search_dirs:
@@ -188,7 +195,7 @@ def determine_lens_from_content(filename: str, text: str) -> str:
         return "field_cto"
     elif "lakehouse" in text_lower or "agentic ai" in text_lower:
         return "data_platform_ai"
-    
+
     return "level_3a_advisor"
 
 
@@ -202,7 +209,7 @@ def parse_resume_metadata(path: Path, category: str) -> Dict[str, Any]:
     text = ""
     if file_ext == "docx":
         text = extract_docx_text(path)
-    
+
     lens_key = determine_lens_from_content(path.name, text)
     lens_info = LENS_DEFINITIONS.get(lens_key, LENS_DEFINITIONS["level_3a_advisor"])
 
@@ -215,7 +222,7 @@ def parse_resume_metadata(path: Path, category: str) -> Dict[str, Any]:
             if any(term in line.upper() for term in ["ARCHITECT", "ADVISOR", "GOVERNANCE", "DIRECTOR", "MANAGER", "STRATEGIST", "CTO", "LEAD"]):
                 headline = line
                 break
-    
+
     if not headline:
         clean_name = path.stem.replace("_", " ").replace("-", " ")
         headline = clean_name
@@ -349,7 +356,7 @@ def get_canonical_ledger_summary() -> str:
                         return f.read()
                 except Exception:
                     pass
-    
+
     # Fallback to compiled locked facts text if no raw file on disk
     return "\n".join([f"- {k}: {v}" for k, v in LOCKED_FACTS.items()])
 
