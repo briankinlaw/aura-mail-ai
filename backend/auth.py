@@ -37,6 +37,15 @@ CROSS_SITE_NAVIGATION_ALLOWLIST: Set[Tuple[str, str]] = {
 }
 
 
+# Exact case-sensitive Fetch Metadata protocol tokens (Phase 6.4)
+EXACT_FETCH_SITE_TOKENS: Set[str] = {
+    "same-origin",
+    "same-site",
+    "none",
+    "cross-site",
+}
+
+
 class LoopbackPeerMiddleware:
     """
     ASGI middleware enforcing that all incoming connections originate strictly
@@ -221,10 +230,11 @@ def validate_browser_context(scope: Scope) -> Optional[str]:
             return "Browser context verification failed: Comma-joined Sec-Fetch-Site header rejected."
         if site_raw != site_raw.strip():
             return "Browser context verification failed: Malformed Sec-Fetch-Site whitespace rejected."
-        site_clean = site_raw.lower()
-        if site_clean not in ("same-origin", "same-site", "none", "cross-site"):
+        if site_raw not in EXACT_FETCH_SITE_TOKENS:
             return "Browser context verification failed: Malformed Sec-Fetch-Site value rejected."
-        if site_clean == "cross-site":
+        if site_raw == "cross-site":
+            if origin_headers:
+                return "Browser context verification failed: Cross-site request with Origin rejected."
             method = scope.get("method", "").upper()
             path = scope.get("path", "")
             if (method, path) not in CROSS_SITE_NAVIGATION_ALLOWLIST:

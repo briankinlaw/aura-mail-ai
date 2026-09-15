@@ -1661,3 +1661,381 @@ def test_phase6_3_section_11_comprehensive_behavioral_middleware_order_proof():
     )
     assert res7.status_code == 200
     assert "frame-ancestors" in res7.headers["Content-Security-Policy"]
+
+
+# ==============================================================================
+# PHASE 6.4: TIGHTENED CROSS-SITE NAVIGATION PREDICATE TESTS (SECTION 8)
+# ==============================================================================
+
+def test_phase6_4_microsoft_callback_requires_origin_absence():
+    """
+    SECTION 8.1: Microsoft callback matrix.
+    Proves that GET /api/auth/callback allows Sec-Fetch-Site: cross-site ONLY when Origin
+    is absent. Canonical Origin, hostile Origin, null Origin, or mixed-case Fetch Metadata
+    tokens fail closed with 403 and zero exchange calls.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/callback"
+
+    # 1. Origin absent + exact cross-site -> 307 success, 1 exchange call
+    valid_state_1 = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=canonical_redirect,
+        account_id="user@outlook.com"
+    )
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+        res1 = client.get(
+            f"/api/auth/callback?code=code_ok&state={valid_state_1}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res1.status_code == 307
+        assert res1.headers["location"] == "/?auth=success&provider=microsoft"
+        assert mock_ex.call_count == 1
+
+    # 2. Rejection matrix with valid state: must return 403 with 0 exchange calls
+    rejection_matrix = [
+        ([("Origin", "https://localhost:8000"), ("Sec-Fetch-Site", "cross-site")], "canonical Origin + cross-site"),
+        ([("Origin", "https://evil.example"), ("Sec-Fetch-Site", "cross-site")], "hostile Origin + cross-site"),
+        ([("Origin", "null"), ("Sec-Fetch-Site", "cross-site")], "null Origin + cross-site"),
+        ([("Sec-Fetch-Site", "CrOsS-SiTe")], "mixed-case CrOsS-SiTe"),
+        ([("Sec-Fetch-Site", "CROSS-SITE")], "uppercase CROSS-SITE"),
+        ([("Sec-Fetch-Site", "cross-site ")], "trailing whitespace cross-site"),
+        ([("Sec-Fetch-Site", " cross-site")], "leading whitespace cross-site"),
+        ([("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Site", "cross-site")], "duplicate cross-site"),
+        ([("Sec-Fetch-Site", "cross-site,same-origin")], "comma-joined cross-site"),
+    ]
+
+    for headers_tuples, desc in rejection_matrix:
+        state_rej = OAUTH_STATE_MANAGER.create_state(
+            provider="MICROSOFT_GRAPH",
+            redirect_uri=canonical_redirect,
+            account_id="user@outlook.com"
+        )
+        with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_ex:
+            full_headers = [("Host", "localhost")] + headers_tuples
+            res_rej = client.get(
+                f"/api/auth/callback?code=code_test&state={state_rej}",
+                headers=full_headers,
+                follow_redirects=False
+            )
+            assert res_rej.status_code == 403, f"Case '{desc}' expected 403, got {res_rej.status_code}"
+            assert not mock_ex.called, f"Exchange MUST NOT be called for case '{desc}'"
+
+
+def test_phase6_4_google_callback_requires_origin_absence():
+    """
+    SECTION 8.2: Google callback matrix.
+    Proves that GET /api/auth/google/callback allows Sec-Fetch-Site: cross-site ONLY when Origin
+    is absent. Canonical Origin, hostile Origin, or mixed-case Fetch Metadata tokens fail closed.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+
+    # 1. Valid Origin-absent exact-cross-site -> 307 success
+    valid_state_g = OAUTH_STATE_MANAGER.create_state(
+        provider="GMAIL",
+        redirect_uri=canonical_redirect,
+        account_id="user@gmail.com"
+    )
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+        res = client.get(
+            f"/api/auth/google/callback?code=code_g&state={valid_state_g}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res.status_code == 307
+        assert res.headers["location"] == "/?auth=success&provider=google"
+        assert mock_ex.call_count == 1
+
+        # Replay rejected
+        res_rep = client.get(
+            f"/api/auth/google/callback?code=code_g&state={valid_state_g}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res_rep.status_code == 307
+        assert "auth_error=invalid_state" in res_rep.headers["location"]
+        assert mock_ex.call_count == 1
+
+    # 2. Canonical Origin + cross-site -> 403
+    state_can = OAUTH_STATE_MANAGER.create_state(provider="GMAIL", redirect_uri=canonical_redirect)
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_ex:
+        res_can = client.get(
+            f"/api/auth/google/callback?code=code_can&state={state_can}",
+            headers=[("Host", "localhost"), ("Origin", "https://localhost:8000"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res_can.status_code == 403
+        assert not mock_ex.called
+
+    # 3. Mixed-case cross-site -> 403
+    state_mix = OAUTH_STATE_MANAGER.create_state(provider="GMAIL", redirect_uri=canonical_redirect)
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_ex:
+        res_mix = client.get(
+            f"/api/auth/google/callback?code=code_mix&state={state_mix}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "CrOsS-SiTe")],
+            follow_redirects=False
+        )
+        assert res_mix.status_code == 403
+        assert not mock_ex.called
+
+
+def test_phase6_4_taskpane_requires_origin_absence():
+    """
+    SECTION 8.3: Outlook taskpane matrix.
+    Proves that GET/HEAD /add-in/taskpane.html requires Origin absence for cross-site framing.
+    Canonical Origin, hostile Origin, or mixed-case Fetch Metadata tokens fail closed with 403.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    # 1. Valid Origin-absent exact-cross-site GET and HEAD -> 200 OK
+    res_get = client.get("/add-in/taskpane.html", headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")])
+    assert res_get.status_code == 200
+    assert res_get.headers["Cache-Control"] == "no-store, max-age=0"
+    assert "frame-ancestors" in res_get.headers["Content-Security-Policy"]
+
+    res_head = client.head("/add-in/taskpane.html", headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")])
+    assert res_head.status_code == 200
+
+    # 2. Canonical Origin + cross-site -> 403
+    res_can_get = client.get(
+        "/add-in/taskpane.html",
+        headers=[("Host", "localhost"), ("Origin", "https://localhost:8000"), ("Sec-Fetch-Site", "cross-site")]
+    )
+    assert res_can_get.status_code == 403
+    assert "access-control-allow-origin" not in res_can_get.headers
+
+    res_can_head = client.head(
+        "/add-in/taskpane.html",
+        headers=[("Host", "localhost"), ("Origin", "https://localhost:8000"), ("Sec-Fetch-Site", "cross-site")]
+    )
+    assert res_can_head.status_code == 403
+    assert "access-control-allow-origin" not in res_can_head.headers
+
+    # 3. Hostile Origin + cross-site -> 403
+    res_hostile = client.get(
+        "/add-in/taskpane.html",
+        headers=[("Host", "localhost"), ("Origin", "https://evil.example"), ("Sec-Fetch-Site", "cross-site")]
+    )
+    assert res_hostile.status_code == 403
+    assert "access-control-allow-origin" not in res_hostile.headers
+
+    # 4. Mixed-case Fetch Metadata tokens -> 403
+    for mixed_val in ["CrOsS-SiTe", "CROSS-SITE", "cross-site ", "Cross-Site"]:
+        res_m = client.get(
+            "/add-in/taskpane.html",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", mixed_val)]
+        )
+        assert res_m.status_code == 403
+        assert "access-control-allow-origin" not in res_m.headers
+
+
+def test_phase6_4_fetch_metadata_values_are_exact_case_sensitive_tokens():
+    """
+    SECTION 8.4: Fetch Metadata values are exact case-sensitive protocol tokens.
+    Proves that mixed-case or capitalized variants of same-origin, same-site, none,
+    or cross-site fail closed as malformed.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    invalid_token_values = [
+        "Same-Origin",
+        "SAME-ORIGIN",
+        "Same-Site",
+        "SAME-SITE",
+        "None",
+        "NONE",
+        "CrOsS-SiTe",
+        "CROSS-SITE",
+        "same_origin",
+        "cross_site",
+    ]
+
+    for val in invalid_token_values:
+        # Privileged route
+        res = client.get(
+            "/api/status",
+            headers=[
+                ("Host", "localhost"),
+                ("Authorization", f"Bearer {token}"),
+                ("Sec-Fetch-Site", val)
+            ]
+        )
+        assert res.status_code == 403, f"Token value '{val}' expected 403, got {res.status_code}"
+        assert "Malformed Sec-Fetch-Site value rejected" in res.json().get("detail", "")
+
+        # Preflight
+        res_opt = client.options(
+            "/api/settings",
+            headers=[
+                ("Host", "localhost"),
+                ("Origin", "https://localhost:8000"),
+                ("Access-Control-Request-Method", "POST"),
+                ("Sec-Fetch-Site", val)
+            ]
+        )
+        assert res_opt.status_code == 403
+        assert "access-control-allow-origin" not in res_opt.headers
+
+
+def test_phase6_4_rejected_callback_does_not_consume_oauth_state():
+    """
+    SECTION 8.1 & 8.5: Rejected callback does not consume OAuth state.
+    Proves that a request rejected at the pre-CORS browser-context boundary (e.g. Canonical Origin
+    + cross-site) leaves valid OAuth state unconsumed, so a subsequent valid request can succeed.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/callback"
+
+    valid_state = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=canonical_redirect,
+        account_id="user@outlook.com"
+    )
+
+    # 1. First attempt: rejected by middleware due to canonical Origin + cross-site
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_ex:
+        res_rej = client.get(
+            f"/api/auth/callback?code=code_1&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Origin", "https://localhost:8000"),
+                ("Sec-Fetch-Site", "cross-site")
+            ],
+            follow_redirects=False
+        )
+        assert res_rej.status_code == 403
+        assert not mock_ex.called
+
+    # 2. Second attempt: valid Origin-absent cross-site request with same state succeeds
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+        res_ok = client.get(
+            f"/api/auth/callback?code=code_1&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site")
+            ],
+            follow_redirects=False
+        )
+        assert res_ok.status_code == 307
+        assert res_ok.headers["location"] == "/?auth=success&provider=microsoft"
+        assert mock_ex.call_count == 1
+
+
+def test_phase6_4_cross_site_preflights_remain_blocked():
+    """
+    SECTION 8.4: Cross-site preflights remain blocked before CORS.
+    Proves that OPTIONS preflights carrying Sec-Fetch-Site: cross-site receive no navigation
+    exception and fail closed with 403 and zero CORS response headers.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    preflight_paths = [
+        "/api/settings",
+        "/api/auth/callback",
+        "/api/auth/google/callback",
+        "/add-in/taskpane.html",
+    ]
+
+    for path in preflight_paths:
+        res = client.options(
+            path,
+            headers=[
+                ("Host", "localhost"),
+                ("Origin", "https://localhost:8000"),
+                ("Access-Control-Request-Method", "POST"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ]
+        )
+        assert res.status_code == 403, f"Preflight on {path} with cross-site expected 403, got {res.status_code}"
+        assert "access-control-allow-origin" not in res.headers
+        assert "access-control-allow-credentials" not in res.headers
+
+
+def test_phase6_4_protected_routes_remain_blocked():
+    """
+    SECTION 8.4: Protected routes remain blocked from cross-site requests even with valid token.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    protected_cases = [
+        ("GET", "/api/status", None),
+        ("POST", "/api/settings", {"demo_mode": True}),
+        ("GET", "/api/auth/msal/url", None),
+        ("GET", "/api/auth/google/url", None),
+        ("GET", "/api/profile", None),
+        ("GET", "/api/accounts", None),
+    ]
+
+    with patch("backend.main.save_settings") as mock_save:
+        for method, path, payload in protected_cases:
+            # Exact cross-site
+            res = client.request(
+                method,
+                path,
+                json=payload,
+                headers=[
+                    ("Host", "localhost"),
+                    ("Authorization", f"Bearer {token}"),
+                    ("Sec-Fetch-Site", "cross-site")
+                ]
+            )
+            assert res.status_code == 403
+            assert not mock_save.called
+
+            # Mixed-case cross-site
+            res_mix = client.request(
+                method,
+                path,
+                json=payload,
+                headers=[
+                    ("Host", "localhost"),
+                    ("Authorization", f"Bearer {token}"),
+                    ("Sec-Fetch-Site", "CrOsS-SiTe")
+                ]
+            )
+            assert res_mix.status_code == 403
+            assert not mock_save.called
+
+
+def test_phase6_4_valid_navigation_and_nonbrowser_regressions():
+    """
+    SECTION 8.5: Valid navigations, same-origin preflights, and non-browser requests regressions.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    # 1. Legitimate same-origin preflight
+    res_preflight = client.options(
+        "/api/settings",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "Authorization"),
+        ]
+    )
+    assert res_preflight.status_code == 200
+    assert res_preflight.headers.get("access-control-allow-origin") == "https://localhost:8000"
+
+    # 2. Authenticated non-browser request
+    res_non_browser = client.get(
+        "/api/status",
+        headers=[
+            ("Host", "localhost"),
+            ("Authorization", f"Bearer {token}"),
+        ]
+    )
+    assert res_non_browser.status_code == 200
+    assert res_non_browser.json().get("status") == "ONLINE"
