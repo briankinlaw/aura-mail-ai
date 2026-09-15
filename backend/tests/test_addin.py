@@ -141,6 +141,8 @@ def test_calendar_availability_api():
     assert "America/Chicago" in data["timezone"]
     assert len(data["slots"]) > 0
     assert "formatted_display" in data["slots"][0]
+    assert data["verification_status"] == "CALENDAR_NOT_CHECKED"
+    assert data["is_verified"] is False
 
 
 # --- Phase 2.1 Item Resolver & Graph Status Tests ---

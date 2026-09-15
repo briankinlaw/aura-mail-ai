@@ -204,7 +204,11 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
                     )
                     cal_res = calculate_optimal_booking_windows([], cal_req)
                     if cal_res.available_windows:
-                        slot_lines = ["\nI am currently available during the following windows (CST):"]
+                        if cal_res.is_verified:
+                            header = "\nI am currently available during the following windows (CST):"
+                        else:
+                            header = "\nI can propose the following windows (pending calendar verification, CST):"
+                        slot_lines = [header]
                         for win in cal_res.available_windows[:3]:
                             slot_lines.append(f"• {win.formatted_display}")
                         slot_lines.append("Please feel free to suggest an alternative or send across a calendar invite.")

@@ -31,9 +31,9 @@ class TestMenuBarApp(unittest.TestCase):
     def test_copy_booking_slots(self, mock_notify, mock_clip):
         app = AuraMailMenuBarApp()
         app.on_copy_booking_slots(None)
-        self.assertTrue(mock_clip.called)
         args, kwargs = mock_clip.call_args
-        self.assertIn("Here are a few times", args[0])
+        self.assertIn("proposed times", args[0])
+        self.assertIn("pending calendar verification", args[0])
 
 if __name__ == "__main__":
     unittest.main()

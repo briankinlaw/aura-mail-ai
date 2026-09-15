@@ -1731,9 +1731,13 @@ def radar_draft_endpoint(payload: Dict[str, Any]):
         )
         avail_res = calculate_optimal_booking_windows([], avail_req)
         
-        if "available for a brief" not in draft and "• " not in draft:
+        if "available for a brief" not in draft and "proposed times for a brief" not in draft and "• " not in draft:
             slot_bullets = "\n".join([f"• {opt.formatted_display}" for opt in avail_res.available_windows[:3]])
-            insertion = f"\n\nHere are a few times I am available for a brief introductory conversation next week:\n{slot_bullets}\n"
+            if avail_res.is_verified:
+                intro = "Here are a few times I am available for a brief introductory conversation next week:"
+            else:
+                intro = "Here are some proposed times for a brief introductory conversation next week (pending calendar verification):"
+            insertion = f"\n\n{intro}\n{slot_bullets}\n"
             
             if "Best regards," in draft:
                 parts = draft.split("Best regards,")
@@ -1759,10 +1763,19 @@ def radar_draft_endpoint(payload: Dict[str, Any]):
 @app.post("/api/calendar/availability", dependencies=[Depends(require_local_auth)])
 def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
     from datetime import date, timedelta
+    from backend.calendar_broker.models import CalendarVerificationStatus, TimeSlot
     p = payload or {}
     days = p.get("days_ahead", 7)
     tz_str = p.get("timezone", "America/Chicago")
     duration = p.get("duration_minutes", 30)
+    calendar_checked = p.get("calendar_checked", False)
+    raw_status = p.get("verification_status")
+    ver_status = None
+    if raw_status:
+        try:
+            ver_status = CalendarVerificationStatus(raw_status)
+        except ValueError:
+            pass
 
     start_d = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     end_d = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
@@ -1771,16 +1784,33 @@ def calendar_availability_endpoint(payload: Optional[Dict[str, Any]] = None):
         start_date=start_d,
         end_date=end_d,
         meeting_duration_minutes=duration,
-        timezone=tz_str
+        timezone=tz_str,
+        calendar_checked=calendar_checked,
+        verification_status=ver_status
     )
 
-    busy_slots = []
-    res = calculate_optimal_booking_windows(busy_slots, req)
+    raw_slots = p.get("busy_slots")
+    busy_slots = None
+    if raw_slots is not None:
+        busy_slots = [TimeSlot(**s) if isinstance(s, dict) else s for s in raw_slots]
+    elif calendar_checked:
+        busy_slots = []
+
+    res = calculate_optimal_booking_windows(
+        busy_slots,
+        req,
+        calendar_checked=calendar_checked,
+        verification_status=ver_status
+    )
 
     return {
         "status": "SUCCESS",
         "timezone": res.timezone,
         "formatted_summary": res.formatted_summary,
+        "verification_status": res.verification_status.value,
+        "is_verified": res.is_verified,
+        "busy_slots_count": res.busy_slots_count,
+        "conflict_count": res.conflict_count,
         "slots": [opt.model_dump() for opt in res.available_windows]
     }
 
