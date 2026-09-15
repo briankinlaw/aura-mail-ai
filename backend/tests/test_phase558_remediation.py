@@ -54,7 +54,7 @@ from backend.canonical_grounding import (
     CANONICAL_LEDGER_SCHEMA_VERSION,
     get_active_ledger_digest,
 )
-from backend.auth import get_local_session_token
+from backend.auth import get_local_session_token, issue_administrative_recovery_token
 from backend.tests.conftest import test_reset_provenance_store
 
 
@@ -81,12 +81,12 @@ def auth_client():
     return client
 
 
-def _create_valid_admin_context() -> AdministrativeRecoveryContext:
+def _create_valid_admin_context(actor: str = "local_root_admin") -> AdministrativeRecoveryContext:
     return AdministrativeRecoveryContext(
-        actor="local_root_admin",
+        actor=actor,
         execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
         explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
+        authorization_evidence=issue_administrative_recovery_token(actor=actor),
     )
 
 
@@ -283,7 +283,7 @@ def test_recover_store_rejects_invalid_authorization_evidence(tmp_path):
         authorization_evidence="invalid_forged_session_token_xyz",
     )
 
-    with pytest.raises(RecoveryAuthorizationError, match="Invalid administrative recovery authorization evidence"):
+    with pytest.raises(RecoveryAuthorizationError, match="Invalid, expired, or already consumed administrative recovery authorization evidence"):
         store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)
 
     assert store.is_available() is False

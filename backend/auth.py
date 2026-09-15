@@ -15,11 +15,17 @@ import os
 import hmac
 import secrets
 import logging
+import time
+import threading
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from fastapi import Request, Header, HTTPException, status
 
 logger = logging.getLogger("aura.auth")
+
+# In-memory storage and lock for single-use administrative recovery tokens
+_RECOVERY_TOKEN_LOCK = threading.Lock()
+_ACTIVE_RECOVERY_TOKENS: Dict[str, Dict[str, Any]] = {}
 
 # Canonical CORS and Origin Allowlist for Local Desktop & Office.js Webview (Phase 2.1)
 # Note: Office.js taskpane executes from same-origin https://localhost:8000/add-in/taskpane.html
@@ -124,6 +130,86 @@ def verify_local_token(candidate_token: Optional[str]) -> bool:
         return False
     active = get_local_session_token()
     return hmac.compare_digest(candidate_token.strip(), active)
+
+
+def issue_administrative_recovery_token(actor: str, ttl_seconds: float = 60.0) -> str:
+    """
+    Issues a dedicated, single-use, short-lived cryptographic capability for local administrative recovery.
+    Must be minted only by trusted local administrative entrypoints (e.g. maintenance CLI).
+    Never logged or exposed to network / browser requests.
+    """
+    if not actor or not isinstance(actor, str) or not actor.strip():
+        raise ValueError("Administrative recovery token requires a non-empty actor string.")
+
+    actor_clean = actor.strip()
+    # Generate 256-bit entropy token
+    token = f"aura_rec_{secrets.token_hex(32)}"
+    expires_at = time.time() + max(0.001, float(ttl_seconds))
+
+    with _RECOVERY_TOKEN_LOCK:
+        # Prune expired tokens
+        now = time.time()
+        expired_keys = [k for k, v in _ACTIVE_RECOVERY_TOKENS.items() if v["expires_at"] < now]
+        for k in expired_keys:
+            _ACTIVE_RECOVERY_TOKENS.pop(k, None)
+
+        _ACTIVE_RECOVERY_TOKENS[token] = {
+            "actor": actor_clean,
+            "expires_at": expires_at,
+            "created_at": now,
+        }
+    return token
+
+
+def verify_and_consume_recovery_token(candidate_token: Optional[str], expected_actor: str) -> bool:
+    """
+    Verifies and single-use consumes the dedicated administrative recovery token.
+    - Uses constant-time comparison.
+    - Explicitly rejects the ordinary local session token.
+    - Checks validity, expiration, and actor binding.
+    - Consumes the token immediately upon verification to prevent replay.
+    """
+    if not candidate_token or not isinstance(candidate_token, str):
+        return False
+    if not expected_actor or not isinstance(expected_actor, str) or not expected_actor.strip():
+        return False
+
+    cand_clean = candidate_token.strip()
+    exp_actor_clean = expected_actor.strip()
+
+    # Explicit rejection: Ordinary local session token cannot be used for recovery
+    if verify_local_token(cand_clean):
+        logger.warning("Rejected ordinary session token attempted as administrative recovery evidence.")
+        return False
+
+    with _RECOVERY_TOKEN_LOCK:
+        now = time.time()
+        # Find matching token via constant-time comparison
+        matched_token_key = None
+        for tok_key, tok_meta in list(_ACTIVE_RECOVERY_TOKENS.items()):
+            if tok_meta["expires_at"] < now:
+                _ACTIVE_RECOVERY_TOKENS.pop(tok_key, None)
+                continue
+            if hmac.compare_digest(cand_clean, tok_key):
+                matched_token_key = tok_key
+                break
+
+        if not matched_token_key:
+            return False
+
+        meta = _ACTIVE_RECOVERY_TOKENS.pop(matched_token_key)
+        # Check actor binding
+        if meta["actor"] != exp_actor_clean:
+            logger.warning(f"Recovery token actor mismatch: expected '{exp_actor_clean}', got '{meta['actor']}'.")
+            return False
+
+        return True
+
+
+def clear_administrative_recovery_tokens() -> None:
+    """Test helper to clear all in-memory recovery tokens."""
+    with _RECOVERY_TOKEN_LOCK:
+        _ACTIVE_RECOVERY_TOKENS.clear()
 
 
 def require_local_auth(

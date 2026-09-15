@@ -1106,16 +1106,44 @@ class ProvenanceStore:
                 return False
             return draft_id.strip() in self._quarantined_draft_ids
 
+
+    def _fsync_parent_dir(self, path: Path):
+        """
+        Fsyncs the parent directory of a path on POSIX platforms.
+        Fails closed on real I/O errors while ignoring unsupported filesystem errors.
+        """
+        if not hasattr(os, "O_RDONLY") or not hasattr(os, "fsync"):
+            return
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except (OSError, IOError) as err:
+            import errno
+            unsupported_errnos = {
+                getattr(errno, "EINVAL", 22),
+                getattr(errno, "ENOTSUP", 45),
+                getattr(errno, "EOPNOTSUPP", 45),
+            }
+            if getattr(err, "errno", None) in unsupported_errnos:
+                logger.debug(f"Parent directory fsync unsupported on this filesystem for {path.parent}: {err}")
+                return
+            logger.critical(f"FATAL: Supported parent directory fsync failed for {path.parent}: {err}")
+            raise
+
     def disable_store(self, reason: Optional[str] = None, affected_draft_id: Optional[str] = None) -> bool:
         """
-        Durably disables the entire provenance store fail-closed upon catastrophic invalidation or quarantine failure.
-        Writes a crash-resistant state marker file to disk before returning.
+        Catastrophic kill-switch: sets in-memory availability to False and persists
+        the disabled state marker durably to disk using an atomic replace pattern.
         """
         with self._lock:
             self._is_available = False
-            reason_str = str(reason or "Provenance store manually or defensively disabled.")
-            self._unavailable_reason = reason_str
-            self._invalidation_counter += 1
+            reason_str = str(reason).strip() if reason else "Catastrophic error: provenance store disabled"
+            self._unavailable_reason = f"DURABLY_DISABLED: {reason_str}"
+            self._records = {}  # In-memory records flushed immediately
+
             if affected_draft_id:
                 self._quarantined_draft_ids.add(str(affected_draft_id).strip())
 
@@ -1136,15 +1164,7 @@ class ProvenanceStore:
                     os.fsync(f.fileno())
 
                 os.replace(temp_path, self.state_path)
-
-                try:
-                    dir_fd = os.open(str(self.state_path.parent), os.O_RDONLY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                except Exception:
-                    pass
+                self._fsync_parent_dir(self.state_path)
 
                 if not self.state_path.exists():
                     raise RuntimeError("State marker file missing after atomic write")
@@ -1175,52 +1195,51 @@ class ProvenanceStore:
         Strictly requires RecoveryStrategy.RESET_ALL_PROVENANCE and a validated AdministrativeRecoveryContext.
         """
         with self._lock:
-            # 1. Validate Strategy
-            if not strategy or (strategy != RecoveryStrategy.RESET_ALL_PROVENANCE and strategy != "RESET_ALL_PROVENANCE"):
-                raise ValueError(f"Unsupported recovery strategy: '{strategy}'. Only 'RESET_ALL_PROVENANCE' is permitted.")
+            # 1. Validate Strategy: Strict Enum Instance Enforcement (No raw strings, aliases, or defaults)
+            if not isinstance(strategy, RecoveryStrategy) or strategy is not RecoveryStrategy.RESET_ALL_PROVENANCE:
+                raise ValueError(f"Unsupported recovery strategy: '{strategy}'. Only RecoveryStrategy.RESET_ALL_PROVENANCE is permitted.")
 
             # 2. Validate Administrative Context Type
             if not isinstance(recovery_context, AdministrativeRecoveryContext):
-                raise RecoveryAuthorizationError("recovery_context must be a valid AdministrativeRecoveryContext instance.")
+                raise RecoveryAuthorizationError("recovery_context must be an AdministrativeRecoveryContext instance.")
 
-            # 3. Validate Actor
+            # 3. Validate Actor Identity
             if not recovery_context.actor or not isinstance(recovery_context.actor, str) or not recovery_context.actor.strip():
                 raise RecoveryAuthorizationError("Administrative recovery requires a non-empty actor identity.")
 
-            # 4. Validate Execution Context
-            if recovery_context.execution_context != RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE and recovery_context.execution_context != "LOCAL_ADMIN_MAINTENANCE":
+            # 4. Validate Execution Context: Strict Enum Instance Enforcement (No raw strings)
+            if not isinstance(recovery_context.execution_context, RecoveryExecutionContext) or recovery_context.execution_context is not RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE:
                 raise RecoveryAuthorizationError(
                     f"Forbidden recovery execution context: '{recovery_context.execution_context}'. "
-                    "Only 'LOCAL_ADMIN_MAINTENANCE' is authorized."
+                    "Only RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE is authorized."
                 )
 
             # 5. Validate Explicit Confirmation
-            if recovery_context.explicitly_confirmed is not True or not isinstance(recovery_context.explicitly_confirmed, bool):
+            if recovery_context.explicitly_confirmed is not True or type(recovery_context.explicitly_confirmed) is not bool:
                 raise RecoveryAuthorizationError("Administrative recovery requires explicitly_confirmed=True.")
 
-            # 6. Validate Authorization Evidence via Trusted Local Primitive
-            from backend.auth import verify_local_token
-            if not verify_local_token(recovery_context.authorization_evidence):
-                raise RecoveryAuthorizationError("Invalid administrative recovery authorization evidence.")
+            # 6. Validate Dedicated Administrative Recovery Token Authority (Single-Use, Purpose-Bound)
+            from backend.auth import verify_and_consume_recovery_token
+            if not verify_and_consume_recovery_token(recovery_context.authorization_evidence, recovery_context.actor):
+                raise RecoveryAuthorizationError("Invalid, expired, or already consumed administrative recovery authorization evidence.")
 
-            # 7. Execute Destructive RESET_ALL_PROVENANCE
-            # Step A: Durably write empty dictionary to claim store
+            # 7. Validate Store Precondition: Recovery cannot be executed on a healthy, available store
+            if self._is_available and not self.state_path.exists():
+                raise RecoveryAuthorizationError(
+                    "Store is currently healthy and available. "
+                    "Recovery precondition failed: recovery is only permitted when the store is durably disabled or in an invalid state."
+                )
+
+            # 8. Execute Destructive RESET_ALL_PROVENANCE with full durability and fail-closed marker restoration
             temp_store_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
             try:
+                # Step A: Durably write empty dictionary to temporary claim store
                 with open(temp_store_path, "w", encoding="utf-8") as f:
                     json.dump({}, f, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(temp_store_path, self.storage_path)
-
-                try:
-                    dir_fd = os.open(str(self.storage_path.parent), os.O_RDONLY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                except Exception:
-                    pass
+                self._fsync_parent_dir(self.storage_path)
 
                 # Step B: Reopen and verify stored value is exactly {}
                 with open(self.storage_path, "r", encoding="utf-8") as f:
@@ -1231,31 +1250,27 @@ class ProvenanceStore:
                 # Step C: Remove disabled state marker
                 if self.state_path.exists():
                     os.remove(self.state_path)
-
-                try:
-                    dir_fd = os.open(str(self.state_path.parent), os.O_RDONLY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                except Exception:
-                    pass
+                self._fsync_parent_dir(self.state_path)
 
                 # Step D: Verify marker is absent
                 if self.state_path.exists():
                     raise RuntimeError("Failed to remove disabled state marker")
 
-                # Step E: Reset in-memory state and reload empty store
-                self._records = {}
-                self._quarantined_draft_ids = set()
-                self._is_available = True
-                self._load_error = None
-                self._unavailable_reason = None
+                # Step E: Complete reload and revalidation of disk state
+                self._load()
+                if not self._is_available or len(self._records) != 0 or len(self._quarantined_draft_ids) != 0:
+                    raise RuntimeError("Post-recovery reload verification failed: store is not clean and available.")
+
                 self._invalidation_counter += 1
                 logger.info(f"Provenance store successfully recovered via RESET_ALL_PROVENANCE by actor '{recovery_context.actor}'.")
                 return True
             except Exception as e:
-                # Any failure keeps store unavailable
+                # If failure occurs after marker removal (or during reload), restore disabled marker fail-closed
+                if not self.state_path.exists():
+                    try:
+                        self.disable_store(f"Post-recovery failure: {e}")
+                    except Exception as marker_err:
+                        logger.critical(f"FATAL: Failed to recreate disabled state marker after recovery failure: {marker_err}")
                 self._is_available = False
                 self._unavailable_reason = f"Recovery failed: {e}"
                 logger.critical(f"FATAL: Store recovery failed: {e}")
@@ -1332,6 +1347,8 @@ class ProvenanceStore:
                     return
 
             # Step 2: If state permits (no disabled state marker), load claim records
+            self._records = {}
+            self._quarantined_draft_ids = set()
             if self.storage_path.exists():
                 try:
                     with open(self.storage_path, "r", encoding="utf-8") as f:

@@ -25,12 +25,16 @@ def test_reset_provenance_store(store=None):
         RecoveryExecutionContext,
         AdministrativeRecoveryContext,
     )
-    from backend.auth import get_local_session_token
+    from backend.auth import issue_administrative_recovery_token
     target_store = store or PROVENANCE_STORE
+    # Ensure store meets recovery precondition (disabled or marker exists)
+    if target_store.is_available() and not target_store.state_path.exists():
+        target_store.disable_store("Test suite reset")
+    token = issue_administrative_recovery_token(actor="test_suite_admin")
     ctx = AdministrativeRecoveryContext(
         actor="test_suite_admin",
         execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
         explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
+        authorization_evidence=token,
     )
     target_store.recover_store(RecoveryStrategy.RESET_ALL_PROVENANCE, ctx)

@@ -49,7 +49,7 @@ from backend.canonical_grounding import (
     RecoveryExecutionContext,
     AdministrativeRecoveryContext,
 )
-from backend.auth import get_local_session_token
+from backend.auth import get_local_session_token, issue_administrative_recovery_token
 from backend.tests.conftest import test_reset_provenance_store
 
 
@@ -313,7 +313,7 @@ def test_recovery_strategy_reset_all_provenance(tmp_path):
         actor="local_admin",
         execution_context=RecoveryExecutionContext.LOCAL_ADMIN_MAINTENANCE,
         explicitly_confirmed=True,
-        authorization_evidence=get_local_session_token(),
+        authorization_evidence=issue_administrative_recovery_token(actor="local_admin"),
     )
 
     # Execute RESET_ALL_PROVENANCE
