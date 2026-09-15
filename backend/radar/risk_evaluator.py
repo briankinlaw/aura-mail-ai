@@ -25,6 +25,7 @@ from backend.canonical_engine import LOCKED_FACTS
 from backend.canonical_grounding import (
     validate_canonical_grounding,
     GroundingValidationResult,
+    GroundingStatus,
     ClaimCategory
 )
 from backend.safety_policy import (
@@ -307,7 +308,8 @@ def analyze_risk_heuristics(
     email_text: str,
     draft_text: str,
     action: Union[MailAction, str] = "DRAFT",
-    execution_context: Optional[Union[ExecutionContext, str]] = None
+    execution_context: Optional[Union[ExecutionContext, str]] = None,
+    provenance_claims: Optional[List[Dict[str, Any]]] = None
 ) -> RiskAssessmentResult:
     """
     Deterministic, local heuristic pre-screen for immediate security and policy checks.
@@ -364,8 +366,8 @@ def analyze_risk_heuristics(
 
     # 4. Check for unverified career claims and hallucinated metrics via deterministic canonical grounding
     if draft_text:
-        grounding_res = validate_canonical_grounding(draft_text)
-        if not grounding_res.is_grounded:
+        grounding_res = validate_canonical_grounding(draft_text, provenance_claims=provenance_claims)
+        if not grounding_res.is_grounded and grounding_res.status != GroundingStatus.NO_CAREER_CLAIMS_DETECTED:
             flags.append(RiskCategory.UNVERIFIED_CAREER_CLAIM)
             if grounding_res.unsupported_claims:
                 for u in grounding_res.unsupported_claims:

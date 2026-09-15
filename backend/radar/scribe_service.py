@@ -12,7 +12,10 @@ from backend.models import (
     ReplyDraftRequest
 )
 from backend.radar.triage_service import get_gemini_client, extract_recruiter_details
-from backend.canonical_grounding import validate_canonical_grounding
+from backend.canonical_grounding import (
+    validate_canonical_grounding,
+    generate_canonical_claim
+)
 
 logger = logging.getLogger("radar.scribe")
 
@@ -145,12 +148,16 @@ def compose_grounded_response(
     recruiter_first = recruiter_name.split()[0] if recruiter_name and recruiter_name != "there" else "there"
     skills_bullet = ", ".join(required_skills[:4]) if required_skills else "enterprise cloud, data architectures, and AI systems"
 
+    # Generate authoritative provenance-backed claims
+    c_career = generate_canonical_claim("FACT_CAREER_IMPACT", template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE")
+    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE")
+    c_cdw = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE")
+
     draft = (
         f"Hi {recruiter_first},\n\n"
         f"Thank you for reaching out regarding the {role_title} opportunity at {company_name}. "
         f"The scope aligns directly with my background in {skills_bullet}.\n\n"
-        f"Across my career, I have influenced and delivered $100M+ in enterprise revenue, "
-        f"including influencing $8M in new Google Cloud revenue at Google and closing $2.1M in services at CDW.\n\n"
+        f"{c_career['rendered_text']} {c_google['rendered_text']} {c_cdw['rendered_text']}\n\n"
         f"I have attached my updated resume ({selected_resume}) for your review. "
         f"It details my track record across enterprise solutions architecture, AI platform strategy, and technical delivery.\n\n"
         f"I would be glad to connect for a brief 15-minute conversation to discuss how my background aligns with {company_name}'s goals. "
@@ -161,8 +168,12 @@ def compose_grounded_response(
         f"{user_profile.phone or '(210) 717-5305'} | {user_profile.linkedin_url or 'https://linkedin.com/in/briankinlaw'}"
     )
 
-    # Authoritative revalidation of constructed fallback
-    val = validate_canonical_grounding(draft, recipient_company=company_name)
+    # Authoritative revalidation of constructed fallback with registered provenance
+    val = validate_canonical_grounding(
+        draft,
+        provenance_claims=[c_career, c_google, c_cdw],
+        recipient_company=company_name
+    )
     if not val.is_grounded:
         raise RuntimeError(f"Deterministic fallback failed canonical grounding validation: {val.validation_summary}")
     return draft

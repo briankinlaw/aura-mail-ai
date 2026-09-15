@@ -28,6 +28,11 @@ SECURITY & INFORMATION-INTEGRITY INVARIANTS:
 
 import re
 import logging
+import time
+import uuid
+import json
+import threading
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple, Union
 from enum import Enum
 from pydantic import BaseModel, Field
@@ -37,10 +42,18 @@ logger = logging.getLogger("canonical_grounding")
 
 class GroundingStatus(str, Enum):
     GROUNDED = "GROUNDED"
-    UNGROUNDED = "UNGROUNDED"
-    NO_CAREER_CLAIMS = "NO_CAREER_CLAIMS"
-    VALIDATION_FAILED = "VALIDATION_FAILED"
+    UNVERIFIED = "UNVERIFIED"
+    POTENTIAL_CONFLICT = "POTENTIAL_CONFLICT"
+    UNSUPPORTED = "UNSUPPORTED"
     INDETERMINATE = "INDETERMINATE"
+    STALE_PROVENANCE = "STALE_PROVENANCE"
+    NO_CAREER_CLAIMS_DETECTED = "NO_CAREER_CLAIMS_DETECTED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    MIXED_REVIEW_REQUIRED = "MIXED_REVIEW_REQUIRED"
+
+    # Backward compatibility aliases
+    UNGROUNDED = "UNVERIFIED"
+    NO_CAREER_CLAIMS = "NO_CAREER_CLAIMS_DETECTED"
 
 
 class ClaimCategory(str, Enum):
@@ -60,10 +73,14 @@ class ClaimCategory(str, Enum):
 class ClaimStatus(str, Enum):
     SUPPORTED = "SUPPORTED"
     UNSUPPORTED = "UNSUPPORTED"
+    POTENTIAL_CONFLICT = "POTENTIAL_CONFLICT"
+    UNVERIFIED = "UNVERIFIED"
     MISATTRIBUTED = "MISATTRIBUTED"
     DISALLOWED_QUALIFIER = "DISALLOWED_QUALIFIER"
     INSUFFICIENT_PRECISION = "INSUFFICIENT_PRECISION"
     INDETERMINATE = "INDETERMINATE"
+    STALE_PROVENANCE = "STALE_PROVENANCE"
+    INVALIDATED = "INVALIDATED"
 
 
 class TitleCategory(str, Enum):
@@ -553,8 +570,572 @@ CANONICAL_FACT_REGISTRY: Dict[str, CanonicalFactDefinition] = {
 
 
 # ---------------------------------------------------------------------------
-# Normalization & Exact Alias Matching Helpers (Section 3 & 9)
+# Approved Deterministic Claim Templates (Phase 5.5 — Section 6)
 # ---------------------------------------------------------------------------
+
+class CanonicalClaimTemplate(BaseModel):
+    template_id: str
+    template_version: str = "1.0.0"
+    fact_id: str
+    category: ClaimCategory
+    style_variant: str  # "concise", "resume_bullet", "conversational"
+    rendered_text: str
+    description: str
+
+
+CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
+    # 1. Google Revenue
+    "TPL_GOOGLE_REVENUE_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_GOOGLE_REVENUE_CONCISE",
+        fact_id="FACT_GOOGLE_REVENUE",
+        category=ClaimCategory.MONETARY,
+        style_variant="concise",
+        rendered_text="At Google, I influenced $8M in new Google Cloud revenue.",
+        description="Concise sentence stating $8M new Google Cloud revenue influenced at Google."
+    ),
+    "TPL_GOOGLE_REVENUE_RESUME": CanonicalClaimTemplate(
+        template_id="TPL_GOOGLE_REVENUE_RESUME",
+        fact_id="FACT_GOOGLE_REVENUE",
+        category=ClaimCategory.MONETARY,
+        style_variant="resume_bullet",
+        rendered_text="Influenced $8M in new Google Cloud revenue across enterprise customer engagements at Google.",
+        description="Résumé-style achievement for Google Cloud revenue."
+    ),
+    "TPL_GOOGLE_REVENUE_CONVERSATIONAL": CanonicalClaimTemplate(
+        template_id="TPL_GOOGLE_REVENUE_CONVERSATIONAL",
+        fact_id="FACT_GOOGLE_REVENUE",
+        category=ClaimCategory.MONETARY,
+        style_variant="conversational",
+        rendered_text="During my tenure at Google, I influenced $8M in new Google Cloud revenue.",
+        description="Conversational professional statement for Google Cloud revenue."
+    ),
+
+    # 2. Career Enterprise Revenue
+    "TPL_CAREER_ENTERPRISE_REVENUE_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE",
+        fact_id="FACT_CAREER_IMPACT",
+        category=ClaimCategory.MONETARY,
+        style_variant="concise",
+        rendered_text="Across my career, I influenced and delivered $100M+ in enterprise revenue.",
+        description="Concise sentence for $100M+ career enterprise revenue."
+    ),
+    "TPL_CAREER_ENTERPRISE_REVENUE_RESUME": CanonicalClaimTemplate(
+        template_id="TPL_CAREER_ENTERPRISE_REVENUE_RESUME",
+        fact_id="FACT_CAREER_IMPACT",
+        category=ClaimCategory.MONETARY,
+        style_variant="resume_bullet",
+        rendered_text="Influenced and delivered $100M+ in enterprise revenue across 20+ years of technical architecture leadership.",
+        description="Résumé-style achievement for career revenue impact."
+    ),
+    "TPL_CAREER_ENTERPRISE_REVENUE_CONVERSATIONAL": CanonicalClaimTemplate(
+        template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONVERSATIONAL",
+        fact_id="FACT_CAREER_IMPACT",
+        category=ClaimCategory.MONETARY,
+        style_variant="conversational",
+        rendered_text="Over my career, I have influenced and delivered $100M+ in enterprise revenue.",
+        description="Conversational phrasing for career revenue impact."
+    ),
+
+    # 3. CDW Services
+    "TPL_CDW_SERVICES_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_CDW_SERVICES_CONCISE",
+        fact_id="FACT_CDW_SERVICES",
+        category=ClaimCategory.MONETARY,
+        style_variant="concise",
+        rendered_text="At CDW, I closed $2.1M in professional services.",
+        description="Concise sentence for $2.1M services closed at CDW."
+    ),
+    "TPL_CDW_SERVICES_RESUME": CanonicalClaimTemplate(
+        template_id="TPL_CDW_SERVICES_RESUME",
+        fact_id="FACT_CDW_SERVICES",
+        category=ClaimCategory.MONETARY,
+        style_variant="resume_bullet",
+        rendered_text="Closed $2.1M in professional services engagements at CDW.",
+        description="Résumé-style achievement for CDW services."
+    ),
+    "TPL_CDW_SERVICES_CONVERSATIONAL": CanonicalClaimTemplate(
+        template_id="TPL_CDW_SERVICES_CONVERSATIONAL",
+        fact_id="FACT_CDW_SERVICES",
+        category=ClaimCategory.MONETARY,
+        style_variant="conversational",
+        rendered_text="While at CDW, I closed $2.1M in professional services.",
+        description="Conversational statement for CDW services."
+    ),
+
+    # 4. CDW Annual Revenue
+    "TPL_CDW_REVENUE_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_CDW_REVENUE_CONCISE",
+        fact_id="FACT_CDW_REVENUE",
+        category=ClaimCategory.MONETARY,
+        style_variant="concise",
+        rendered_text="At CDW, I influenced $4M in annual revenue.",
+        description="Concise sentence for $4M annual revenue influenced at CDW."
+    ),
+    "TPL_CDW_REVENUE_RESUME": CanonicalClaimTemplate(
+        template_id="TPL_CDW_REVENUE_RESUME",
+        fact_id="FACT_CDW_REVENUE",
+        category=ClaimCategory.MONETARY,
+        style_variant="resume_bullet",
+        rendered_text="Influenced $4M in annual revenue through digital data and analytics solutions at CDW.",
+        description="Résumé-style achievement for CDW revenue."
+    ),
+    "TPL_CDW_REVENUE_CONVERSATIONAL": CanonicalClaimTemplate(
+        template_id="TPL_CDW_REVENUE_CONVERSATIONAL",
+        fact_id="FACT_CDW_REVENUE",
+        category=ClaimCategory.MONETARY,
+        style_variant="conversational",
+        rendered_text="During my time at CDW, I influenced $4M in annual revenue.",
+        description="Conversational phrasing for CDW annual revenue."
+    ),
+
+    # 5. Promevo Pipeline
+    "TPL_PROMEVO_PIPELINE_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_PIPELINE_CONCISE",
+        fact_id="FACT_PROMEVO_PIPELINE",
+        category=ClaimCategory.PIPELINE,
+        style_variant="concise",
+        rendered_text="At Promevo, I contributed to an estimated $2M+ pipeline.",
+        description="Concise sentence for Promevo $2M+ pipeline contribution."
+    ),
+    "TPL_PROMEVO_PIPELINE_RESUME": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_PIPELINE_RESUME",
+        fact_id="FACT_PROMEVO_PIPELINE",
+        category=ClaimCategory.PIPELINE,
+        style_variant="resume_bullet",
+        rendered_text="Contributed to an estimated $2M+ presales pipeline at Promevo.",
+        description="Résumé-style achievement for Promevo pipeline."
+    ),
+    "TPL_PROMEVO_PIPELINE_CONVERSATIONAL": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_PIPELINE_CONVERSATIONAL",
+        fact_id="FACT_PROMEVO_PIPELINE",
+        category=ClaimCategory.PIPELINE,
+        style_variant="conversational",
+        rendered_text="While at Promevo, I contributed to an estimated $2M+ pipeline.",
+        description="Conversational statement for Promevo pipeline."
+    ),
+
+    # 6. DXC Portfolio
+    "TPL_DXC_PORTFOLIO_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_DXC_PORTFOLIO_CONCISE",
+        fact_id="FACT_DXC_PORTFOLIO",
+        category=ClaimCategory.PORTFOLIO,
+        style_variant="concise",
+        rendered_text="At DXC Technology, I led a $22M analytics and AI portfolio.",
+        description="Concise sentence for DXC $22M portfolio leadership."
+    ),
+    "TPL_DXC_PORTFOLIO_RESUME": CanonicalClaimTemplate(
+        template_id="TPL_DXC_PORTFOLIO_RESUME",
+        fact_id="FACT_DXC_PORTFOLIO",
+        category=ClaimCategory.PORTFOLIO,
+        style_variant="resume_bullet",
+        rendered_text="Led a $22M analytics and AI portfolio with shared GTM P&L responsibility at DXC Technology.",
+        description="Résumé-style achievement for DXC portfolio."
+    ),
+    "TPL_DXC_PORTFOLIO_CONVERSATIONAL": CanonicalClaimTemplate(
+        template_id="TPL_DXC_PORTFOLIO_CONVERSATIONAL",
+        fact_id="FACT_DXC_PORTFOLIO",
+        category=ClaimCategory.PORTFOLIO,
+        style_variant="conversational",
+        rendered_text="During my time at DXC Technology, I managed a $22M analytics and AI portfolio.",
+        description="Conversational statement for DXC portfolio."
+    ),
+
+    # 7. Percentage Facts
+    "TPL_PROMEVO_POC_CONVERSION_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_POC_CONVERSION_CONCISE",
+        fact_id="FACT_PROMEVO_POC_CONVERSION",
+        category=ClaimCategory.PERCENTAGE,
+        style_variant="concise",
+        rendered_text="At Promevo, I achieved a 23% POC-to-production conversion rate.",
+        description="23% POC conversion rate at Promevo."
+    ),
+    "TPL_PROMEVO_SCOPING_TURNAROUND_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_SCOPING_TURNAROUND_CONCISE",
+        fact_id="FACT_PROMEVO_SCOPING_TURNAROUND",
+        category=ClaimCategory.PERCENTAGE,
+        style_variant="concise",
+        rendered_text="At Promevo, I delivered a 40% reduced scoping turnaround.",
+        description="40% reduced scoping turnaround at Promevo."
+    ),
+    "TPL_PROMEVO_SALES_CYCLES_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_SALES_CYCLES_CONCISE",
+        fact_id="FACT_PROMEVO_SALES_CYCLES",
+        category=ClaimCategory.PERCENTAGE,
+        style_variant="concise",
+        rendered_text="At Promevo, I achieved 20% shorter sales cycles.",
+        description="20% shorter sales cycles at Promevo."
+    ),
+    "TPL_PROMEVO_LEGACY_COMPLEXITY_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_LEGACY_COMPLEXITY_CONCISE",
+        fact_id="FACT_PROMEVO_LEGACY_COMPLEXITY",
+        category=ClaimCategory.PERCENTAGE,
+        style_variant="concise",
+        rendered_text="At Promevo, I drove a 25% reduction in legacy architecture complexity.",
+        description="25% reduction in legacy complexity at Promevo."
+    ),
+    "TPL_PROMEVO_TIME_TO_VALUE_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_TIME_TO_VALUE_CONCISE",
+        fact_id="FACT_PROMEVO_TIME_TO_VALUE",
+        category=ClaimCategory.PERCENTAGE,
+        style_variant="concise",
+        rendered_text="At Promevo, I achieved 33% faster time-to-value.",
+        description="33% faster time-to-value at Promevo."
+    ),
+    "TPL_PROMEVO_EFFICIENCY_ROADMAP_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_PROMEVO_EFFICIENCY_ROADMAP_CONCISE",
+        fact_id="FACT_PROMEVO_EFFICIENCY_ROADMAP",
+        category=ClaimCategory.PERCENTAGE,
+        style_variant="concise",
+        rendered_text="At Promevo, I delivered a 30% targeted presales efficiency improvement.",
+        description="30% targeted presales efficiency at Promevo."
+    ),
+
+    # 8. Employment Ledger Facts
+    "TPL_EMP_MAVENCODE_ADVISORY_CONCISE": CanonicalClaimTemplate(
+        template_id="TPL_EMP_MAVENCODE_ADVISORY_CONCISE",
+        fact_id="FACT_EMPLOYMENT_MAVENCODE_ADVISORY",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I currently serve as Strategic Advisor at MavenCode.",
+        description="Current MavenCode advisory role."
+    ),
+    "TPL_EMP_MAVENCODE_ADVISORY_FULL": CanonicalClaimTemplate(
+        template_id="TPL_EMP_MAVENCODE_ADVISORY_FULL",
+        fact_id="FACT_EMPLOYMENT_MAVENCODE_ADVISORY",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="conversational",
+        rendered_text="I currently serve as Strategic Advisor, Data & AI at MavenCode.",
+        description="Current MavenCode Strategic Advisor, Data & AI role."
+    ),
+    "TPL_EMP_MAVENCODE_DIRECTOR": CanonicalClaimTemplate(
+        template_id="TPL_EMP_MAVENCODE_DIRECTOR",
+        fact_id="FACT_EMPLOYMENT_MAVENCODE_DIRECTOR",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served as Director, Data Analytics & AI Strategy at MavenCode from 2024 to 2026.",
+        description="Former Director tenure at MavenCode."
+    ),
+    "TPL_EMP_PROMEVO": CanonicalClaimTemplate(
+        template_id="TPL_EMP_PROMEVO",
+        fact_id="FACT_EMPLOYMENT_PROMEVO",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served as Advisory Solutions Architect at Promevo in 2026.",
+        description="Promevo Advisory Solutions Architect tenure."
+    ),
+    "TPL_EMP_CDW": CanonicalClaimTemplate(
+        template_id="TPL_EMP_CDW",
+        fact_id="FACT_EMPLOYMENT_CDW",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served as Senior Solutions Architect at CDW from 2023 to 2024.",
+        description="CDW Senior Solutions Architect tenure."
+    ),
+    "TPL_EMP_PYTHIAN": CanonicalClaimTemplate(
+        template_id="TPL_EMP_PYTHIAN",
+        fact_id="FACT_EMPLOYMENT_PYTHIAN",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served as Principal Cloud Solutions Architect at Pythian from 2021 to 2023.",
+        description="Pythian Principal Cloud Solutions Architect tenure."
+    ),
+    "TPL_EMP_GOOGLE": CanonicalClaimTemplate(
+        template_id="TPL_EMP_GOOGLE",
+        fact_id="FACT_EMPLOYMENT_GOOGLE",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served as Cloud Customer Engineer at Google from 2019 to 2021.",
+        description="Google Cloud Customer Engineer tenure."
+    ),
+    "TPL_EMP_DXC": CanonicalClaimTemplate(
+        template_id="TPL_EMP_DXC",
+        fact_id="FACT_EMPLOYMENT_DXC",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served at DXC Technology from 2015 to 2019.",
+        description="DXC Technology tenure."
+    ),
+    "TPL_EMP_IBM": CanonicalClaimTemplate(
+        template_id="TPL_EMP_IBM",
+        fact_id="FACT_EMPLOYMENT_IBM",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I served at IBM from 2002 to 2015.",
+        description="IBM tenure."
+    ),
+    "TPL_EMP_IBM_WATSON": CanonicalClaimTemplate(
+        template_id="TPL_EMP_IBM_WATSON",
+        fact_id="FACT_EMPLOYMENT_IBM_WATSON",
+        category=ClaimCategory.EMPLOYER,
+        style_variant="concise",
+        rendered_text="I held a key role at IBM Watson from 2007 to 2015 within my IBM tenure.",
+        description="IBM Watson role."
+    )
+}
+
+
+# ---------------------------------------------------------------------------
+# Server-Authoritative Provenance Store & Verification (Phase 5.5 — Section 5 & 8)
+# ---------------------------------------------------------------------------
+
+class ProvenanceRecord(BaseModel):
+    claim_instance_id: str
+    canonical_fact_id: str
+    employment_record_id: Optional[str] = None
+    template_id: str
+    template_version: str = "1.0.0"
+    ledger_version: str = "2.1.0"
+    rendering_parameters: Dict[str, Any] = Field(default_factory=dict)
+    exact_rendered_text: str
+    created_at: float = Field(default_factory=time.time)
+    is_invalidated: bool = False
+    invalidation_reason: Optional[str] = None
+    draft_id: Optional[str] = None
+    record_version: int = 1
+
+
+class ProvenanceStore:
+    """
+    Thread-safe server-authoritative store for canonical claim provenance records.
+    Persists records to disk to survive application restarts and prevent fabricated claim IDs.
+    """
+    def __init__(self, storage_path: Optional[Union[str, Path]] = None):
+        if storage_path is None:
+            base_dir = Path(__file__).resolve().parent.parent
+            data_dir = base_dir / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            self.storage_path = data_dir / "provenance_records.json"
+        else:
+            self.storage_path = Path(storage_path)
+            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._records: Dict[str, ProvenanceRecord] = {}
+        self._load()
+
+    def _load(self):
+        with self._lock:
+            if self.storage_path.exists():
+                try:
+                    with open(self.storage_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        for cid, item in data.items():
+                            self._records[cid] = ProvenanceRecord(**item)
+                except Exception as e:
+                    logger.warning(f"Failed to load provenance records from {self.storage_path}: {e}")
+
+    def _save(self):
+        with self._lock:
+            try:
+                data = {cid: rec.model_dump() for cid, rec in self._records.items()}
+                temp_path = self.storage_path.with_suffix(".tmp")
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                temp_path.replace(self.storage_path)
+            except Exception as e:
+                logger.error(f"Failed to save provenance records to {self.storage_path}: {e}")
+
+    def create_claim_instance(
+        self,
+        fact_id: str,
+        template_id: str,
+        draft_id: Optional[str] = None,
+        custom_params: Optional[Dict[str, Any]] = None
+    ) -> ProvenanceRecord:
+        with self._lock:
+            if template_id not in CANONICAL_CLAIM_TEMPLATES:
+                raise ValueError(f"Unknown template_id '{template_id}'")
+            tpl = CANONICAL_CLAIM_TEMPLATES[template_id]
+            if tpl.fact_id != fact_id:
+                raise ValueError(f"Template '{template_id}' is incompatible with fact '{fact_id}' (expected {tpl.fact_id})")
+
+            # Determine associated employment record if applicable
+            emp_rec_id = None
+            if fact_id.startswith("FACT_EMPLOYMENT_"):
+                emp_key = fact_id.replace("FACT_EMPLOYMENT_", "").lower()
+                if emp_key in CANONICAL_EMPLOYMENT_RECORDS:
+                    emp_rec_id = emp_key
+
+            claim_id = f"claim_inst_{uuid.uuid4().hex}"
+            record = ProvenanceRecord(
+                claim_instance_id=claim_id,
+                canonical_fact_id=fact_id,
+                employment_record_id=emp_rec_id,
+                template_id=template_id,
+                template_version=tpl.template_version,
+                ledger_version="2.1.0",
+                rendering_parameters=custom_params or {},
+                exact_rendered_text=tpl.rendered_text,
+                created_at=time.time(),
+                is_invalidated=False,
+                draft_id=draft_id,
+                record_version=1
+            )
+            self._records[claim_id] = record
+            self._save()
+            return record
+
+    def get_claim_instance(self, claim_instance_id: str) -> Optional[ProvenanceRecord]:
+        with self._lock:
+            return self._records.get(claim_instance_id)
+
+    def invalidate_claim_instance(self, claim_instance_id: str, reason: str = "Manual edit detected") -> bool:
+        with self._lock:
+            rec = self._records.get(claim_instance_id)
+            if rec:
+                rec.is_invalidated = True
+                rec.invalidation_reason = reason
+                self._save()
+                return True
+            return False
+
+    def invalidate_draft_claims(self, draft_id: str, reason: str = "Draft edited") -> int:
+        with self._lock:
+            count = 0
+            for rec in self._records.values():
+                if rec.draft_id == draft_id and not rec.is_invalidated:
+                    rec.is_invalidated = True
+                    rec.invalidation_reason = reason
+                    count += 1
+            if count > 0:
+                self._save()
+            return count
+
+    def reset_store(self):
+        with self._lock:
+            self._records.clear()
+            self._save()
+
+
+# Global Singleton Provenance Store
+PROVENANCE_STORE = ProvenanceStore()
+
+
+def generate_canonical_claim(
+    fact_id: str,
+    template_id: Optional[str] = None,
+    style_variant: Optional[str] = None,
+    draft_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Authoritative backend claim generator.
+    Loads active canonical fact and compatible template, renders deterministic text,
+    creates and persists a server-side ProvenanceRecord, and returns opaque instance metadata.
+    """
+    if not fact_id:
+        raise ValueError("canonical_fact_id is required")
+
+    # Find matching template
+    if template_id:
+        if template_id not in CANONICAL_CLAIM_TEMPLATES:
+            raise ValueError(f"Unknown template_id: '{template_id}'")
+        tpl = CANONICAL_CLAIM_TEMPLATES[template_id]
+        if tpl.fact_id != fact_id:
+            raise ValueError(f"Template '{template_id}' is for fact '{tpl.fact_id}', not '{fact_id}'")
+    else:
+        target_style = style_variant or "concise"
+        matching = [
+            t for t in CANONICAL_CLAIM_TEMPLATES.values()
+            if t.fact_id == fact_id and (t.style_variant == target_style or target_style is None)
+        ]
+        if not matching:
+            matching = [t for t in CANONICAL_CLAIM_TEMPLATES.values() if t.fact_id == fact_id]
+        if not matching:
+            raise ValueError(f"No approved templates registered for fact '{fact_id}'")
+        tpl = matching[0]
+
+    rec = PROVENANCE_STORE.create_claim_instance(
+        fact_id=fact_id,
+        template_id=tpl.template_id,
+        draft_id=draft_id
+    )
+
+    return {
+        "claim_instance_id": rec.claim_instance_id,
+        "canonical_fact_id": rec.canonical_fact_id,
+        "template_id": rec.template_id,
+        "template_version": rec.template_version,
+        "rendered_text": rec.exact_rendered_text,
+        "status": GroundingStatus.GROUNDED.value,
+        "created_at": rec.created_at
+    }
+
+
+def verify_provenance_claim(
+    claim_instance_id: str,
+    submitted_text: str,
+    draft_id: Optional[str] = None
+) -> Tuple[bool, ClaimStatus, str, Optional[SupportedClaim]]:
+    """
+    Authoritatively verifies a submitted claim block using server-side provenance and deterministic regeneration.
+    Returns (is_valid, status, reason, supported_claim).
+    """
+    if not claim_instance_id or not isinstance(claim_instance_id, str):
+        return False, ClaimStatus.UNVERIFIED, "Missing or malformed claim_instance_id", None
+
+    record = PROVENANCE_STORE.get_claim_instance(claim_instance_id)
+    if not record:
+        return False, ClaimStatus.UNVERIFIED, f"Claim instance '{claim_instance_id}' not found in server-side provenance registry (untrusted or fabricated ID)", None
+
+    if record.is_invalidated:
+        return False, ClaimStatus.INVALIDATED, f"Claim instance '{claim_instance_id}' was previously invalidated ({record.invalidation_reason})", None
+
+    if draft_id and record.draft_id and draft_id != record.draft_id:
+        return False, ClaimStatus.UNVERIFIED, f"Claim instance '{claim_instance_id}' belongs to draft '{record.draft_id}', not '{draft_id}'", None
+
+    # Verify template and fact existence
+    if record.template_id not in CANONICAL_CLAIM_TEMPLATES:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Template '{record.template_id}' is no longer active in the template registry", None
+
+    tpl = CANONICAL_CLAIM_TEMPLATES[record.template_id]
+    if tpl.fact_id != record.canonical_fact_id:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Provenance record fact/template mismatch: '{record.canonical_fact_id}' vs '{tpl.fact_id}'", None
+
+    # Check ledger fact or employment record
+    fact_id = record.canonical_fact_id
+    if fact_id in CANONICAL_FACT_REGISTRY:
+        fact = CANONICAL_FACT_REGISTRY[fact_id]
+        category = fact.category
+        canonical_ref = fact.canonical_text
+    elif fact_id.startswith("FACT_EMPLOYMENT_"):
+        emp_key = fact_id.replace("FACT_EMPLOYMENT_", "").lower()
+        if emp_key not in CANONICAL_EMPLOYMENT_RECORDS:
+            return False, ClaimStatus.STALE_PROVENANCE, f"Employment record '{emp_key}' no longer in active employment ledger", None
+        category = ClaimCategory.EMPLOYER
+        emp_rec = CANONICAL_EMPLOYMENT_RECORDS[emp_key]
+        canonical_ref = f"{emp_rec.employer_canonical} ({emp_rec.start_year}–{emp_rec.end_year or 'present'})"
+    else:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Canonical fact '{fact_id}' not found in active canonical registry", None
+
+    # Exact deterministic regeneration check
+    expected_text = tpl.rendered_text
+    if submitted_text != expected_text:
+        return False, ClaimStatus.UNVERIFIED, f"Submitted claim text diverged from deterministically regenerated canonical claim '{expected_text}' (edit detected)", None
+
+    supp = SupportedClaim(
+        fact_id=fact_id,
+        category=category,
+        extracted_text=submitted_text,
+        canonical_reference=canonical_ref,
+        confidence=1.0
+    )
+    return True, ClaimStatus.SUPPORTED, f"Authoritatively verified against canonical fact {fact_id} via template {tpl.template_id}", supp
+
+
+def get_available_templates(fact_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Returns list of approved canonical claim templates."""
+    results = []
+    for t in CANONICAL_CLAIM_TEMPLATES.values():
+        if fact_id is None or t.fact_id == fact_id:
+            results.append({
+                "template_id": t.template_id,
+                "template_version": t.template_version,
+                "fact_id": t.fact_id,
+                "category": t.category.value,
+                "style_variant": t.style_variant,
+                "rendered_text": t.rendered_text,
+                "description": t.description
+            })
+    return results
 
 def normalize_title(title: str) -> str:
     """
@@ -1024,11 +1605,11 @@ def parse_chronology_details(text: str) -> Dict[str, Any]:
     t_lower = text.lower()
 
     # 1. Current status markers
-    if re.search(r'\b(?:currently\s+(?:work|working|employed|serve|serving|advise|advising)|am\s+currently|current\s+(?:role|position|tenure|employer)|these\s+days|now\b|still\s+(?:work|working|employed|serve|serving|advise|advising|employs)|employs\s+me|remain\s+(?:employed|on\s+the\s+payroll)|continue\s+to\s+work|present\b)', t_lower):
+    if re.search(r'\b(?:currently\s+(?:work|working|employed|serve|serving|advise|advising)|am\s+currently|current\s+(?:role|position|tenure|employer)|these\s+days|now\b|still\s+(?:work|working|employed|serve|serving|advise|advising|employs)|employs\s+me|continues\s+to\s+employ\s+me|remain\s+(?:employed|working|on\s+the\s+payroll)|continue\s+to\s+work|present\b)', t_lower):
         details["is_current_claim"] = True
 
     # 1b. Former status markers
-    if re.search(r'\b(?:formerly\s+(?:worked|employed|served|advised)|previously\s+(?:worked|employed|served|advised)|no\s+longer\s+employed|used\s+to\s+work|former\s+employer|past\s+employer)\b', t_lower):
+    if re.search(r'\b(?:formerly\s+(?:worked|employed|served|advised)|previously\s+(?:worked|employed|served|advised)|no\s+longer\s+employed|used\s+to\s+work|had\s+a\s+job|former\s+employer|past\s+employer)\b', t_lower):
         details["is_former_claim"] = True
         details["is_ended_claim"] = True
 
@@ -1147,7 +1728,7 @@ def extract_first_person_employment_claims(text: str) -> List[Dict[str, Any]]:
 
     # Pattern 2A: First-person active employment verbs with explicit preposition
     p_emp_a = re.compile(
-        r'\bi\s+(?:currently\s+work|formerly\s+worked|previously\s+worked|used\s+to\s+work|used\s+to\s+be|still\s+work|continue\s+to\s+work|have\s+worked|worked|work|served|was|have\s+been|am\s+currently\s+employed|am\s+no\s+longer\s+employed|am\s+employed|was\s+employed|remain\s+employed|hold\s+the\s+role\s+of|held\s+the\s+role\s+of|held\s+a\s+role|spent\s+\w+\s+years\s+(?:working\s+)?)\s*(?:at|with|for|by|in)\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+from|\s+where|\s+since|\s+as|\s+for|\s+leading|\s+managing|\s+building|\s+developing|\s+in\s+\d{4}|\s+after|\s+i\s+|$)',
+        r'\bi\s+(?:currently\s+work|formerly\s+worked|previously\s+worked|used\s+to\s+work|used\s+to\s+be|still\s+work|continue\s+to\s+work|remain\s+working|have\s+worked|worked|work|served|was|have\s+been|am\s+currently\s+employed|am\s+no\s+longer\s+employed|am\s+employed|was\s+employed|remain\s+employed|hold\s+the\s+role\s+of|held\s+the\s+role\s+of|held\s+a\s+role|had\s+a\s+job|spent\s+\w+\s+years\s+(?:working\s+)?)\s*(?:at|with|for|by|in)\s+([A-Za-z0-9\s&.,\'-]+?)(?:[.,;:\n]|\s+from|\s+where|\s+since|\s+as|\s+for|\s+leading|\s+managing|\s+building|\s+developing|\s+in\s+\d{4}|\s+after|\s+i\s+|$)',
         re.IGNORECASE
     )
     for m in p_emp_a.finditer(text):
@@ -1260,9 +1841,9 @@ def extract_first_person_employment_claims(text: str) -> List[Dict[str, Any]]:
                     **chrono
                 })
 
-    # Pattern 3: Employer-subject grammar (e.g. 'Amazon has employed me since 2020', 'Netflix hired me in 2019', 'Pythian still employs me')
+    # Pattern 3: Employer-subject grammar (e.g. 'Amazon has employed me since 2020', 'Netflix hired me in 2019', 'Pythian still employs me', 'Pythian continues to employ me')
     p_hired = re.compile(
-        r'\b([A-Za-z0-9\s&.,\'-]+?)\s+(?:has\s+employed\s+me|employed\s+me|still\s+employs\s+me|employs\s+me|hired\s+me|recruited\s+me|brought\s+me\s+on)\b',
+        r'\b([A-Za-z0-9\s&.,\'-]+?)\s+(?:has\s+employed\s+me|employed\s+me|still\s+employs\s+me|employs\s+me|continues\s+to\s+employ\s+me|hired\s+me|recruited\s+me|brought\s+me\s+on)\b',
         re.IGNORECASE
     )
     for m in p_hired.finditer(text):
@@ -1709,13 +2290,16 @@ def validate_first_person_employment_claim(
 
 def validate_canonical_grounding(
     draft_text: Any,
-    recipient_company: Optional[str] = None
+    provenance_claims: Optional[List[Dict[str, Any]]] = None,
+    recipient_company: Optional[str] = None,
+    draft_id: Optional[str] = None
 ) -> GroundingValidationResult:
     """
-    Authoritative deterministic validation of career-sensitive claims in draft text.
-    Uses schema-driven affirmative tuple matching against structured employment ledgers
-    and canonical accomplishment registries. Fails closed on any unsupported, misattributed,
-    indeterminate, or malformed input.
+    Phase 5.5 Hybrid Grounding Validation & Advisory Scanner Engine:
+    - Authoritative Grounding Path: ONLY provenance-backed claims regenerated and verified
+      against server-side records and deterministic canonical templates can receive GROUNDED.
+    - Advisory Scanner Path: All manual, typed, pasted, or edited prose is scanned for potential
+      contradictions and unverified career claims. It can NEVER receive GROUNDED authority.
     """
     # -------------------------------------------------------------------------
     # 1. Strict Fail-Closed Input Validation
@@ -1750,7 +2334,29 @@ def validate_canonical_grounding(
     verified_fact_ids: List[str] = []
 
     # -------------------------------------------------------------------------
-    # 2. Monetary Claims Validation via Common Schema Matcher
+    # 2. Authoritative Provenance Claims Verification
+    # -------------------------------------------------------------------------
+    verified_provenance_texts: List[str] = []
+    if provenance_claims:
+        for p_claim in provenance_claims:
+            cid = p_claim.get("claim_instance_id")
+            c_text = p_claim.get("text") or p_claim.get("extracted_text") or p_claim.get("rendered_text") or ""
+            is_valid, c_status, c_reason, supp = verify_provenance_claim(cid, c_text, draft_id=draft_id)
+            if is_valid and supp:
+                supported.append(supp)
+                if supp.fact_id not in verified_fact_ids:
+                    verified_fact_ids.append(supp.fact_id)
+                verified_provenance_texts.append(c_text)
+            else:
+                unsupported.append(UnsupportedClaim(
+                    category=ClaimCategory.QUALIFIER,
+                    extracted_text=c_text or str(cid),
+                    reason=c_reason,
+                    status=c_status
+                ))
+
+    # -------------------------------------------------------------------------
+    # 3. Advisory Scanner on Draft Text (Manual / Edited Prose Analysis)
     # -------------------------------------------------------------------------
     monetary_claims = extract_monetary_claims(draft_text)
     for mc in monetary_claims:
@@ -1759,6 +2365,10 @@ def validate_canonical_grounding(
         has_plus = mc["has_plus"]
         sentence = mc["sentence"]
         clause = mc["clause"]
+
+        # Check if this exact monetary claim text was already verified via authoritative provenance
+        if any(raw_str in p_txt for p_txt in verified_provenance_texts):
+            continue
 
         candidate_facts = [
             fdef for fdef in CANONICAL_FACT_REGISTRY.values()
@@ -1790,14 +2400,13 @@ def validate_canonical_grounding(
             )
             if is_matched:
                 matched_any = True
-                supported.append(SupportedClaim(
-                    fact_id=fact.fact_id,
+                # In Phase 5.5, a parser match on manual prose is strictly ADVISORY (UNVERIFIED without provenance)
+                unsupported.append(UnsupportedClaim(
                     category=fact.category,
                     extracted_text=raw_str,
-                    canonical_reference=fact.canonical_text
+                    reason=f"Manual or unprovenanced monetary claim '{raw_str}' detected without authoritative server-side provenance.",
+                    status=ClaimStatus.UNVERIFIED
                 ))
-                if fact.fact_id not in verified_fact_ids:
-                    verified_fact_ids.append(fact.fact_id)
                 break
             else:
                 last_failure_reason = reason
@@ -1808,18 +2417,18 @@ def validate_canonical_grounding(
                 category=ClaimCategory.MONETARY,
                 extracted_text=raw_str,
                 reason=last_failure_reason,
-                status=last_failure_status
+                status=last_failure_status if last_failure_status != ClaimStatus.SUPPORTED else ClaimStatus.POTENTIAL_CONFLICT
             ))
 
-    # -------------------------------------------------------------------------
-    # 3. Percentage Claims Validation via Common Schema Matcher
-    # -------------------------------------------------------------------------
     pct_claims = extract_percentage_claims(draft_text)
     for pc in pct_claims:
         raw_str = pc["raw_text"]
         val = pc["numeric_value"]
         sentence = pc["sentence"]
         clause = pc["clause"]
+
+        if any(raw_str in p_txt for p_txt in verified_provenance_texts):
+            continue
 
         candidate_facts = [
             fdef for fdef in CANONICAL_FACT_REGISTRY.values()
@@ -1850,14 +2459,13 @@ def validate_canonical_grounding(
             )
             if is_matched:
                 matched_any = True
-                supported.append(SupportedClaim(
-                    fact_id=fact.fact_id,
+                # In Phase 5.5, manual prose is UNVERIFIED
+                unsupported.append(UnsupportedClaim(
                     category=fact.category,
                     extracted_text=raw_str,
-                    canonical_reference=fact.canonical_text
+                    reason=f"Manual or unprovenanced percentage claim '{raw_str}' detected without authoritative server-side provenance.",
+                    status=ClaimStatus.UNVERIFIED
                 ))
-                if fact.fact_id not in verified_fact_ids:
-                    verified_fact_ids.append(fact.fact_id)
                 break
             else:
                 last_failure_reason = reason
@@ -1868,69 +2476,76 @@ def validate_canonical_grounding(
                 category=ClaimCategory.PERCENTAGE,
                 extracted_text=raw_str,
                 reason=last_failure_reason,
-                status=last_failure_status
+                status=last_failure_status if last_failure_status != ClaimStatus.SUPPORTED else ClaimStatus.POTENTIAL_CONFLICT
             ))
 
-    # -------------------------------------------------------------------------
-    # 4. First-Person Employment, Title & Chronology Claims Validation
-    # -------------------------------------------------------------------------
     emp_claims = extract_first_person_employment_claims(draft_text)
     for ec in emp_claims:
+        raw_emp_claim = ec["raw_text"]
+        if any(raw_emp_claim in p_txt or p_txt in raw_emp_claim for p_txt in verified_provenance_texts):
+            continue
+
         is_supported, c_status, c_reason, fact_id = validate_first_person_employment_claim(ec)
         if is_supported:
-            supported.append(SupportedClaim(
-                fact_id=fact_id or "FACT_EMPLOYMENT_UNKNOWN",
+            # Manual employment prose without provenance is UNVERIFIED
+            unsupported.append(UnsupportedClaim(
                 category=ClaimCategory.EMPLOYER if ec.get("claimed_employer") else ClaimCategory.TITLE,
-                extracted_text=ec["raw_text"],
-                canonical_reference=c_reason
+                extracted_text=raw_emp_claim,
+                reason=f"Manual employment assertion '{raw_emp_claim}' detected without authoritative server-side provenance.",
+                status=ClaimStatus.UNVERIFIED
             ))
-            if fact_id and fact_id not in verified_fact_ids:
-                verified_fact_ids.append(fact_id)
         else:
             unsupported.append(UnsupportedClaim(
                 category=ClaimCategory.EMPLOYER if ec.get("claimed_employer") else ClaimCategory.TITLE,
-                extracted_text=ec["raw_text"],
+                extracted_text=raw_emp_claim,
                 reason=c_reason,
-                status=c_status
+                status=c_status if c_status != ClaimStatus.SUPPORTED else ClaimStatus.POTENTIAL_CONFLICT
             ))
 
-    # -------------------------------------------------------------------------
-    # 5. Unparsed Career Assertion Detection
-    # -------------------------------------------------------------------------
     all_extracted_claims = monetary_claims + pct_claims + emp_claims
     unparsed_assertions = detect_unparsed_career_assertions(draft_text, all_extracted_claims)
     if unparsed_assertions:
         for u_sent in unparsed_assertions:
-            unsupported.append(UnsupportedClaim(
-                category=ClaimCategory.EMPLOYER,
-                extracted_text=u_sent,
-                reason=f"Unparsed first-person career assertion detected in '{u_sent}' that could not be resolved to an authorized canonical employment record.",
-                status=ClaimStatus.INDETERMINATE
-            ))
+            if not any(u_sent in p_txt or p_txt in u_sent for p_txt in verified_provenance_texts):
+                unsupported.append(UnsupportedClaim(
+                    category=ClaimCategory.EMPLOYER,
+                    extracted_text=u_sent,
+                    reason=f"Unparsed first-person career assertion detected in '{u_sent}' that could not be resolved to an authorized canonical employment record.",
+                    status=ClaimStatus.INDETERMINATE
+                ))
 
     # -------------------------------------------------------------------------
-    # 6. Synthesize Authoritative Grounding Result
+    # 4. Synthesize Authoritative Grounding Result
     # -------------------------------------------------------------------------
     has_unsupported = len(unsupported) > 0
     has_supported = len(supported) > 0
 
-    if has_unsupported:
-        is_grounded = False
-        has_indeterminate = any(u.status == ClaimStatus.INDETERMINATE for u in unsupported)
-        status = GroundingStatus.INDETERMINATE if has_indeterminate else GroundingStatus.UNGROUNDED
-        requires_review = True
-        unsupported_reasons = "; ".join([u.reason for u in unsupported])
-        summary = f"Grounding validation rejected {len(unsupported)} unverified, misattributed, or indeterminate claim(s): {unsupported_reasons}"
-    elif has_supported:
+    if has_supported and not has_unsupported:
         is_grounded = True
         status = GroundingStatus.GROUNDED
         requires_review = False
-        summary = f"Validated {len(supported)} career claim(s) successfully against Canonical Career System facts ({', '.join(verified_fact_ids)})."
+        summary = f"Authoritatively validated {len(supported)} provenance-backed claim(s) against Canonical Career System ({', '.join(verified_fact_ids)})."
+    elif has_supported and has_unsupported:
+        is_grounded = False
+        status = GroundingStatus.MIXED_REVIEW_REQUIRED
+        requires_review = True
+        summary = f"Draft contains mixed content: {len(supported)} grounded claim(s) and {len(unsupported)} unverified or conflicting item(s). Human review required."
+    elif not has_supported and has_unsupported:
+        is_grounded = False
+        requires_review = True
+        if any(u.status in [ClaimStatus.POTENTIAL_CONFLICT, ClaimStatus.MISATTRIBUTED, ClaimStatus.UNSUPPORTED] for u in unsupported):
+            status = GroundingStatus.POTENTIAL_CONFLICT
+        elif any(u.status == ClaimStatus.INDETERMINATE for u in unsupported):
+            status = GroundingStatus.INDETERMINATE
+        else:
+            status = GroundingStatus.UNVERIFIED
+        unsupported_reasons = "; ".join([u.reason for u in unsupported])
+        summary = f"Advisory scan identified {len(unsupported)} unverified, conflicting, or indeterminate item(s): {unsupported_reasons}"
     else:
-        is_grounded = True
-        status = GroundingStatus.NO_CAREER_CLAIMS
+        is_grounded = False
+        status = GroundingStatus.NO_CAREER_CLAIMS_DETECTED
         requires_review = False
-        summary = "Draft evaluated as safe (valid prose containing no career-sensitive claims requiring verification)."
+        summary = "Advisory scan detected no career-sensitive claims. (NO_CAREER_CLAIMS_DETECTED carries no affirmative safety or grounding authorization)."
 
     return GroundingValidationResult(
         is_grounded=is_grounded,

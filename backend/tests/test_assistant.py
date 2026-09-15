@@ -69,6 +69,7 @@ def test_email_classification_newsletter():
     assert result.category in [EmailCategory.NOISE_NEWSLETTER, EmailCategory.NOISE_PROMOTIONAL]
 
 def test_personalized_reply_generation():
+    from unittest.mock import patch
     email = EmailMessage(
         id="test_rec_02",
         subject="Principal Software Architect Opportunity @ Horizon Cloud",
@@ -79,13 +80,15 @@ def test_personalized_reply_generation():
         body_text="Hi Brian, Horizon Cloud is looking for a Principal Architect to lead distributed systems. Please send over your updated resume.",
         folder="Inbox"
     )
-    email.classification = classify_email(email)
-    user_profile = get_user_profile()
-    reply = generate_personalized_reply(email, user_profile)
-    
-    assert "Dana" in reply or "Hi" in reply
-    assert "resume" in reply.lower()
-    assert user_profile.full_name in reply
+    with patch("backend.radar.scribe_service.get_gemini_client", return_value=None), \
+         patch("backend.radar.triage_service.get_gemini_client", return_value=None):
+        email.classification = classify_email(email)
+        user_profile = get_user_profile()
+        reply = generate_personalized_reply(email, user_profile)
+
+        assert "Dana" in reply or "Hi" in reply
+        assert "resume" in reply.lower()
+        assert user_profile.full_name in reply
 
 def test_list_and_triage_endpoints():
     response = client.get("/api/emails")

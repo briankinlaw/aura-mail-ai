@@ -519,6 +519,72 @@ def match_canonical_resume(payload: Dict[str, Any]):
 def get_canonical_ledger():
     return {"status": "SUCCESS", "ledger": get_canonical_ledger_summary()}
 
+from backend.canonical_grounding import (
+    validate_canonical_grounding,
+    generate_canonical_claim,
+    verify_provenance_claim,
+    get_available_templates,
+    GroundingStatus
+)
+
+@app.get("/api/canonical/templates")
+def list_canonical_templates(fact_id: Optional[str] = None):
+    return {
+        "status": "SUCCESS",
+        "templates": get_available_templates(fact_id=fact_id)
+    }
+
+@app.post("/api/canonical/claims/generate", dependencies=[Depends(require_local_auth)])
+def generate_claim_endpoint(payload: Dict[str, Any]):
+    fact_id = payload.get("fact_id") or payload.get("canonical_fact_id")
+    if not fact_id:
+        raise HTTPException(status_code=400, detail="canonical_fact_id is required")
+    template_id = payload.get("template_id")
+    style_variant = payload.get("style_variant")
+    draft_id = payload.get("draft_id")
+    try:
+        claim_meta = generate_canonical_claim(
+            fact_id=fact_id,
+            template_id=template_id,
+            style_variant=style_variant,
+            draft_id=draft_id
+        )
+        return {"status": "SUCCESS", "claim": claim_meta}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/canonical/claims/verify", dependencies=[Depends(require_local_auth)])
+def verify_claim_endpoint(payload: Dict[str, Any]):
+    claim_id = payload.get("claim_instance_id")
+    submitted_text = payload.get("submitted_text") or payload.get("text") or ""
+    draft_id = payload.get("draft_id")
+    is_valid, c_status, c_reason, supp = verify_provenance_claim(
+        claim_instance_id=claim_id,
+        submitted_text=submitted_text,
+        draft_id=draft_id
+    )
+    return {
+        "status": "SUCCESS",
+        "is_valid": is_valid,
+        "claim_status": c_status.value,
+        "reason": c_reason,
+        "claim": supp.model_dump() if supp else None
+    }
+
+@app.post("/api/canonical/validate", dependencies=[Depends(require_local_auth)])
+def validate_canonical_endpoint(payload: Dict[str, Any]):
+    draft_text = payload.get("draft_text") or payload.get("text") or ""
+    provenance_claims = payload.get("provenance_claims")
+    recipient_company = payload.get("recipient_company")
+    draft_id = payload.get("draft_id")
+    res = validate_canonical_grounding(
+        draft_text=draft_text,
+        provenance_claims=provenance_claims,
+        recipient_company=recipient_company,
+        draft_id=draft_id
+    )
+    return res.model_dump()
+
 @app.get("/api/resumes")
 def list_resumes():
     catalog = scan_canonical_system()

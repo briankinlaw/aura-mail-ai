@@ -33,7 +33,8 @@ client.headers.update(get_auth_headers())
 # ---------------------------------------------------------------------------
 
 def test_safe_grounded_interaction():
-    """Tests that a standard, strictly grounded interaction is evaluated as SAFE."""
+    """Tests that a standard, strictly grounded interaction is evaluated as SAFE with valid provenance."""
+    from backend.canonical_grounding import generate_canonical_claim
     email = EmailMessage(
         id="risk_test_safe",
         subject="Senior Solutions Architect Opportunity",
@@ -41,13 +42,19 @@ def test_safe_grounded_interaction():
         sender_email="alex@legitfirm.com",
         body_text="Hi Brian, we have an opening for an Enterprise Architect at our firm. Could you send your resume?"
     )
+    c_career = generate_canonical_claim("FACT_CAREER_IMPACT", "TPL_CAREER_ENTERPRISE_REVENUE_CONCISE")
+    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE")
     draft = (
         "Hi Alex,\n\n"
-        "Thank you for reaching out. Over my career, I have influenced and delivered $100M+ in enterprise revenue, "
-        "including influencing $8M in new Google Cloud revenue.\n\n"
+        f"Thank you for reaching out. {c_career['rendered_text']} {c_google['rendered_text']}\n\n"
         "I have attached my updated resume. Let me know if you would like to connect for 15 minutes."
     )
-    result = analyze_risk_heuristics(email.body_text, draft, action="DRAFT")
+    result = analyze_risk_heuristics(
+        email.body_text,
+        draft,
+        action="DRAFT",
+        provenance_claims=[c_career, c_google]
+    )
     assert result.severity == RiskSeverity.SAFE
     assert result.is_flagged is False
     assert result.recommended_action == "PROCEED"
