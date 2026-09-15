@@ -40,7 +40,9 @@ let APP_STATE = {
   activeFilter: 'ALL',
   activeVaultFilter: 'ALL',
   vaultSearchQuery: '',
-  devicePollInterval: null
+  devicePollInterval: null,
+  activeRiskToken: null,
+  riskRequestGeneration: 0
 };
 
 // DOM Elements
@@ -613,6 +615,8 @@ function renderRecruiterList() {
 
 function selectRecruiterEmail(emailId) {
   APP_STATE.selectedEmailId = emailId;
+  APP_STATE.activeRiskToken = null;
+  APP_STATE.riskRequestGeneration++;
   
   document.querySelectorAll('.email-card').forEach(c => c.classList.remove('selected'));
   const card = document.getElementById(`card-${emailId.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
@@ -1132,6 +1136,10 @@ function setupEventListeners() {
   // Manual Edit Listener on Reply Textarea (Step 7 & 8)
   if (elements.replyBodyText) {
     elements.replyBodyText.addEventListener('input', () => {
+      // Invalidate in-flight risk request tokens immediately on edit
+      APP_STATE.activeRiskToken = null;
+      APP_STATE.riskRequestGeneration++;
+
       const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
       if (emailMsg) {
         emailMsg.draft_reply = elements.replyBodyText.value;
@@ -1167,6 +1175,10 @@ function setupEventListeners() {
   // Regenerate Draft
   elements.btnRegenerateDraft.addEventListener('click', async () => {
     if (!APP_STATE.selectedEmailId) return;
+    // Invalidate active risk token on regeneration
+    APP_STATE.activeRiskToken = null;
+    APP_STATE.riskRequestGeneration++;
+
     const tone = elements.toneSelector.value;
     const chosenResume = elements.resumeVariantSelect.value;
     showToast(`Generating ${tone} response grounded in ${chosenResume}...`, 'info');
@@ -1216,6 +1228,18 @@ function setupEventListeners() {
       if (!APP_STATE.selectedEmailId) return;
       const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
       const replyBody = elements.replyBodyText.value;
+
+      // Unique token and generation snapshot for asynchronous race prevention
+      const currentToken = 'risk_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+      const currentGen = ++APP_STATE.riskRequestGeneration;
+      APP_STATE.activeRiskToken = currentToken;
+
+      const capturedEmailId = APP_STATE.selectedEmailId;
+      const capturedDraftId = emailMsg ? emailMsg.draft_id : null;
+      const capturedDraftText = replyBody;
+      const capturedDraftTextHash = emailMsg ? emailMsg.draft_text_hash : null;
+      const capturedSelectedEmailId = APP_STATE.selectedEmailId;
+
       showToast('Running Gemini Risk Sentinel audit on current draft...', 'info');
       elements.btnRiskCheck.disabled = true;
 
@@ -1231,25 +1255,67 @@ function setupEventListeners() {
           body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (emailMsg && data) {
-          if (data.status === 'SUCCESS' && data.risk_is_current) {
-            emailMsg.risk_result = data.risk;
-            emailMsg.risk_draft_id = data.draft_id;
-            emailMsg.risk_draft_text_hash = data.draft_text_hash;
-            emailMsg.risk_is_current = true;
-            emailMsg.is_grounded = data.is_grounded;
-            emailMsg.grounding_status = data.grounding_status;
-            showToast(`Risk check: ${data.risk?.severity || 'Complete'} (${data.risk?.recommended_action || 'PROCEED'})`, 'success');
-          } else {
-            emailMsg.is_grounded = false;
-            emailMsg.grounding_status = data.grounding_status || 'UNVERIFIED';
-            emailMsg.risk_is_current = false;
-            emailMsg.risk_result = data.risk || null;
-            showToast(`Risk check: ${data.validation_summary || 'Validation Required'}`, 'warning');
-          }
+
+        // Check if asynchronous state changed during network transit
+        const isStale = (
+          APP_STATE.activeRiskToken !== currentToken ||
+          APP_STATE.riskRequestGeneration !== currentGen ||
+          APP_STATE.selectedEmailId !== capturedSelectedEmailId ||
+          !emailMsg ||
+          emailMsg.id !== capturedEmailId ||
+          emailMsg.draft_id !== capturedDraftId ||
+          elements.replyBodyText.value !== capturedDraftText
+        );
+
+        if (isStale) {
+          console.warn('Stale asynchronous risk response discarded.');
+          return;
+        }
+
+        // Validate response structure integrity
+        const isMalformed = (
+          !data ||
+          typeof data !== 'object' ||
+          !['SUCCESS', 'VALIDATION_FAILED', 'DIVERGENCE_DETECTED'].includes(data.status) ||
+          data.email_id !== capturedEmailId ||
+          (data.status === 'SUCCESS' && (
+            data.draft_id !== capturedDraftId ||
+            !data.risk_is_current ||
+            !data.risk ||
+            typeof data.risk.severity !== 'string' ||
+            typeof data.risk.recommended_action !== 'string'
+          ))
+        );
+
+        if (isMalformed) {
+          console.error('Malformed risk response received. Failing closed.');
+          emailMsg.risk_is_current = false;
+          emailMsg.risk_result = null;
+          emailMsg.is_grounded = false;
+          emailMsg.grounding_status = 'UNVERIFIED';
           updateGroundingBadge(emailMsg);
           updateRiskBadge(emailMsg);
+          showToast('Risk check returned an invalid response — verification failed', 'error');
+          return;
         }
+
+        if (data.status === 'SUCCESS' && data.risk_is_current) {
+          emailMsg.risk_result = data.risk;
+          emailMsg.risk_draft_id = data.draft_id;
+          emailMsg.risk_draft_text_hash = data.draft_text_hash;
+          emailMsg.risk_is_current = true;
+          emailMsg.is_grounded = data.is_grounded;
+          emailMsg.grounding_status = data.grounding_status;
+          showToast(`Risk check: ${data.risk?.severity || 'Complete'} (${data.risk?.recommended_action || 'PROCEED'})`, 'success');
+        } else {
+          emailMsg.is_grounded = false;
+          emailMsg.grounding_status = data.grounding_status || 'UNVERIFIED';
+          emailMsg.risk_is_current = false;
+          emailMsg.risk_result = data.risk || null;
+          showToast(`Risk check: ${data.validation_summary || 'Validation Required'}`, 'warning');
+        }
+        updateGroundingBadge(emailMsg);
+        updateRiskBadge(emailMsg);
       } catch (err) {
         showToast('Risk check failed: ' + err.message, 'error');
       } finally {

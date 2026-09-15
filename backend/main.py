@@ -526,6 +526,7 @@ from backend.canonical_grounding import (
     verify_provenance_claim,
     verify_provenance_claim_binding,
     ClaimBlockBinding,
+    canonicalize_binding_manifest,
     get_available_templates,
     GroundingStatus,
     ClaimStatus,
@@ -832,19 +833,26 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
     grounding_status_val = GroundingStatus.UNVERIFIED.value
     validation_summary = "Grounding unverified for staged draft."
 
-    # Require explicit draft_id, matching cached draft_id on email_msg, and matching text hash
-    if (
-        req_draft_id and
-        email_msg.draft_id and
+    submitted_canonical = canonicalize_binding_manifest(req_claim_bindings)
+    cached_canonical = canonicalize_binding_manifest(email_msg.claim_bindings)
+
+    # Require exact match: draft_id, exact draft text hash, and exact canonical 6-field manifest
+    is_exact_match = (
+        bool(req_draft_id) and
+        bool(email_msg.draft_id) and
         req_draft_id == email_msg.draft_id and
-        req_text_hash and
-        email_msg.draft_text_hash and
+        bool(req_text_hash) and
+        bool(email_msg.draft_text_hash) and
         req_text_hash == email_msg.draft_text_hash and
-        req_claim_bindings
-    ):
+        submitted_canonical is not None and
+        cached_canonical is not None and
+        submitted_canonical == cached_canonical
+    )
+
+    if is_exact_match:
         val_res = validate_canonical_grounding(
             draft_text=reply_body,
-            claim_bindings=req_claim_bindings,
+            claim_bindings=submitted_canonical,
             draft_id=req_draft_id
         )
         is_still_grounded = val_res.is_grounded
@@ -853,7 +861,10 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
 
         if not is_still_grounded:
             # Invalidation on verification failure
-            PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft claims validation failed during save")
+            try:
+                PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft claims validation failed during save")
+            except Exception:
+                pass
             email_msg.draft_id = None
             email_msg.claim_bindings = []
             email_msg.draft_text_hash = None
@@ -864,9 +875,16 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
             email_msg.risk_draft_text_hash = None
             email_msg.risk_is_current = False
     else:
-        # Divergence detected: either text was modified, draft_id mismatched/missing, or foreign draft_id submitted
-        if email_msg.draft_id and (req_draft_id != email_msg.draft_id or req_text_hash != email_msg.draft_text_hash):
-            PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft divergence detected during save")
+        # Divergence or manifest substitution detected:
+        if email_msg.draft_id and (
+            req_draft_id != email_msg.draft_id or
+            req_text_hash != email_msg.draft_text_hash or
+            submitted_canonical != cached_canonical
+        ):
+            try:
+                PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft divergence or manifest substitution detected during save")
+            except Exception:
+                pass
 
         email_msg.draft_id = None
         email_msg.claim_bindings = []
@@ -879,13 +897,13 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
         email_msg.risk_is_current = False
         is_still_grounded = False
         grounding_status_val = email_msg.grounding_status
-        validation_summary = "Draft divergence detected, draft_id mismatch, or unprovenanced text; prior grounding authority persistently invalidated."
+        validation_summary = "Draft divergence, manifest mismatch, or unprovenanced text; prior grounding authority invalidated."
 
     # Update draft reply in cache
     email_msg.draft_reply = reply_body
     if is_still_grounded:
         email_msg.draft_id = req_draft_id
-        email_msg.claim_bindings = req_claim_bindings
+        email_msg.claim_bindings = submitted_canonical
         email_msg.draft_text_hash = req_text_hash
         email_msg.is_grounded = True
         email_msg.grounding_status = grounding_status_val
@@ -925,8 +943,8 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
     - Addressed email_id exists in CACHED_EMAILS.
     - Request draft_id matches cached draft_id on email_msg.
     - SHA-256(request draft_text) matches cached draft_text_hash on email_msg.
-    - Claim bindings match cached manifest.
-    - On divergence, persistently invalidates cached provenance and marks risk stale/ungrounded.
+    - Submitted manifest matches cached authoritative manifest exactly.
+    - On divergence/mismatch, persistently invalidates cached provenance and marks risk stale/ungrounded.
     """
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
@@ -939,20 +957,28 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
     execution_context = payload.get("execution_context")
     req_text_hash = compute_sha256(draft_text) if draft_text else None
 
-    # Check for divergence or foreign draft_id
-    is_divergent = (
-        not req_draft_id or
-        not email_msg.draft_id or
-        req_draft_id != email_msg.draft_id or
-        not req_text_hash or
-        not email_msg.draft_text_hash or
-        req_text_hash != email_msg.draft_text_hash
+    submitted_canonical = canonicalize_binding_manifest(req_bindings)
+    cached_canonical = canonicalize_binding_manifest(email_msg.claim_bindings)
+
+    is_exact_match = (
+        bool(req_draft_id) and
+        bool(email_msg.draft_id) and
+        req_draft_id == email_msg.draft_id and
+        bool(req_text_hash) and
+        bool(email_msg.draft_text_hash) and
+        req_text_hash == email_msg.draft_text_hash and
+        submitted_canonical is not None and
+        cached_canonical is not None and
+        submitted_canonical == cached_canonical
     )
 
-    if is_divergent:
-        # Invalidate cached draft if divergence occurred on a previously grounded draft
+    if not is_exact_match:
+        # Invalidate cached draft if divergence or manifest mismatch occurred on a previously grounded draft
         if email_msg.draft_id:
-            PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft divergence detected during risk check")
+            try:
+                PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft divergence or manifest mismatch detected during risk check")
+            except Exception:
+                pass
 
         email_msg.draft_id = None
         email_msg.claim_bindings = []
@@ -985,18 +1011,21 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
             "draft_id": None,
             "draft_text_hash": req_text_hash,
             "risk_is_current": False,
-            "validation_summary": "Draft divergence or draft_id mismatch: risk evaluated for ungrounded draft text."
+            "validation_summary": "Draft divergence, manifest mismatch, or draft_id mismatch: risk evaluated for ungrounded draft text."
         }
 
     # Authoritative path: validate manifest & bindings
     val_res = validate_canonical_grounding(
         draft_text=draft_text,
-        claim_bindings=req_bindings or email_msg.claim_bindings,
+        claim_bindings=submitted_canonical,
         draft_id=email_msg.draft_id
     )
 
     if not val_res.is_grounded:
-        PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft claims invalid during risk check")
+        try:
+            PROVENANCE_STORE.invalidate_draft_claims(email_msg.draft_id, reason="Draft claims invalid during risk check")
+        except Exception:
+            pass
         email_msg.draft_id = None
         email_msg.claim_bindings = []
         email_msg.draft_text_hash = None
@@ -1038,7 +1067,7 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
         execution_context=execution_context,
         user_profile=get_user_profile(),
         draft_id=email_msg.draft_id,
-        claim_bindings=req_bindings or email_msg.claim_bindings,
+        claim_bindings=submitted_canonical,
         provenance_claims=None
     )
 
@@ -1065,28 +1094,70 @@ def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
 def invalidate_email_draft_endpoint(email_id: str, payload: Optional[Dict[str, Any]] = None):
     """
     Same-origin authenticated endpoint to persistently invalidate draft provenance on manual edit.
-    Fails closed if provenance store invalidation persistence fails.
+    Enforces strict ownership: requires explicit non-empty draft_id matching the active draft
+    cached for the addressed email. Fails closed and quarantines authority if persistence fails.
     """
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
 
     email_msg = CACHED_EMAILS[email_id]
     p = payload or {}
-    target_draft_id = p.get("draft_id") or email_msg.draft_id
+    req_draft_id = p.get("draft_id")
 
-    if target_draft_id:
-        try:
-            PROVENANCE_STORE.invalidate_draft_claims(target_draft_id, reason="Manual draft edit in client")
-        except Exception as e:
-            logger.error(f"Persistence error invalidating draft {target_draft_id}: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "PERSISTENCE_FAILURE",
-                    "message": "Provenance invalidation persistence failed. System failed closed; manual review required.",
-                    "requires_human_review": True
-                }
-            )
+    # Request MUST contain explicit non-empty draft_id
+    if not req_draft_id or not isinstance(req_draft_id, str) or not req_draft_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "VALIDATION_FAILED",
+                "message": "Explicit non-empty draft_id is required in request payload for invalidation."
+            }
+        )
+
+    req_draft_id = req_draft_id.strip()
+
+    # Cached email must have an active draft_id and it must match request draft_id
+    if not email_msg.draft_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "STALE_DRAFT",
+                "message": "Addressed email has no active cached draft to invalidate."
+            }
+        )
+
+    if email_msg.draft_id != req_draft_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "DRAFT_ID_MISMATCH",
+                "message": "Submitted draft_id does not match active draft for addressed email."
+            }
+        )
+
+    # Exact active email/draft association confirmed -> perform persistent invalidation
+    try:
+        PROVENANCE_STORE.invalidate_draft_claims(req_draft_id, reason="Manual draft edit in client")
+    except Exception as e:
+        logger.error(f"Persistence error invalidating draft {req_draft_id}: {e}")
+        email_msg.draft_id = None
+        email_msg.claim_bindings = []
+        email_msg.is_grounded = False
+        email_msg.grounding_status = GroundingStatus.VALIDATION_FAILED.value
+        email_msg.risk_result = None
+        email_msg.risk_draft_id = None
+        email_msg.risk_draft_text_hash = None
+        email_msg.risk_is_current = False
+        email_msg.invalidation_issued = True
+        save_cached_emails()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "PERSISTENCE_FAILURE",
+                "message": "Provenance invalidation persistence failed. Authority quarantined; manual review required.",
+                "requires_human_review": True
+            }
+        )
 
     # Clear cached authority on email_msg
     email_msg.draft_id = None
@@ -1104,7 +1175,7 @@ def invalidate_email_draft_endpoint(email_id: str, payload: Optional[Dict[str, A
     return {
         "status": "INVALIDATED",
         "email_id": email_id,
-        "draft_id": target_draft_id,
+        "draft_id": req_draft_id,
         "is_grounded": False,
         "grounding_status": GroundingStatus.UNVERIFIED.value,
         "risk_is_current": False
@@ -1421,16 +1492,22 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
     if email_id and email_id in CACHED_EMAILS:
         cached_msg = CACHED_EMAILS[email_id]
         req_text_hash = compute_sha256(draft_reply) if draft_reply else None
+        submitted_canonical = canonicalize_binding_manifest(claim_bindings)
+        cached_canonical = canonicalize_binding_manifest(cached_msg.claim_bindings)
         if (
             not draft_id or
             not cached_msg.draft_id or
             draft_id != cached_msg.draft_id or
             not req_text_hash or
             not cached_msg.draft_text_hash or
-            req_text_hash != cached_msg.draft_text_hash
+            req_text_hash != cached_msg.draft_text_hash or
+            submitted_canonical != cached_canonical
         ):
             if cached_msg.draft_id:
-                PROVENANCE_STORE.invalidate_draft_claims(cached_msg.draft_id, reason="Draft divergence during radar risk check")
+                try:
+                    PROVENANCE_STORE.invalidate_draft_claims(cached_msg.draft_id, reason="Draft divergence during radar risk check")
+                except Exception:
+                    pass
             cached_msg.draft_id = None
             cached_msg.claim_bindings = []
             cached_msg.draft_text_hash = None

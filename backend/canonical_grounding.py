@@ -1040,9 +1040,21 @@ class ProvenanceStore:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._records: Dict[str, ProvenanceRecord] = {}
+        self._quarantined_draft_ids: Set[str] = set()
         self._is_available: bool = True
         self._load_error: Optional[str] = None
         self._load()
+
+    def quarantine_draft(self, draft_id: str):
+        with self._lock:
+            if draft_id and isinstance(draft_id, str):
+                self._quarantined_draft_ids.add(draft_id.strip())
+
+    def is_draft_quarantined(self, draft_id: str) -> bool:
+        with self._lock:
+            if not draft_id or not isinstance(draft_id, str):
+                return False
+            return draft_id.strip() in self._quarantined_draft_ids
 
     def _load(self):
         with self._lock:
@@ -1122,6 +1134,9 @@ class ProvenanceStore:
                 raise ValueError("draft_id is mandatory and must be a non-empty string for claim instance generation")
             draft_id_clean = draft_id.strip()
 
+            if self.is_draft_quarantined(draft_id_clean):
+                raise ValueError(f"Draft '{draft_id_clean}' is quarantined due to a prior invalidation persistence failure")
+
             if template_id not in CANONICAL_CLAIM_TEMPLATES:
                 raise ValueError(f"Unknown template_id '{template_id}'")
             tpl = CANONICAL_CLAIM_TEMPLATES[template_id]
@@ -1177,7 +1192,15 @@ class ProvenanceStore:
         with self._lock:
             if not self._is_available:
                 return None
-            return self._records.get(claim_instance_id)
+            rec = self._records.get(claim_instance_id)
+            if not rec:
+                return None
+            if rec.draft_id in self._quarantined_draft_ids:
+                return rec.model_copy(update={
+                    "is_invalidated": True,
+                    "invalidation_reason": "Draft quarantined due to invalidation persistence failure"
+                })
+            return rec
 
     def invalidate_claim_instance(self, claim_instance_id: str, reason: str = "Manual edit detected") -> bool:
         with self._lock:
@@ -1187,33 +1210,110 @@ class ProvenanceStore:
             updated_rec = rec.model_copy(update={"is_invalidated": True, "invalidation_reason": reason})
             candidate = dict(self._records)
             candidate[claim_instance_id] = updated_rec
-            self._persist_to_disk(candidate)
-            self._records[claim_instance_id] = updated_rec
-            return True
+            try:
+                self._persist_to_disk(candidate)
+                self._records[claim_instance_id] = updated_rec
+                return True
+            except Exception as e:
+                if rec.draft_id:
+                    self._quarantined_draft_ids.add(rec.draft_id)
+                logger.error(f"Persistence failure during claim invalidation for {claim_instance_id}. Quarantined draft: {e}")
+                raise
 
     def invalidate_draft_claims(self, draft_id: str, reason: str = "Draft edited") -> int:
         with self._lock:
             if not draft_id:
                 return 0
+            did_clean = draft_id.strip() if isinstance(draft_id, str) else str(draft_id)
+            if not self._is_available:
+                self._quarantined_draft_ids.add(did_clean)
+                raise RuntimeError(f"Provenance store is unavailable; quarantined draft '{did_clean}'")
             count = 0
             candidate = dict(self._records)
             for cid, rec in self._records.items():
-                if rec.draft_id == draft_id and not rec.is_invalidated:
+                if rec.draft_id == did_clean and not rec.is_invalidated:
                     candidate[cid] = rec.model_copy(update={"is_invalidated": True, "invalidation_reason": reason})
                     count += 1
             if count > 0:
-                self._persist_to_disk(candidate)
-                self._records = candidate
+                try:
+                    self._persist_to_disk(candidate)
+                    self._records = candidate
+                except Exception as e:
+                    self._quarantined_draft_ids.add(did_clean)
+                    logger.error(f"Persistence failure during draft invalidation for {did_clean}. Quarantined draft authority: {e}")
+                    raise
             return count
 
     def reset_store(self):
         with self._lock:
             self._persist_to_disk({})
             self._records.clear()
+            self._quarantined_draft_ids.clear()
+            self._is_available = True
 
 
 # Global Singleton Provenance Store
 PROVENANCE_STORE = ProvenanceStore()
+
+
+def canonicalize_binding_manifest(bindings: Optional[List[Any]]) -> Optional[List[Dict[str, Any]]]:
+    """
+    Projects a list of claim bindings (dicts or ClaimBlockBinding instances)
+    to a canonical list of 6-field dictionaries in exact order:
+    - claim_instance_id
+    - draft_id
+    - block_id
+    - start_offset
+    - end_offset
+    - submitted_block_text
+    Returns None if bindings is None, not a list, or if any element is malformed / invalid.
+    """
+    if bindings is None or not isinstance(bindings, list):
+        return None
+    canonical_list = []
+    for b in bindings:
+        if isinstance(b, ClaimBlockBinding):
+            cid = b.claim_instance_id
+            did = b.draft_id
+            bid = b.block_id
+            so = b.start_offset
+            eo = b.end_offset
+            sbt = b.submitted_block_text
+        elif isinstance(b, dict):
+            # Explicitly reject legacy aliases
+            if any(k in b for k in ("claim_id", "start", "end", "text", "rendered_text")):
+                return None
+            cid = b.get("claim_instance_id")
+            did = b.get("draft_id")
+            bid = b.get("block_id")
+            so = b.get("start_offset")
+            eo = b.get("end_offset")
+            sbt = b.get("submitted_block_text")
+        else:
+            return None
+
+        if not cid or not isinstance(cid, str) or not cid.strip():
+            return None
+        if not did or not isinstance(did, str) or not did.strip():
+            return None
+        if not bid or not isinstance(bid, str) or not bid.strip():
+            return None
+        if not sbt or not isinstance(sbt, str) or not sbt.strip():
+            return None
+        if so is None or type(so) is not int or isinstance(so, bool) or so < 0:
+            return None
+        if eo is None or type(eo) is not int or isinstance(eo, bool) or eo <= so:
+            return None
+
+        canonical_list.append({
+            "claim_instance_id": cid.strip(),
+            "draft_id": did.strip(),
+            "block_id": bid.strip(),
+            "start_offset": so,
+            "end_offset": eo,
+            "submitted_block_text": sbt
+        })
+    return canonical_list
 
 
 def generate_canonical_claim(
@@ -1298,6 +1398,9 @@ def validate_claim_manifest(
         return False, GroundingStatus.VALIDATION_FAILED, "Request draft_id is mandatory and must be a non-empty string", []
 
     request_draft_id = draft_id.strip()
+    if PROVENANCE_STORE.is_draft_quarantined(request_draft_id):
+        return False, GroundingStatus.VALIDATION_FAILED, f"Draft '{request_draft_id}' is quarantined due to prior invalidation persistence failure", []
+
     text_len = len(draft_text)
 
     parsed_bindings: List[ClaimBlockBinding] = []
@@ -1400,6 +1503,9 @@ def verify_provenance_claim_binding(
     """
     if draft_text is None or not isinstance(draft_text, str):
         return False, ClaimStatus.VALIDATION_FAILED, "Draft text must be a valid string", None
+
+    if PROVENANCE_STORE.is_draft_quarantined(binding.draft_id):
+        return False, ClaimStatus.INVALIDATED, f"Draft '{binding.draft_id}' is quarantined due to prior invalidation persistence failure", None
 
     cid = binding.claim_instance_id
     rec = PROVENANCE_STORE.get_claim_instance(cid)
