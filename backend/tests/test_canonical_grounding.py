@@ -243,9 +243,10 @@ def test_monetary_attack_strings_fail_closed(attack_text, expected_reason_substr
 
 def test_approved_monetary_claims_pass():
     """Affirmatively complete canonical monetary claims pass validation with provenance, and fail-closed without."""
+    did = "draft_monetary_1"
     # Google $8M
-    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE")
-    res_google = validate_canonical_grounding(c_google["rendered_text"], provenance_claims=[c_google])
+    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
+    res_google = validate_canonical_grounding(c_google["rendered_text"], provenance_claims=[c_google], draft_id=did)
     assert res_google.is_grounded is True
     assert "FACT_GOOGLE_REVENUE" in res_google.verified_fact_ids
 
@@ -255,32 +256,32 @@ def test_approved_monetary_claims_pass():
     assert raw_google.status == GroundingStatus.UNVERIFIED
 
     # Career-wide $100M+
-    c_career = generate_canonical_claim("FACT_CAREER_IMPACT", "TPL_CAREER_ENTERPRISE_REVENUE_CONCISE")
-    res_career = validate_canonical_grounding(c_career["rendered_text"], provenance_claims=[c_career])
+    c_career = generate_canonical_claim("FACT_CAREER_IMPACT", "TPL_CAREER_ENTERPRISE_REVENUE_CONCISE", draft_id=did)
+    res_career = validate_canonical_grounding(c_career["rendered_text"], provenance_claims=[c_career], draft_id=did)
     assert res_career.is_grounded is True
     assert "FACT_CAREER_IMPACT" in res_career.verified_fact_ids
 
     # CDW $2.1M
-    c_cdw_serv = generate_canonical_claim("FACT_CDW_SERVICES", "TPL_CDW_SERVICES_CONCISE")
-    res_cdw_serv = validate_canonical_grounding(c_cdw_serv["rendered_text"], provenance_claims=[c_cdw_serv])
+    c_cdw_serv = generate_canonical_claim("FACT_CDW_SERVICES", "TPL_CDW_SERVICES_CONCISE", draft_id=did)
+    res_cdw_serv = validate_canonical_grounding(c_cdw_serv["rendered_text"], provenance_claims=[c_cdw_serv], draft_id=did)
     assert res_cdw_serv.is_grounded is True
     assert "FACT_CDW_SERVICES" in res_cdw_serv.verified_fact_ids
 
     # CDW $4M
-    c_cdw_rev = generate_canonical_claim("FACT_CDW_REVENUE", "TPL_CDW_REVENUE_CONCISE")
-    res_cdw_rev = validate_canonical_grounding(c_cdw_rev["rendered_text"], provenance_claims=[c_cdw_rev])
+    c_cdw_rev = generate_canonical_claim("FACT_CDW_REVENUE", "TPL_CDW_REVENUE_CONCISE", draft_id=did)
+    res_cdw_rev = validate_canonical_grounding(c_cdw_rev["rendered_text"], provenance_claims=[c_cdw_rev], draft_id=did)
     assert res_cdw_rev.is_grounded is True
     assert "FACT_CDW_REVENUE" in res_cdw_rev.verified_fact_ids
 
     # Promevo $2M+
-    c_prom_pipe = generate_canonical_claim("FACT_PROMEVO_PIPELINE", "TPL_PROMEVO_PIPELINE_CONCISE")
-    res_prom_pipe = validate_canonical_grounding(c_prom_pipe["rendered_text"], provenance_claims=[c_prom_pipe])
+    c_prom_pipe = generate_canonical_claim("FACT_PROMEVO_PIPELINE", "TPL_PROMEVO_PIPELINE_CONCISE", draft_id=did)
+    res_prom_pipe = validate_canonical_grounding(c_prom_pipe["rendered_text"], provenance_claims=[c_prom_pipe], draft_id=did)
     assert res_prom_pipe.is_grounded is True
     assert "FACT_PROMEVO_PIPELINE" in res_prom_pipe.verified_fact_ids
 
     # DXC $22M
-    c_dxc = generate_canonical_claim("FACT_DXC_PORTFOLIO", "TPL_DXC_PORTFOLIO_CONCISE")
-    res_dxc = validate_canonical_grounding(c_dxc["rendered_text"], provenance_claims=[c_dxc])
+    c_dxc = generate_canonical_claim("FACT_DXC_PORTFOLIO", "TPL_DXC_PORTFOLIO_CONCISE", draft_id=did)
+    res_dxc = validate_canonical_grounding(c_dxc["rendered_text"], provenance_claims=[c_dxc], draft_id=did)
     assert res_dxc.is_grounded is True
     assert "FACT_DXC_PORTFOLIO" in res_dxc.verified_fact_ids
 
@@ -299,9 +300,10 @@ def test_approved_monetary_claims_pass():
 ])
 def test_approved_percentage_facts_pass(valid_pct_claim, expected_fact_id, template_id):
     """Verified Promevo percentage metrics pass with provenance, and return advisory UNVERIFIED without."""
+    did = "draft_pct_1"
     # Provenance-backed validation
-    c_pct = generate_canonical_claim(expected_fact_id, template_id)
-    res_prov = validate_canonical_grounding(c_pct["rendered_text"], provenance_claims=[c_pct])
+    c_pct = generate_canonical_claim(expected_fact_id, template_id, draft_id=did)
+    res_prov = validate_canonical_grounding(c_pct["rendered_text"], provenance_claims=[c_pct], draft_id=did)
     assert res_prov.is_grounded is True
     assert res_prov.status == GroundingStatus.GROUNDED
     assert expected_fact_id in res_prov.verified_fact_ids
@@ -371,8 +373,9 @@ def test_authentic_employment_claims_pass():
         ("FACT_EMPLOYMENT_MAVENCODE_ADVISORY", "TPL_EMP_MAVENCODE_ADVISORY_CONCISE")
     ]
     for fact_id, tpl_id in claims:
-        rec = generate_canonical_claim(fact_id, tpl_id)
-        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec])
+        did = f"draft_auth_{fact_id}"
+        rec = generate_canonical_claim(fact_id, tpl_id, draft_id=did)
+        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec], draft_id=did)
         assert res.is_grounded is True, f"Failed to validate authentic claim with provenance: {rec['rendered_text']}"
         assert fact_id in res.verified_fact_ids
 
@@ -616,9 +619,10 @@ def test_unsupported_claim_produces_non_downgradable_risk_finding():
 
 def test_grounding_success_does_not_create_or_invoke_transmission():
     """Grounded validation success does not grant send authority or invoke mail transmission."""
-    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE")
+    did = "draft_trans_1"
+    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
     good_draft = c_google["rendered_text"]
-    val = validate_canonical_grounding(good_draft, provenance_claims=[c_google])
+    val = validate_canonical_grounding(good_draft, provenance_claims=[c_google], draft_id=did)
     assert val.is_grounded is True
 
     # Even with a perfectly grounded draft, proposing SEND action remains HIGH_RISK + BLOCKED
@@ -705,8 +709,9 @@ def test_section_13_3_authentic_chronology_passes():
         ("FACT_EMPLOYMENT_MAVENCODE_ADVISORY", "TPL_EMP_MAVENCODE_ADVISORY_CONCISE")
     ]
     for fact_id, tpl_id in positive_chrono_cases:
-        rec = generate_canonical_claim(fact_id, tpl_id)
-        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec])
+        did = f"draft_chrono_{fact_id}"
+        rec = generate_canonical_claim(fact_id, tpl_id, draft_id=did)
+        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec], draft_id=did)
         assert res.is_grounded is True, f"Failed to validate authentic chronology with provenance: {rec['rendered_text']}"
         assert fact_id in res.verified_fact_ids
 
@@ -742,8 +747,9 @@ def test_section_13_5_authentic_title_and_multi_tenure():
         ("FACT_EMPLOYMENT_DXC", "TPL_EMP_DXC")
     ]
     for fact_id, tpl_id in authentic_title_cases:
-        rec = generate_canonical_claim(fact_id, tpl_id)
-        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec])
+        did = f"draft_title_{fact_id}"
+        rec = generate_canonical_claim(fact_id, tpl_id, draft_id=did)
+        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec], draft_id=did)
         assert res.is_grounded is True, f"Failed to validate authentic title with provenance: {rec['rendered_text']}"
         assert fact_id in res.verified_fact_ids
 
@@ -782,8 +788,9 @@ def test_section_13_7_positive_authentic_accomplishments_pass():
         ("FACT_CDW_REVENUE", "TPL_CDW_REVENUE_CONCISE")
     ]
     for fact_id, tpl_id in positive_cases:
-        rec = generate_canonical_claim(fact_id, tpl_id)
-        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec])
+        did = f"draft_pos_{fact_id}"
+        rec = generate_canonical_claim(fact_id, tpl_id, draft_id=did)
+        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec], draft_id=did)
         assert res.is_grounded is True, f"Failed to validate positive authentic claim with provenance: {rec['rendered_text']}"
         assert fact_id in res.verified_fact_ids
 
@@ -967,8 +974,9 @@ def test_phase54_exact_employer_aliases_allow_registered_aliases():
         ("FACT_EMPLOYMENT_IBM", "TPL_EMP_IBM")
     ]
     for fact_id, tpl_id in valid_alias_cases:
-        rec = generate_canonical_claim(fact_id, tpl_id)
-        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec])
+        did = f"draft_alias_{fact_id}"
+        rec = generate_canonical_claim(fact_id, tpl_id, draft_id=did)
+        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec], draft_id=did)
         assert res.is_grounded is True, f"Registered employer alias was improperly rejected with provenance: {rec['rendered_text']}"
         assert fact_id in res.verified_fact_ids
 
@@ -1008,8 +1016,9 @@ def test_phase54_positive_employment_state_passes():
         ("FACT_EMPLOYMENT_PYTHIAN", "TPL_EMP_PYTHIAN")
     ]
     for fact_id, tpl_id in positive_cases:
-        rec = generate_canonical_claim(fact_id, tpl_id)
-        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec])
+        did = f"draft_state_{fact_id}"
+        rec = generate_canonical_claim(fact_id, tpl_id, draft_id=did)
+        res = validate_canonical_grounding(rec["rendered_text"], provenance_claims=[rec], draft_id=did)
         assert res.is_grounded is True, f"Authentic employment state assertion failed with provenance: {rec['rendered_text']}"
         assert fact_id in res.verified_fact_ids
 
@@ -1051,9 +1060,10 @@ def test_phase54_polarity_non_interference_on_opportunity_prose():
     assert res_align.status in [GroundingStatus.NO_CAREER_CLAIMS, GroundingStatus.NO_CAREER_CLAIMS_DETECTED]
 
     # Grounded claim combined with alignment statement
-    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE")
+    did = "draft_p54_polarity"
+    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
     combined = f"{c_google['rendered_text']} I believe my experience aligns with the role."
-    res_comb = validate_canonical_grounding(combined, provenance_claims=[c_google])
+    res_comb = validate_canonical_grounding(combined, provenance_claims=[c_google], draft_id=did)
     assert res_comb.is_grounded is True
     assert "FACT_GOOGLE_REVENUE" in res_comb.verified_fact_ids
 
@@ -1078,15 +1088,17 @@ def test_phase54_ambiguous_multiple_tenures_return_indeterminate(underspecified_
 
 def test_phase54_disambiguated_multi_tenures_pass_or_fail_correctly():
     """Section 7.6: Multi-tenure claims pass with provenance, and fail-closed when contradictory."""
+    did1 = "draft_p54_multi_dir"
+    did2 = "draft_p54_multi_adv"
     # 1. Director claim with provenance -> FACT_EMPLOYMENT_MAVENCODE_DIRECTOR
-    c_dir = generate_canonical_claim("FACT_EMPLOYMENT_MAVENCODE_DIRECTOR", "TPL_EMP_MAVENCODE_DIRECTOR")
-    res_dir = validate_canonical_grounding(c_dir["rendered_text"], provenance_claims=[c_dir])
+    c_dir = generate_canonical_claim("FACT_EMPLOYMENT_MAVENCODE_DIRECTOR", "TPL_EMP_MAVENCODE_DIRECTOR", draft_id=did1)
+    res_dir = validate_canonical_grounding(c_dir["rendered_text"], provenance_claims=[c_dir], draft_id=did1)
     assert res_dir.is_grounded is True
     assert "FACT_EMPLOYMENT_MAVENCODE_DIRECTOR" in res_dir.verified_fact_ids
 
     # 2. Strategic Advisor claim with provenance -> FACT_EMPLOYMENT_MAVENCODE_ADVISORY
-    c_adv = generate_canonical_claim("FACT_EMPLOYMENT_MAVENCODE_ADVISORY", "TPL_EMP_MAVENCODE_ADVISORY_CONCISE")
-    res_adv = validate_canonical_grounding(c_adv["rendered_text"], provenance_claims=[c_adv])
+    c_adv = generate_canonical_claim("FACT_EMPLOYMENT_MAVENCODE_ADVISORY", "TPL_EMP_MAVENCODE_ADVISORY_CONCISE", draft_id=did2)
+    res_adv = validate_canonical_grounding(c_adv["rendered_text"], provenance_claims=[c_adv], draft_id=did2)
     assert res_adv.is_grounded is True
     assert "FACT_EMPLOYMENT_MAVENCODE_ADVISORY" in res_adv.verified_fact_ids
 

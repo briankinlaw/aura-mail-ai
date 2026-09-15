@@ -349,6 +349,9 @@ async function fetchAvailabilitySlots() {
     }
 }
 
+let currentDraftId = null;
+let currentClaimBindings = [];
+
 async function generateDraft() {
     const lens = el.lensSelect.value;
     const includeAvailability = el.chkIncludeAvailability.checked;
@@ -371,8 +374,10 @@ async function generateDraft() {
         if (res.ok) {
             const data = await res.json();
             currentDraft = data.draft_reply || "";
+            currentDraftId = data.draft_id || null;
+            currentClaimBindings = data.claim_bindings || [];
             el.draftReplyText.value = currentDraft;
-            runRiskAudit(currentDraft);
+            runRiskAudit(currentDraft, currentDraftId, currentClaimBindings);
         } else {
             fallbackDraft(lens, includeAvailability);
         }
@@ -397,8 +402,10 @@ function fallbackDraft(lens, includeAvailability) {
         `I have attached my updated resume (${resume}) for your review.${availBlock}\n\n` +
         `Please feel free to suggest a time that suits your schedule or share a calendar link.\n\n` +
         `Best regards,\nBrian Kinlaw\nStrategic Advisor, Data & AI | Solutions Architecture\n(210) 717-5305 | linkedin.com/in/briankinlaw`;
+    currentDraftId = null;
+    currentClaimBindings = [];
     el.draftReplyText.value = currentDraft;
-    runRiskAudit(currentDraft);
+    runRiskAudit(currentDraft, null, []);
 }
 
 /**
@@ -408,6 +415,8 @@ let currentAuditRequestId = 0;
 
 function invalidateRiskAudit(reason = "Draft modified after audit.") {
     currentAuditRequestId += 1;
+    currentDraftId = null;
+    currentClaimBindings = [];
     if (!el.riskSentinelBanner) return;
     el.riskSentinelBanner.className = "risk-sentinel-banner pending";
     el.sentinelIcon.textContent = "ℹ️";
@@ -416,7 +425,7 @@ function invalidateRiskAudit(reason = "Draft modified after audit.") {
     el.sentinelSummary.textContent = "Draft changed after its last risk check. The previous audit no longer applies.";
 }
 
-async function runRiskAudit(draftText) {
+async function runRiskAudit(draftText, draftId = currentDraftId, claimBindings = currentClaimBindings) {
     if (!el.riskSentinelBanner) return;
 
     const auditRequestId = ++currentAuditRequestId;
@@ -438,7 +447,9 @@ async function runRiskAudit(draftText) {
                 sender_name: currentEmailData.senderName,
                 sender_email: currentEmailData.senderEmail,
                 draft_reply: draftText,
-                proposed_action: "DRAFT"
+                proposed_action: "DRAFT",
+                draft_id: draftId,
+                claim_bindings: claimBindings
             })
         });
 
@@ -478,11 +489,18 @@ async function runRiskAudit(draftText) {
             const isExplicitSafe = (sev === "SAFE" && action === "PROCEED");
             const isHighRisk = (sev === "HIGH_RISK" || action === "BLOCKED");
             const isCaution = (!isHighRisk && (sev === "CAUTION" || action === "REVIEW_CAUTION"));
+            const groundingStatus = String(audit.grounding_status || "").toUpperCase();
 
             if (isExplicitSafe) {
                 el.riskSentinelBanner.className = "risk-sentinel-banner safe";
                 el.sentinelIcon.textContent = "🛡️";
-                el.sentinelStatusBadge.textContent = "VERIFIED SAFE";
+                if (groundingStatus === "GROUNDED") {
+                    el.sentinelStatusBadge.textContent = "SAFE • GROUNDED";
+                } else if (groundingStatus === "NO_CAREER_CLAIMS_DETECTED") {
+                    el.sentinelStatusBadge.textContent = "SAFE • NO CAREER CLAIMS";
+                } else {
+                    el.sentinelStatusBadge.textContent = "SAFE";
+                }
                 el.sentinelStatusBadge.className = "sentinel-status-badge safe";
                 el.sentinelSummary.textContent = audit.second_opinion_summary || "Grounding verified against Accomplishment Ledger.";
             } else if (isHighRisk) {

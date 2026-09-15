@@ -27,6 +27,8 @@ SECURITY & INFORMATION-INTEGRITY INVARIANTS:
 """
 
 import re
+import os
+import hashlib
 import logging
 import time
 import uuid
@@ -39,6 +41,9 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("canonical_grounding")
 
+CANONICAL_LEDGER_SCHEMA_VERSION = "2.1.0"
+RECORD_SCHEMA_VERSION = 2
+
 
 class GroundingStatus(str, Enum):
     GROUNDED = "GROUNDED"
@@ -47,6 +52,7 @@ class GroundingStatus(str, Enum):
     UNSUPPORTED = "UNSUPPORTED"
     INDETERMINATE = "INDETERMINATE"
     STALE_PROVENANCE = "STALE_PROVENANCE"
+    INVALIDATED = "INVALIDATED"
     NO_CAREER_CLAIMS_DETECTED = "NO_CAREER_CLAIMS_DETECTED"
     VALIDATION_FAILED = "VALIDATION_FAILED"
     MIXED_REVIEW_REQUIRED = "MIXED_REVIEW_REQUIRED"
@@ -575,8 +581,9 @@ CANONICAL_FACT_REGISTRY: Dict[str, CanonicalFactDefinition] = {
 
 class CanonicalClaimTemplate(BaseModel):
     template_id: str
-    template_version: str = "1.0.0"
+    template_version: str = "2.0.0"
     fact_id: str
+    employment_record_id: Optional[str] = None
     category: ClaimCategory
     style_variant: str  # "concise", "resume_bullet", "conversational"
     rendered_text: str
@@ -793,7 +800,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     # 8. Employment Ledger Facts
     "TPL_EMP_MAVENCODE_ADVISORY_CONCISE": CanonicalClaimTemplate(
         template_id="TPL_EMP_MAVENCODE_ADVISORY_CONCISE",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_MAVENCODE_ADVISORY",
+        employment_record_id="mavencode_advisory",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I currently serve as Strategic Advisor at MavenCode.",
@@ -801,7 +810,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_MAVENCODE_ADVISORY_FULL": CanonicalClaimTemplate(
         template_id="TPL_EMP_MAVENCODE_ADVISORY_FULL",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_MAVENCODE_ADVISORY",
+        employment_record_id="mavencode_advisory",
         category=ClaimCategory.EMPLOYER,
         style_variant="conversational",
         rendered_text="I currently serve as Strategic Advisor, Data & AI at MavenCode.",
@@ -809,7 +820,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_MAVENCODE_DIRECTOR": CanonicalClaimTemplate(
         template_id="TPL_EMP_MAVENCODE_DIRECTOR",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_MAVENCODE_DIRECTOR",
+        employment_record_id="mavencode_director",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served as Director, Data Analytics & AI Strategy at MavenCode from 2024 to 2026.",
@@ -817,7 +830,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_PROMEVO": CanonicalClaimTemplate(
         template_id="TPL_EMP_PROMEVO",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_PROMEVO",
+        employment_record_id="promevo",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served as Advisory Solutions Architect at Promevo in 2026.",
@@ -825,7 +840,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_CDW": CanonicalClaimTemplate(
         template_id="TPL_EMP_CDW",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_CDW",
+        employment_record_id="cdw",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served as Senior Solutions Architect at CDW from 2023 to 2024.",
@@ -833,7 +850,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_PYTHIAN": CanonicalClaimTemplate(
         template_id="TPL_EMP_PYTHIAN",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_PYTHIAN",
+        employment_record_id="pythian",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served as Principal Cloud Solutions Architect at Pythian from 2021 to 2023.",
@@ -841,7 +860,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_GOOGLE": CanonicalClaimTemplate(
         template_id="TPL_EMP_GOOGLE",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_GOOGLE",
+        employment_record_id="google",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served as Cloud Customer Engineer at Google from 2019 to 2021.",
@@ -849,7 +870,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_DXC": CanonicalClaimTemplate(
         template_id="TPL_EMP_DXC",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_DXC",
+        employment_record_id="dxc",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served at DXC Technology from 2015 to 2019.",
@@ -857,7 +880,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_IBM": CanonicalClaimTemplate(
         template_id="TPL_EMP_IBM",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_IBM",
+        employment_record_id="ibm",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I served at IBM from 2002 to 2015.",
@@ -865,7 +890,9 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
     ),
     "TPL_EMP_IBM_WATSON": CanonicalClaimTemplate(
         template_id="TPL_EMP_IBM_WATSON",
+        template_version="2.0.0",
         fact_id="FACT_EMPLOYMENT_IBM_WATSON",
+        employment_record_id="ibm",
         category=ClaimCategory.EMPLOYER,
         style_variant="concise",
         rendered_text="I held a key role at IBM Watson from 2007 to 2015 within my IBM tenure.",
@@ -875,29 +902,109 @@ CANONICAL_CLAIM_TEMPLATES: Dict[str, CanonicalClaimTemplate] = {
 
 
 # ---------------------------------------------------------------------------
-# Server-Authoritative Provenance Store & Verification (Phase 5.5 — Section 5 & 8)
+# Authoritative Version & Content Digest Enforcement (Phase 5.5.1)
 # ---------------------------------------------------------------------------
+
+def compute_sha256(data: str) -> str:
+    """Computes deterministic SHA-256 hexadecimal digest of input UTF-8 string."""
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def get_active_fact_digest(fact_id: str) -> str:
+    """Computes authoritative content digest for a canonical fact or employment fact."""
+    if fact_id in CANONICAL_FACT_REGISTRY:
+        f = CANONICAL_FACT_REGISTRY[fact_id]
+        payload = (
+            f"{f.fact_id}|{f.category.value}|{f.canonical_text}|{f.normalized_value}|"
+            f"{f.display_value}|{f.precision_policy.value}|"
+            f"{','.join(sorted(f.required_metric_aliases))}|"
+            f"{','.join(sorted(f.required_attribution_aliases))}|"
+            f"{f.scope_policy.value}|{f.required_employer or ''}"
+        )
+        return compute_sha256(payload)
+    elif fact_id.startswith("FACT_EMPLOYMENT_"):
+        emp_key = "ibm" if fact_id == "FACT_EMPLOYMENT_IBM_WATSON" else fact_id.replace("FACT_EMPLOYMENT_", "").lower()
+        if emp_key in CANONICAL_EMPLOYMENT_RECORDS:
+            return get_active_employment_record_digest(emp_key)
+    return ""
+
+
+def get_active_employment_record_digest(emp_key: Optional[str]) -> str:
+    """Computes authoritative content digest for a CanonicalEmploymentRecord."""
+    if not emp_key or emp_key not in CANONICAL_EMPLOYMENT_RECORDS:
+        return ""
+    r = CANONICAL_EMPLOYMENT_RECORDS[emp_key]
+    payload = (
+        f"{r.employer_key}|{r.employer_canonical}|{','.join(sorted(r.held_titles))}|"
+        f"{','.join(sorted(r.approved_display_aliases))}|{r.engagement_type}|"
+        f"{r.start_year}|{r.start_month or 0}|{r.end_year or 0}|{r.end_month or 0}|{r.is_current}"
+    )
+    return compute_sha256(payload)
+
+
+def get_active_template_digest(template_id: str) -> str:
+    """Computes authoritative content digest for a CanonicalClaimTemplate."""
+    if template_id not in CANONICAL_CLAIM_TEMPLATES:
+        return ""
+    t = CANONICAL_CLAIM_TEMPLATES[template_id]
+    payload = (
+        f"{t.template_id}|{t.template_version}|{t.fact_id}|{t.employment_record_id or ''}|"
+        f"{t.category.value}|{t.style_variant}|{t.rendered_text}"
+    )
+    return compute_sha256(payload)
+
+
+def get_active_ledger_digest() -> str:
+    """Computes aggregate authoritative digest covering entire canonical ledger."""
+    emp_digests = [f"{k}:{get_active_employment_record_digest(k)}" for k in sorted(CANONICAL_EMPLOYMENT_RECORDS.keys())]
+    fact_digests = [f"{k}:{get_active_fact_digest(k)}" for k in sorted(CANONICAL_FACT_REGISTRY.keys())]
+    tpl_digests = [f"{k}:{get_active_template_digest(k)}" for k in sorted(CANONICAL_CLAIM_TEMPLATES.keys())]
+    payload = f"{CANONICAL_LEDGER_SCHEMA_VERSION}|{'#'.join(emp_digests)}|{'#'.join(fact_digests)}|{'#'.join(tpl_digests)}"
+    return compute_sha256(payload)
+
+
+# ---------------------------------------------------------------------------
+# Server-Authoritative Provenance Store & Verification (Phase 5.5.1)
+# ---------------------------------------------------------------------------
+
+class ClaimBlockBinding(BaseModel):
+    claim_instance_id: str
+    draft_id: str
+    block_id: str
+    start_offset: int
+    end_offset: int
+    submitted_block_text: str
+
 
 class ProvenanceRecord(BaseModel):
     claim_instance_id: str
+    draft_id: str
     canonical_fact_id: str
     employment_record_id: Optional[str] = None
     template_id: str
-    template_version: str = "1.0.0"
+    template_version: str = "2.0.0"
+    template_digest: str = ""
     ledger_version: str = "2.1.0"
+    ledger_digest: str = ""
+    fact_version: str = "1.0.0"
+    fact_digest: str = ""
+    employment_record_digest: Optional[str] = None
     rendering_parameters: Dict[str, Any] = Field(default_factory=dict)
     exact_rendered_text: str
+    exact_rendered_hash: str = ""
     created_at: float = Field(default_factory=time.time)
+    expires_at: float = Field(default_factory=lambda: time.time() + 7 * 86400)
     is_invalidated: bool = False
     invalidation_reason: Optional[str] = None
-    draft_id: Optional[str] = None
-    record_version: int = 1
+    record_schema_version: int = 2
+    source: str = "SCRIBE_GENERATION"
 
 
 class ProvenanceStore:
     """
     Thread-safe server-authoritative store for canonical claim provenance records.
-    Persists records to disk to survive application restarts and prevent fabricated claim IDs.
+    Persists records to disk with atomic file replace transactions to survive application
+    restarts and prevent forged, detached, or orphaned claim IDs.
     """
     def __init__(self, storage_path: Optional[Union[str, Path]] = None):
         if storage_path is None:
@@ -910,6 +1017,8 @@ class ProvenanceStore:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._records: Dict[str, ProvenanceRecord] = {}
+        self._is_available: bool = True
+        self._load_error: Optional[str] = None
         self._load()
 
     def _load(self):
@@ -918,92 +1027,153 @@ class ProvenanceStore:
                 try:
                     with open(self.storage_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
+                        if not isinstance(data, dict):
+                            raise ValueError("Corrupt provenance store: root must be a JSON dictionary")
                         for cid, item in data.items():
                             self._records[cid] = ProvenanceRecord(**item)
+                    self._is_available = True
+                    self._load_error = None
                 except Exception as e:
-                    logger.warning(f"Failed to load provenance records from {self.storage_path}: {e}")
+                    logger.error(f"Failed to load provenance records from {self.storage_path}: {e}")
+                    self._is_available = False
+                    self._load_error = str(e)
+                    # Fail closed: Do NOT overwrite corrupt or damaged store file
 
-    def _save(self):
-        with self._lock:
+    def _persist_to_disk(self, candidate_records: Dict[str, ProvenanceRecord]):
+        """
+        Transactional atomic file replace pattern:
+        serialize -> write temporary file in same directory -> flush -> fsync temp file
+        -> atomic replace -> fsync parent directory where supported.
+        """
+        if not self._is_available:
+            raise RuntimeError(f"Provenance store is unavailable due to prior startup error: {self._load_error}")
+
+        data = {cid: rec.model_dump() for cid, rec in candidate_records.items()}
+        temp_path = self.storage_path.parent / f".tmp_{uuid.uuid4().hex}_{self.storage_path.name}"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(temp_path, self.storage_path)
+
             try:
-                data = {cid: rec.model_dump() for cid, rec in self._records.items()}
-                temp_path = self.storage_path.with_suffix(".tmp")
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-                temp_path.replace(self.storage_path)
-            except Exception as e:
-                logger.error(f"Failed to save provenance records to {self.storage_path}: {e}")
+                dir_fd = os.open(str(self.storage_path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception:
+                pass
+        except Exception as e:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+            raise RuntimeError(f"Atomic persistence of provenance store failed: {e}") from e
 
     def create_claim_instance(
         self,
         fact_id: str,
         template_id: str,
-        draft_id: Optional[str] = None,
+        draft_id: str,
         custom_params: Optional[Dict[str, Any]] = None
     ) -> ProvenanceRecord:
         with self._lock:
+            if not draft_id or not isinstance(draft_id, str) or not draft_id.strip():
+                raise ValueError("draft_id is mandatory and must be a non-empty string for claim instance generation")
+            draft_id_clean = draft_id.strip()
+
             if template_id not in CANONICAL_CLAIM_TEMPLATES:
                 raise ValueError(f"Unknown template_id '{template_id}'")
             tpl = CANONICAL_CLAIM_TEMPLATES[template_id]
             if tpl.fact_id != fact_id:
                 raise ValueError(f"Template '{template_id}' is incompatible with fact '{fact_id}' (expected {tpl.fact_id})")
 
-            # Determine associated employment record if applicable
-            emp_rec_id = None
-            if fact_id.startswith("FACT_EMPLOYMENT_"):
-                emp_key = fact_id.replace("FACT_EMPLOYMENT_", "").lower()
-                if emp_key in CANONICAL_EMPLOYMENT_RECORDS:
-                    emp_rec_id = emp_key
+            emp_rec_id = tpl.employment_record_id
+            if not emp_rec_id and fact_id.startswith("FACT_EMPLOYMENT_"):
+                if fact_id == "FACT_EMPLOYMENT_IBM_WATSON":
+                    emp_rec_id = "ibm"
+                else:
+                    emp_key = fact_id.replace("FACT_EMPLOYMENT_", "").lower()
+                    if emp_key in CANONICAL_EMPLOYMENT_RECORDS:
+                        emp_rec_id = emp_key
+
+            fact_digest = get_active_fact_digest(fact_id)
+            emp_digest = get_active_employment_record_digest(emp_rec_id) if emp_rec_id else None
+            tpl_digest = get_active_template_digest(template_id)
+            ledger_digest = get_active_ledger_digest()
 
             claim_id = f"claim_inst_{uuid.uuid4().hex}"
             record = ProvenanceRecord(
                 claim_instance_id=claim_id,
+                draft_id=draft_id_clean,
                 canonical_fact_id=fact_id,
                 employment_record_id=emp_rec_id,
                 template_id=template_id,
                 template_version=tpl.template_version,
-                ledger_version="2.1.0",
+                template_digest=tpl_digest,
+                ledger_version=CANONICAL_LEDGER_SCHEMA_VERSION,
+                ledger_digest=ledger_digest,
+                fact_version="1.0.0",
+                fact_digest=fact_digest,
+                employment_record_digest=emp_digest,
                 rendering_parameters=custom_params or {},
                 exact_rendered_text=tpl.rendered_text,
+                exact_rendered_hash=compute_sha256(tpl.rendered_text),
                 created_at=time.time(),
+                expires_at=time.time() + 7 * 86400,
                 is_invalidated=False,
-                draft_id=draft_id,
-                record_version=1
+                record_schema_version=RECORD_SCHEMA_VERSION,
+                source="SCRIBE_GENERATION"
             )
+
+            # Transactional persistence before updating in-memory state
+            candidate = dict(self._records)
+            candidate[claim_id] = record
+            self._persist_to_disk(candidate)
             self._records[claim_id] = record
-            self._save()
             return record
 
     def get_claim_instance(self, claim_instance_id: str) -> Optional[ProvenanceRecord]:
         with self._lock:
+            if not self._is_available:
+                return None
             return self._records.get(claim_instance_id)
 
     def invalidate_claim_instance(self, claim_instance_id: str, reason: str = "Manual edit detected") -> bool:
         with self._lock:
             rec = self._records.get(claim_instance_id)
-            if rec:
-                rec.is_invalidated = True
-                rec.invalidation_reason = reason
-                self._save()
-                return True
-            return False
+            if not rec:
+                return False
+            updated_rec = rec.model_copy(update={"is_invalidated": True, "invalidation_reason": reason})
+            candidate = dict(self._records)
+            candidate[claim_instance_id] = updated_rec
+            self._persist_to_disk(candidate)
+            self._records[claim_instance_id] = updated_rec
+            return True
 
     def invalidate_draft_claims(self, draft_id: str, reason: str = "Draft edited") -> int:
         with self._lock:
+            if not draft_id:
+                return 0
             count = 0
-            for rec in self._records.values():
+            candidate = dict(self._records)
+            for cid, rec in self._records.items():
                 if rec.draft_id == draft_id and not rec.is_invalidated:
-                    rec.is_invalidated = True
-                    rec.invalidation_reason = reason
+                    candidate[cid] = rec.model_copy(update={"is_invalidated": True, "invalidation_reason": reason})
                     count += 1
             if count > 0:
-                self._save()
+                self._persist_to_disk(candidate)
+                self._records = candidate
             return count
 
     def reset_store(self):
         with self._lock:
+            self._persist_to_disk({})
             self._records.clear()
-            self._save()
 
 
 # Global Singleton Provenance Store
@@ -1018,11 +1188,14 @@ def generate_canonical_claim(
 ) -> Dict[str, Any]:
     """
     Authoritative backend claim generator.
-    Loads active canonical fact and compatible template, renders deterministic text,
-    creates and persists a server-side ProvenanceRecord, and returns opaque instance metadata.
+    Requires a non-empty draft_id. Loads active canonical fact and compatible template,
+    renders deterministic text, creates and persists a server-side ProvenanceRecord,
+    and returns opaque instance metadata.
     """
     if not fact_id:
         raise ValueError("canonical_fact_id is required")
+    if not draft_id or not isinstance(draft_id, str) or not draft_id.strip():
+        raise ValueError("draft_id is mandatory and must be a non-empty string for claim instance generation")
 
     # Find matching template
     if template_id:
@@ -1046,12 +1219,14 @@ def generate_canonical_claim(
     rec = PROVENANCE_STORE.create_claim_instance(
         fact_id=fact_id,
         template_id=tpl.template_id,
-        draft_id=draft_id
+        draft_id=draft_id.strip()
     )
 
     return {
         "claim_instance_id": rec.claim_instance_id,
+        "draft_id": rec.draft_id,
         "canonical_fact_id": rec.canonical_fact_id,
+        "employment_record_id": rec.employment_record_id,
         "template_id": rec.template_id,
         "template_version": rec.template_version,
         "rendered_text": rec.exact_rendered_text,
@@ -1060,10 +1235,190 @@ def generate_canonical_claim(
     }
 
 
+def validate_claim_manifest(
+    draft_text: str,
+    claim_bindings: List[Union[ClaimBlockBinding, Dict[str, Any]]],
+    draft_id: Optional[str] = None
+) -> Tuple[bool, GroundingStatus, str, List[ClaimBlockBinding]]:
+    """
+    Strict pre-validation of the full claim manifest before evaluating individual claims:
+    - Checks for duplicate claim_instance_id
+    - Checks for duplicate block_id
+    - Checks integer offset bounds (0 <= start < end <= len(draft_text))
+    - Checks for overlapping or nested ranges
+    - Checks draft slice matching: draft_text[start:end] == submitted_block_text
+    - Validates draft_id presence and matching
+    """
+    if not claim_bindings:
+        return True, GroundingStatus.NO_CAREER_CLAIMS_DETECTED, "No claim bindings in manifest", []
+
+    parsed_bindings: List[ClaimBlockBinding] = []
+    seen_claim_ids = set()
+    seen_block_ids = set()
+    ranges: List[Tuple[int, int, str]] = []
+
+    text_len = len(draft_text)
+
+    for i, b in enumerate(claim_bindings):
+        if isinstance(b, ClaimBlockBinding):
+            b_dict = b.model_dump()
+        elif isinstance(b, dict):
+            b_dict = b
+        else:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} is not a valid object or dict", []
+
+        cid = b_dict.get("claim_instance_id") or b_dict.get("claim_id")
+        bid = b_dict.get("block_id") or f"block_{i}"
+        did = b_dict.get("draft_id") or draft_id
+        start = b_dict.get("start_offset") if "start_offset" in b_dict else b_dict.get("start")
+        end = b_dict.get("end_offset") if "end_offset" in b_dict else b_dict.get("end")
+        block_text = b_dict.get("submitted_block_text") or b_dict.get("text") or b_dict.get("rendered_text") or ""
+
+        if not cid or not isinstance(cid, str):
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding at index {i} missing claim_instance_id", []
+        if not did or not isinstance(did, str):
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' missing draft_id", []
+        if draft_id and did != draft_id:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Binding '{cid}' draft_id '{did}' does not match request draft_id '{draft_id}'", []
+
+        # Duplicate ID checks
+        if cid in seen_claim_ids:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Duplicate claim_instance_id '{cid}' in manifest", []
+        seen_claim_ids.add(cid)
+
+        if bid in seen_block_ids:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Duplicate block_id '{bid}' in manifest", []
+        seen_block_ids.add(bid)
+
+        # Offset validation
+        if not isinstance(start, int) or not isinstance(end, int) or isinstance(start, bool) or isinstance(end, bool):
+            return False, GroundingStatus.VALIDATION_FAILED, f"Offsets for claim '{cid}' must be integers", []
+
+        if start < 0 or end > text_len or start >= end:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Offset range [{start}:{end}] for claim '{cid}' is invalid for draft length {text_len}", []
+
+        # Exact draft slice comparison
+        draft_slice = draft_text[start:end]
+        if draft_slice != block_text:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Draft text slice at [{start}:{end}] ('{draft_slice}') does not match submitted block text ('{block_text}')", []
+
+        ranges.append((start, end, cid))
+        parsed_bindings.append(ClaimBlockBinding(
+            claim_instance_id=cid,
+            draft_id=did,
+            block_id=bid,
+            start_offset=start,
+            end_offset=end,
+            submitted_block_text=block_text
+        ))
+
+    # Overlap / nested check
+    sorted_ranges = sorted(ranges, key=lambda x: (x[0], x[1]))
+    for j in range(len(sorted_ranges) - 1):
+        s1, e1, id1 = sorted_ranges[j]
+        s2, e2, id2 = sorted_ranges[j + 1]
+        if s2 < e1:
+            return False, GroundingStatus.VALIDATION_FAILED, f"Overlapping or nested claim block ranges detected between '{id1}' [{s1}:{e1}] and '{id2}' [{s2}:{e2}]", []
+
+    return True, GroundingStatus.GROUNDED, "Claim manifest is well-formed", parsed_bindings
+
+
+def verify_provenance_claim_binding(
+    binding: ClaimBlockBinding,
+    draft_text: str
+) -> Tuple[bool, ClaimStatus, str, Optional[SupportedClaim]]:
+    """
+    Authoritative verification of a bound claim block against server-side provenance,
+    active versions/digests, and deterministic regeneration.
+    """
+    cid = binding.claim_instance_id
+    rec = PROVENANCE_STORE.get_claim_instance(cid)
+    if not rec:
+        return False, ClaimStatus.UNVERIFIED, f"Claim instance '{cid}' not found in server-side provenance registry (untrusted or fabricated ID)", None
+
+    if rec.is_invalidated:
+        return False, ClaimStatus.INVALIDATED, f"Claim instance '{cid}' was invalidated ({rec.invalidation_reason})", None
+
+    if rec.expires_at and time.time() > rec.expires_at:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Claim instance '{cid}' has expired", None
+
+    # Draft ID validation
+    if not rec.draft_id:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Provenance record '{cid}' lacks draft identity (legacy or malformed record)", None
+
+    if binding.draft_id != rec.draft_id:
+        return False, ClaimStatus.UNVERIFIED, f"Claim instance '{cid}' is bound to draft '{rec.draft_id}', not '{binding.draft_id}'", None
+
+    # Version and digest verification
+    if rec.template_id not in CANONICAL_CLAIM_TEMPLATES:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Template '{rec.template_id}' is no longer active in template registry", None
+
+    tpl = CANONICAL_CLAIM_TEMPLATES[rec.template_id]
+    if tpl.fact_id != rec.canonical_fact_id:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Provenance record fact/template mismatch: '{rec.canonical_fact_id}' vs '{tpl.fact_id}'", None
+
+    # Verify template digest
+    current_tpl_digest = get_active_template_digest(rec.template_id)
+    if rec.template_digest and rec.template_digest != current_tpl_digest:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Template '{rec.template_id}' version/content has changed since claim generation", None
+
+    # Verify fact / employment record
+    fact_id = rec.canonical_fact_id
+    if fact_id in CANONICAL_FACT_REGISTRY:
+        fact = CANONICAL_FACT_REGISTRY[fact_id]
+        category = fact.category
+        canonical_ref = fact.canonical_text
+        current_fact_digest = get_active_fact_digest(fact_id)
+        if rec.fact_digest and rec.fact_digest != current_fact_digest:
+            return False, ClaimStatus.STALE_PROVENANCE, f"Canonical fact '{fact_id}' content has changed since claim generation", None
+    elif fact_id.startswith("FACT_EMPLOYMENT_"):
+        emp_key = "ibm" if fact_id == "FACT_EMPLOYMENT_IBM_WATSON" else fact_id.replace("FACT_EMPLOYMENT_", "").lower()
+        if emp_key not in CANONICAL_EMPLOYMENT_RECORDS:
+            return False, ClaimStatus.STALE_PROVENANCE, f"Employment record '{emp_key}' no longer active in employment ledger", None
+        category = ClaimCategory.EMPLOYER
+        emp_rec = CANONICAL_EMPLOYMENT_RECORDS[emp_key]
+        canonical_ref = f"{emp_rec.employer_canonical} ({emp_rec.start_year}–{emp_rec.end_year or 'present'})"
+        current_emp_digest = get_active_employment_record_digest(emp_key)
+        if rec.employment_record_digest and rec.employment_record_digest != current_emp_digest:
+            return False, ClaimStatus.STALE_PROVENANCE, f"Employment record '{emp_key}' content has changed since claim generation", None
+    else:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Canonical fact '{fact_id}' not found in active canonical registry", None
+
+    # Verify ledger digest
+    current_ledger_digest = get_active_ledger_digest()
+    if rec.ledger_digest and rec.ledger_digest != current_ledger_digest:
+        return False, ClaimStatus.STALE_PROVENANCE, "Canonical ledger version/content has changed since claim generation", None
+
+    # Exact deterministic regeneration check
+    expected_text = tpl.rendered_text
+    if binding.submitted_block_text != expected_text:
+        return False, ClaimStatus.UNVERIFIED, f"Submitted claim text diverged from deterministically regenerated canonical claim '{expected_text}' (edit detected)", None
+
+    if rec.exact_rendered_text != expected_text:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Provenance record rendered text diverged from current template rendering", None
+
+    # Verify slice in draft_text
+    draft_slice = draft_text[binding.start_offset:binding.end_offset]
+    if draft_slice != expected_text:
+        return False, ClaimStatus.UNVERIFIED, f"Draft text at [{binding.start_offset}:{binding.end_offset}] does not match deterministically regenerated text", None
+
+    supp = SupportedClaim(
+        fact_id=fact_id,
+        category=category,
+        extracted_text=binding.submitted_block_text,
+        canonical_reference=canonical_ref,
+        confidence=1.0
+    )
+    return True, ClaimStatus.SUPPORTED, f"Authoritatively verified against canonical fact {fact_id} via template {tpl.template_id}", supp
+
+
 def verify_provenance_claim(
     claim_instance_id: str,
     submitted_text: str,
-    draft_id: Optional[str] = None
+    draft_id: Optional[str] = None,
+    draft_text: Optional[str] = None,
+    start_offset: Optional[int] = None,
+    end_offset: Optional[int] = None
 ) -> Tuple[bool, ClaimStatus, str, Optional[SupportedClaim]]:
     """
     Authoritatively verifies a submitted claim block using server-side provenance and deterministic regeneration.
@@ -1072,6 +1427,9 @@ def verify_provenance_claim(
     if not claim_instance_id or not isinstance(claim_instance_id, str):
         return False, ClaimStatus.UNVERIFIED, "Missing or malformed claim_instance_id", None
 
+    if not draft_id or not isinstance(draft_id, str):
+        return False, ClaimStatus.UNVERIFIED, "Missing required draft_id for provenance claim verification", None
+
     record = PROVENANCE_STORE.get_claim_instance(claim_instance_id)
     if not record:
         return False, ClaimStatus.UNVERIFIED, f"Claim instance '{claim_instance_id}' not found in server-side provenance registry (untrusted or fabricated ID)", None
@@ -1079,10 +1437,28 @@ def verify_provenance_claim(
     if record.is_invalidated:
         return False, ClaimStatus.INVALIDATED, f"Claim instance '{claim_instance_id}' was previously invalidated ({record.invalidation_reason})", None
 
-    if draft_id and record.draft_id and draft_id != record.draft_id:
+    if record.expires_at and time.time() > record.expires_at:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Claim instance '{claim_instance_id}' has expired", None
+
+    if not record.draft_id:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Provenance record '{claim_instance_id}' lacks draft identity (legacy or malformed record)", None
+
+    if draft_id != record.draft_id:
         return False, ClaimStatus.UNVERIFIED, f"Claim instance '{claim_instance_id}' belongs to draft '{record.draft_id}', not '{draft_id}'", None
 
-    # Verify template and fact existence
+    # If draft_text and offsets provided, verify block binding
+    if draft_text is not None and start_offset is not None and end_offset is not None:
+        binding = ClaimBlockBinding(
+            claim_instance_id=claim_instance_id,
+            draft_id=draft_id,
+            block_id="block_0",
+            start_offset=start_offset,
+            end_offset=end_offset,
+            submitted_block_text=submitted_text
+        )
+        return verify_provenance_claim_binding(binding, draft_text)
+
+    # If standalone text submitted: verify existence, versions, and exact deterministic text
     if record.template_id not in CANONICAL_CLAIM_TEMPLATES:
         return False, ClaimStatus.STALE_PROVENANCE, f"Template '{record.template_id}' is no longer active in the template registry", None
 
@@ -1090,23 +1466,35 @@ def verify_provenance_claim(
     if tpl.fact_id != record.canonical_fact_id:
         return False, ClaimStatus.STALE_PROVENANCE, f"Provenance record fact/template mismatch: '{record.canonical_fact_id}' vs '{tpl.fact_id}'", None
 
-    # Check ledger fact or employment record
+    current_tpl_digest = get_active_template_digest(record.template_id)
+    if record.template_digest and record.template_digest != current_tpl_digest:
+        return False, ClaimStatus.STALE_PROVENANCE, f"Template '{record.template_id}' version/content has changed", None
+
     fact_id = record.canonical_fact_id
     if fact_id in CANONICAL_FACT_REGISTRY:
         fact = CANONICAL_FACT_REGISTRY[fact_id]
         category = fact.category
         canonical_ref = fact.canonical_text
+        current_fact_digest = get_active_fact_digest(fact_id)
+        if record.fact_digest and record.fact_digest != current_fact_digest:
+            return False, ClaimStatus.STALE_PROVENANCE, f"Canonical fact '{fact_id}' content has changed", None
     elif fact_id.startswith("FACT_EMPLOYMENT_"):
-        emp_key = fact_id.replace("FACT_EMPLOYMENT_", "").lower()
+        emp_key = "ibm" if fact_id == "FACT_EMPLOYMENT_IBM_WATSON" else fact_id.replace("FACT_EMPLOYMENT_", "").lower()
         if emp_key not in CANONICAL_EMPLOYMENT_RECORDS:
             return False, ClaimStatus.STALE_PROVENANCE, f"Employment record '{emp_key}' no longer in active employment ledger", None
         category = ClaimCategory.EMPLOYER
         emp_rec = CANONICAL_EMPLOYMENT_RECORDS[emp_key]
         canonical_ref = f"{emp_rec.employer_canonical} ({emp_rec.start_year}–{emp_rec.end_year or 'present'})"
+        current_emp_digest = get_active_employment_record_digest(emp_key)
+        if record.employment_record_digest and record.employment_record_digest != current_emp_digest:
+            return False, ClaimStatus.STALE_PROVENANCE, f"Employment record '{emp_key}' content has changed", None
     else:
         return False, ClaimStatus.STALE_PROVENANCE, f"Canonical fact '{fact_id}' not found in active canonical registry", None
 
-    # Exact deterministic regeneration check
+    current_ledger_digest = get_active_ledger_digest()
+    if record.ledger_digest and record.ledger_digest != current_ledger_digest:
+        return False, ClaimStatus.STALE_PROVENANCE, "Canonical ledger version/content has changed", None
+
     expected_text = tpl.rendered_text
     if submitted_text != expected_text:
         return False, ClaimStatus.UNVERIFIED, f"Submitted claim text diverged from deterministically regenerated canonical claim '{expected_text}' (edit detected)", None
@@ -2290,14 +2678,16 @@ def validate_first_person_employment_claim(
 
 def validate_canonical_grounding(
     draft_text: Any,
+    claim_bindings: Optional[List[Union[ClaimBlockBinding, Dict[str, Any]]]] = None,
     provenance_claims: Optional[List[Dict[str, Any]]] = None,
     recipient_company: Optional[str] = None,
     draft_id: Optional[str] = None
 ) -> GroundingValidationResult:
     """
-    Phase 5.5 Hybrid Grounding Validation & Advisory Scanner Engine:
+    Phase 5.5.1 Hybrid Grounding Validation & Advisory Scanner Engine:
     - Authoritative Grounding Path: ONLY provenance-backed claims regenerated and verified
-      against server-side records and deterministic canonical templates can receive GROUNDED.
+      against server-side records and deterministic canonical templates bound to exact draft blocks
+      can receive GROUNDED.
     - Advisory Scanner Path: All manual, typed, pasted, or edited prose is scanned for potential
       contradictions and unverified career claims. It can NEVER receive GROUNDED authority.
     """
@@ -2332,43 +2722,108 @@ def validate_canonical_grounding(
     supported: List[SupportedClaim] = []
     unsupported: List[UnsupportedClaim] = []
     verified_fact_ids: List[str] = []
+    verified_ranges: List[Tuple[int, int]] = []
 
     # -------------------------------------------------------------------------
-    # 2. Authoritative Provenance Claims Verification
+    # 2. Authoritative Provenance Claims Manifest & Verification
     # -------------------------------------------------------------------------
-    verified_provenance_texts: List[str] = []
-    if provenance_claims:
-        for p_claim in provenance_claims:
-            cid = p_claim.get("claim_instance_id")
-            c_text = p_claim.get("text") or p_claim.get("extracted_text") or p_claim.get("rendered_text") or ""
-            is_valid, c_status, c_reason, supp = verify_provenance_claim(cid, c_text, draft_id=draft_id)
+    raw_bindings = claim_bindings if claim_bindings is not None else []
+    if not raw_bindings and provenance_claims:
+        # Convert legacy provenance_claims to bindings if possible
+        for i, pc in enumerate(provenance_claims):
+            cid = pc.get("claim_instance_id") or pc.get("claim_id")
+            c_text = pc.get("text") or pc.get("extracted_text") or pc.get("rendered_text") or ""
+            start = pc.get("start_offset") if "start_offset" in pc else pc.get("start")
+            end = pc.get("end_offset") if "end_offset" in pc else pc.get("end")
+            did = pc.get("draft_id") or draft_id
+
+            if start is not None and end is not None:
+                raw_bindings.append({
+                    "claim_instance_id": cid,
+                    "draft_id": did,
+                    "block_id": pc.get("block_id") or f"block_{i}",
+                    "start_offset": start,
+                    "end_offset": end,
+                    "submitted_block_text": c_text
+                })
+            else:
+                # Detached provenance resolution: check if c_text occurs uniquely in draft_text
+                if not c_text or c_text not in draft_text:
+                    unsupported.append(UnsupportedClaim(
+                        category=ClaimCategory.QUALIFIER,
+                        extracted_text=c_text or str(cid),
+                        reason=f"Detached provenance: claim text for '{cid}' does not occur in submitted draft.",
+                        status=ClaimStatus.UNVERIFIED
+                    ))
+                    continue
+
+                occurrences = [m.start() for m in re.finditer(re.escape(c_text), draft_text)]
+                if len(occurrences) != 1:
+                    unsupported.append(UnsupportedClaim(
+                        category=ClaimCategory.QUALIFIER,
+                        extracted_text=c_text,
+                        reason=f"Ambiguous claim binding: text occurs {len(occurrences)} times in draft.",
+                        status=ClaimStatus.INDETERMINATE
+                    ))
+                    continue
+
+                start_idx = occurrences[0]
+                end_idx = start_idx + len(c_text)
+                raw_bindings.append({
+                    "claim_instance_id": cid,
+                    "draft_id": did,
+                    "block_id": pc.get("block_id") or f"block_{i}",
+                    "start_offset": start_idx,
+                    "end_offset": end_idx,
+                    "submitted_block_text": c_text
+                })
+
+    if raw_bindings:
+        is_manifest_valid, m_status, m_reason, parsed_bindings = validate_claim_manifest(
+            draft_text=draft_text,
+            claim_bindings=raw_bindings,
+            draft_id=draft_id
+        )
+        if not is_manifest_valid:
+            return GroundingValidationResult(
+                is_grounded=False,
+                status=m_status,
+                requires_human_review=True,
+                validation_summary=f"Claim manifest validation failed: {m_reason}"
+            )
+
+        for binding in parsed_bindings:
+            is_valid, c_status, c_reason, supp = verify_provenance_claim_binding(binding, draft_text)
             if is_valid and supp:
                 supported.append(supp)
                 if supp.fact_id not in verified_fact_ids:
                     verified_fact_ids.append(supp.fact_id)
-                verified_provenance_texts.append(c_text)
+                verified_ranges.append((binding.start_offset, binding.end_offset))
             else:
                 unsupported.append(UnsupportedClaim(
                     category=ClaimCategory.QUALIFIER,
-                    extracted_text=c_text or str(cid),
+                    extracted_text=binding.submitted_block_text or str(binding.claim_instance_id),
                     reason=c_reason,
                     status=c_status
                 ))
 
     # -------------------------------------------------------------------------
-    # 3. Advisory Scanner on Draft Text (Manual / Edited Prose Analysis)
+    # 3. Mask Verified Blocks & Advisory Scanner on Remaining Draft Text
     # -------------------------------------------------------------------------
-    monetary_claims = extract_monetary_claims(draft_text)
+    # Mask out verified claim blocks so surrounding/unverified prose is scanned advisorily
+    masked_chars = list(draft_text)
+    for start, end in verified_ranges:
+        for idx in range(start, min(end, len(masked_chars))):
+            masked_chars[idx] = ' '
+    masked_text = "".join(masked_chars)
+
+    monetary_claims = extract_monetary_claims(masked_text)
     for mc in monetary_claims:
         raw_str = mc["raw_text"]
         val = mc["numeric_value"]
         has_plus = mc["has_plus"]
         sentence = mc["sentence"]
         clause = mc["clause"]
-
-        # Check if this exact monetary claim text was already verified via authoritative provenance
-        if any(raw_str in p_txt for p_txt in verified_provenance_texts):
-            continue
 
         candidate_facts = [
             fdef for fdef in CANONICAL_FACT_REGISTRY.values()
@@ -2400,7 +2855,7 @@ def validate_canonical_grounding(
             )
             if is_matched:
                 matched_any = True
-                # In Phase 5.5, a parser match on manual prose is strictly ADVISORY (UNVERIFIED without provenance)
+                # In Phase 5.5+, a parser match on manual prose is strictly ADVISORY (UNVERIFIED without provenance)
                 unsupported.append(UnsupportedClaim(
                     category=fact.category,
                     extracted_text=raw_str,
@@ -2420,15 +2875,12 @@ def validate_canonical_grounding(
                 status=last_failure_status if last_failure_status != ClaimStatus.SUPPORTED else ClaimStatus.POTENTIAL_CONFLICT
             ))
 
-    pct_claims = extract_percentage_claims(draft_text)
+    pct_claims = extract_percentage_claims(masked_text)
     for pc in pct_claims:
         raw_str = pc["raw_text"]
         val = pc["numeric_value"]
         sentence = pc["sentence"]
         clause = pc["clause"]
-
-        if any(raw_str in p_txt for p_txt in verified_provenance_texts):
-            continue
 
         candidate_facts = [
             fdef for fdef in CANONICAL_FACT_REGISTRY.values()
@@ -2459,7 +2911,6 @@ def validate_canonical_grounding(
             )
             if is_matched:
                 matched_any = True
-                # In Phase 5.5, manual prose is UNVERIFIED
                 unsupported.append(UnsupportedClaim(
                     category=fact.category,
                     extracted_text=raw_str,
@@ -2479,15 +2930,12 @@ def validate_canonical_grounding(
                 status=last_failure_status if last_failure_status != ClaimStatus.SUPPORTED else ClaimStatus.POTENTIAL_CONFLICT
             ))
 
-    emp_claims = extract_first_person_employment_claims(draft_text)
+    emp_claims = extract_first_person_employment_claims(masked_text)
     for ec in emp_claims:
         raw_emp_claim = ec["raw_text"]
-        if any(raw_emp_claim in p_txt or p_txt in raw_emp_claim for p_txt in verified_provenance_texts):
-            continue
 
         is_supported, c_status, c_reason, fact_id = validate_first_person_employment_claim(ec)
         if is_supported:
-            # Manual employment prose without provenance is UNVERIFIED
             unsupported.append(UnsupportedClaim(
                 category=ClaimCategory.EMPLOYER if ec.get("claimed_employer") else ClaimCategory.TITLE,
                 extracted_text=raw_emp_claim,
@@ -2503,16 +2951,15 @@ def validate_canonical_grounding(
             ))
 
     all_extracted_claims = monetary_claims + pct_claims + emp_claims
-    unparsed_assertions = detect_unparsed_career_assertions(draft_text, all_extracted_claims)
+    unparsed_assertions = detect_unparsed_career_assertions(masked_text, all_extracted_claims)
     if unparsed_assertions:
         for u_sent in unparsed_assertions:
-            if not any(u_sent in p_txt or p_txt in u_sent for p_txt in verified_provenance_texts):
-                unsupported.append(UnsupportedClaim(
-                    category=ClaimCategory.EMPLOYER,
-                    extracted_text=u_sent,
-                    reason=f"Unparsed first-person career assertion detected in '{u_sent}' that could not be resolved to an authorized canonical employment record.",
-                    status=ClaimStatus.INDETERMINATE
-                ))
+            unsupported.append(UnsupportedClaim(
+                category=ClaimCategory.EMPLOYER,
+                extracted_text=u_sent,
+                reason=f"Unparsed first-person career assertion detected in '{u_sent}' that could not be resolved to an authorized canonical employment record.",
+                status=ClaimStatus.INDETERMINATE
+            ))
 
     # -------------------------------------------------------------------------
     # 4. Synthesize Authoritative Grounding Result
@@ -2535,6 +2982,8 @@ def validate_canonical_grounding(
         requires_review = True
         if any(u.status in [ClaimStatus.POTENTIAL_CONFLICT, ClaimStatus.MISATTRIBUTED, ClaimStatus.UNSUPPORTED] for u in unsupported):
             status = GroundingStatus.POTENTIAL_CONFLICT
+        elif any(u.status == ClaimStatus.STALE_PROVENANCE for u in unsupported):
+            status = GroundingStatus.STALE_PROVENANCE
         elif any(u.status == ClaimStatus.INDETERMINATE for u in unsupported):
             status = GroundingStatus.INDETERMINATE
         else:
@@ -2545,7 +2994,7 @@ def validate_canonical_grounding(
         is_grounded = False
         status = GroundingStatus.NO_CAREER_CLAIMS_DETECTED
         requires_review = False
-        summary = "Advisory scan detected no career-sensitive claims. (NO_CAREER_CLAIMS_DETECTED carries no affirmative safety or grounding authorization)."
+        summary = "Advisory scan detected no career-sensitive claims. No authoritative career grounding was performed."
 
     return GroundingValidationResult(
         is_grounded=is_grounded,

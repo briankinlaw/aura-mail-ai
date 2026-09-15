@@ -27,7 +27,7 @@ from backend.canonical_grounding import (
 
 def test_phase55_valid_generation_returns_opaque_id_and_deterministic_text():
     """Section 19.1: Valid fact + template generates deterministic text with server-side provenance."""
-    claim = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE")
+    claim = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE", draft_id="draft_p55_1")
     assert claim["canonical_fact_id"] == "FACT_GOOGLE_REVENUE"
     assert claim["template_id"] == "TPL_GOOGLE_REVENUE_CONCISE"
     assert claim["rendered_text"] == "At Google, I influenced $8M in new Google Cloud revenue."
@@ -41,12 +41,13 @@ def test_phase55_valid_generation_returns_opaque_id_and_deterministic_text():
     assert rec.template_id == "TPL_GOOGLE_REVENUE_CONCISE"
     assert rec.exact_rendered_text == claim["rendered_text"]
     assert rec.is_invalidated is False
+    assert rec.draft_id == "draft_p55_1"
 
 
 def test_phase55_repeated_generation_produces_separately_managed_instances():
     """Section 19.1: Repeated generation produces separate opaque claim instances."""
-    c1 = generate_canonical_claim("FACT_CDW_SERVICES")
-    c2 = generate_canonical_claim("FACT_CDW_SERVICES")
+    c1 = generate_canonical_claim("FACT_CDW_SERVICES", draft_id="draft_p55_2")
+    c2 = generate_canonical_claim("FACT_CDW_SERVICES", draft_id="draft_p55_2")
     assert c1["claim_instance_id"] != c2["claim_instance_id"]
     assert c1["rendered_text"] == c2["rendered_text"]
 
@@ -54,10 +55,13 @@ def test_phase55_repeated_generation_produces_separately_managed_instances():
 def test_phase55_generation_rejects_incompatible_or_unknown_facts():
     """Section 19.1: Generation rejects unknown or mismatched fact/template requests."""
     with pytest.raises(ValueError):
-        generate_canonical_claim("FACT_UNKNOWN_FICTIONAL")
+        generate_canonical_claim("FACT_UNKNOWN_FICTIONAL", draft_id="draft_p55_3")
 
     with pytest.raises(ValueError):
-        generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_CDW_SERVICES_CONCISE")
+        generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_CDW_SERVICES_CONCISE", draft_id="draft_p55_3")
+
+    with pytest.raises(ValueError):
+        generate_canonical_claim("FACT_GOOGLE_REVENUE", draft_id="")
 
 
 # ===========================================================================
@@ -66,10 +70,11 @@ def test_phase55_generation_rejects_incompatible_or_unknown_facts():
 
 def test_phase55_untouched_claim_returns_grounded():
     """Section 19.2: Untouched provenance claim in draft returns GROUNDED."""
-    c = generate_canonical_claim("FACT_CAREER_IMPACT", template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE")
+    did = "draft_p55_untouched"
+    c = generate_canonical_claim("FACT_CAREER_IMPACT", template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE", draft_id=did)
     draft = f"Hi Sarah,\n\n{c['rendered_text']}\n\nBest,\nBrian"
 
-    res = validate_canonical_grounding(draft, provenance_claims=[c])
+    res = validate_canonical_grounding(draft, provenance_claims=[c], draft_id=did)
     assert res.is_grounded is True
     assert res.status == GroundingStatus.GROUNDED
     assert res.requires_human_review is False
@@ -80,11 +85,12 @@ def test_phase55_untouched_claim_returns_grounded():
 
 def test_phase55_multiple_untouched_claims_return_grounded():
     """Section 19.2: Multiple valid provenance claims in one draft return GROUNDED."""
-    c1 = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE")
-    c2 = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE")
+    did = "draft_p55_multi"
+    c1 = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
+    c2 = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE", draft_id=did)
     draft = f"Hi,\n\n{c1['rendered_text']}\n{c2['rendered_text']}\n\nBest regards,\nBrian"
 
-    res = validate_canonical_grounding(draft, provenance_claims=[c1, c2])
+    res = validate_canonical_grounding(draft, provenance_claims=[c1, c2], draft_id=did)
     assert res.is_grounded is True
     assert res.status == GroundingStatus.GROUNDED
     assert len(res.supported_claims) == 2
@@ -114,11 +120,12 @@ def test_phase55_multiple_untouched_claims_return_grounded():
 ])
 def test_phase55_mutated_text_loses_grounding(edit_desc, mutated_text):
     """Section 19.3: Any text mutation immediately strips GROUNDED authority."""
-    c = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE")
+    did = "draft_p55_mutate"
+    c = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
     mutated_claim = dict(c)
     mutated_claim["rendered_text"] = mutated_text
 
-    res = validate_canonical_grounding(mutated_text, provenance_claims=[mutated_claim])
+    res = validate_canonical_grounding(mutated_text, provenance_claims=[mutated_claim], draft_id=did)
     assert res.is_grounded is False, f"Mutated text ({edit_desc}) was falsely grounded: {mutated_text}"
     assert res.status in [
         GroundingStatus.UNVERIFIED,
@@ -142,7 +149,7 @@ def test_phase55_fabricated_claim_id_fails_closed():
         "template_id": "TPL_GOOGLE_REVENUE_CONCISE",
         "rendered_text": "At Google, I influenced $8M in new Google Cloud revenue."
     }
-    res = validate_canonical_grounding(bogus_claim["rendered_text"], provenance_claims=[bogus_claim])
+    res = validate_canonical_grounding(bogus_claim["rendered_text"], provenance_claims=[bogus_claim], draft_id="draft_bogus")
     assert res.is_grounded is False
     assert res.status in [GroundingStatus.UNVERIFIED, GroundingStatus.POTENTIAL_CONFLICT]
 
@@ -156,15 +163,16 @@ def test_phase55_draft_mismatch_fails_closed():
         draft_id="draft_xyz_999"  # Mismatched draft ID
     )
     assert res.is_grounded is False
-    assert res.status in [GroundingStatus.UNVERIFIED, GroundingStatus.POTENTIAL_CONFLICT]
+    assert res.status in [GroundingStatus.VALIDATION_FAILED, GroundingStatus.UNVERIFIED, GroundingStatus.POTENTIAL_CONFLICT]
 
 
 def test_phase55_invalidated_claim_cannot_be_replayed():
     """Section 19.4: Invalidated claim instance cannot be replayed."""
-    c = generate_canonical_claim("FACT_GOOGLE_REVENUE")
+    did = "draft_p55_inval"
+    c = generate_canonical_claim("FACT_GOOGLE_REVENUE", draft_id=did)
     PROVENANCE_STORE.invalidate_claim_instance(c["claim_instance_id"], reason="Manual draft edit")
 
-    res = validate_canonical_grounding(c["rendered_text"], provenance_claims=[c])
+    res = validate_canonical_grounding(c["rendered_text"], provenance_claims=[c], draft_id=did)
     assert res.is_grounded is False
     assert res.status in [GroundingStatus.UNVERIFIED, GroundingStatus.POTENTIAL_CONFLICT]
 
@@ -172,7 +180,7 @@ def test_phase55_invalidated_claim_cannot_be_replayed():
 def test_phase55_deleted_provenance_store_fails_closed(tmp_path):
     """Section 19.4: Missing provenance record in storage fails closed."""
     empty_store = ProvenanceStore(storage_path=tmp_path / "empty_prov.json")
-    is_valid, status, reason, supp = verify_provenance_claim("claim_inst_nonexistent", "Some claim")
+    is_valid, status, reason, supp = verify_provenance_claim("claim_inst_nonexistent", "Some claim", draft_id="draft_test")
     assert is_valid is False
     assert status == ClaimStatus.UNVERIFIED
 
@@ -218,7 +226,7 @@ def test_phase55_non_career_prose_returns_no_career_claims_detected():
     res = validate_canonical_grounding(general_email)
     assert res.is_grounded is False
     assert res.status == GroundingStatus.NO_CAREER_CLAIMS_DETECTED
-    assert "no affirmative safety or grounding authorization" in res.validation_summary
+    assert "No authoritative career grounding was performed" in res.validation_summary
 
 
 # ===========================================================================
@@ -227,10 +235,11 @@ def test_phase55_non_career_prose_returns_no_career_claims_detected():
 
 def test_phase55_grounded_claim_plus_manual_career_prose_returns_mixed_review():
     """Section 19.6: Grounded claim + manual career prose returns MIXED_REVIEW_REQUIRED."""
-    c = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE")
+    did = "draft_p55_mixed"
+    c = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
     mixed_draft = f"Hi Sarah,\n\n{c['rendered_text']}\n\nAlso, at Amazon I generated $50M in cloud revenue.\n\nBest,\nBrian"
 
-    res = validate_canonical_grounding(mixed_draft, provenance_claims=[c])
+    res = validate_canonical_grounding(mixed_draft, provenance_claims=[c], draft_id=did)
     assert res.is_grounded is False
     assert res.status == GroundingStatus.MIXED_REVIEW_REQUIRED
     assert res.requires_human_review is True
@@ -240,10 +249,11 @@ def test_phase55_grounded_claim_plus_manual_career_prose_returns_mixed_review():
 
 def test_phase55_grounded_claim_plus_greeting_is_grounded():
     """Section 19.6: Grounded claim + standard non-career greeting/closing is grounded."""
-    c = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE")
+    did = "draft_p55_greet"
+    c = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE", draft_id=did)
     draft = f"Hi Sarah,\n\nThank you for reaching out.\n\n{c['rendered_text']}\n\nLooking forward to speaking.\n\nBest regards,\nBrian"
 
-    res = validate_canonical_grounding(draft, provenance_claims=[c])
+    res = validate_canonical_grounding(draft, provenance_claims=[c], draft_id=did)
     assert res.is_grounded is True
     assert res.status == GroundingStatus.GROUNDED
     assert len(res.supported_claims) == 1
@@ -279,7 +289,7 @@ def test_phase55_provenance_store_persists_across_instances(tmp_path):
     """Section 19.8: Provenance records persist across store reloads."""
     store_file = tmp_path / "test_provenance.json"
     s1 = ProvenanceStore(storage_path=store_file)
-    rec1 = s1.create_claim_instance("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE")
+    rec1 = s1.create_claim_instance("FACT_GOOGLE_REVENUE", "TPL_GOOGLE_REVENUE_CONCISE", draft_id="draft_persist_1")
 
     # Reload in a new store instance
     s2 = ProvenanceStore(storage_path=store_file)
@@ -287,6 +297,7 @@ def test_phase55_provenance_store_persists_across_instances(tmp_path):
     assert rec2 is not None
     assert rec2.canonical_fact_id == rec1.canonical_fact_id
     assert rec2.exact_rendered_text == rec1.exact_rendered_text
+    assert rec2.draft_id == "draft_persist_1"
 
 
 def test_phase55_draft_invalidation_lifecycle():

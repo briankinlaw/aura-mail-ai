@@ -523,11 +523,13 @@ from backend.canonical_grounding import (
     validate_canonical_grounding,
     generate_canonical_claim,
     verify_provenance_claim,
+    verify_provenance_claim_binding,
+    ClaimBlockBinding,
     get_available_templates,
     GroundingStatus
 )
 
-@app.get("/api/canonical/templates")
+@app.get("/api/canonical/templates", dependencies=[Depends(require_local_auth)])
 def list_canonical_templates(fact_id: Optional[str] = None):
     return {
         "status": "SUCCESS",
@@ -539,15 +541,17 @@ def generate_claim_endpoint(payload: Dict[str, Any]):
     fact_id = payload.get("fact_id") or payload.get("canonical_fact_id")
     if not fact_id:
         raise HTTPException(status_code=400, detail="canonical_fact_id is required")
+    draft_id = payload.get("draft_id")
+    if not draft_id or not str(draft_id).strip():
+        raise HTTPException(status_code=400, detail="draft_id is mandatory and cannot be empty")
     template_id = payload.get("template_id")
     style_variant = payload.get("style_variant")
-    draft_id = payload.get("draft_id")
     try:
         claim_meta = generate_canonical_claim(
             fact_id=fact_id,
             template_id=template_id,
             style_variant=style_variant,
-            draft_id=draft_id
+            draft_id=str(draft_id).strip()
         )
         return {"status": "SUCCESS", "claim": claim_meta}
     except ValueError as e:
@@ -558,15 +562,34 @@ def verify_claim_endpoint(payload: Dict[str, Any]):
     claim_id = payload.get("claim_instance_id")
     submitted_text = payload.get("submitted_text") or payload.get("text") or ""
     draft_id = payload.get("draft_id")
-    is_valid, c_status, c_reason, supp = verify_provenance_claim(
-        claim_instance_id=claim_id,
-        submitted_text=submitted_text,
-        draft_id=draft_id
-    )
+    start_offset = payload.get("start_offset")
+    end_offset = payload.get("end_offset")
+    block_id = payload.get("block_id")
+    draft_text = payload.get("draft_text")
+
+    if start_offset is not None and end_offset is not None:
+        binding = ClaimBlockBinding(
+            claim_instance_id=claim_id or "",
+            draft_id=draft_id or "",
+            block_id=block_id or "block_0",
+            start_offset=int(start_offset),
+            end_offset=int(end_offset),
+            submitted_block_text=submitted_text
+        )
+        is_valid, c_status, c_reason, supp = verify_provenance_claim_binding(
+            binding=binding,
+            draft_text=draft_text
+        )
+    else:
+        is_valid, c_status, c_reason, supp = verify_provenance_claim(
+            claim_instance_id=claim_id,
+            submitted_text=submitted_text,
+            draft_id=draft_id
+        )
     return {
         "status": "SUCCESS",
         "is_valid": is_valid,
-        "claim_status": c_status.value,
+        "claim_status": c_status.value if hasattr(c_status, "value") else str(c_status),
         "reason": c_reason,
         "claim": supp.model_dump() if supp else None
     }
@@ -574,11 +597,13 @@ def verify_claim_endpoint(payload: Dict[str, Any]):
 @app.post("/api/canonical/validate", dependencies=[Depends(require_local_auth)])
 def validate_canonical_endpoint(payload: Dict[str, Any]):
     draft_text = payload.get("draft_text") or payload.get("text") or ""
+    claim_bindings = payload.get("claim_bindings")
     provenance_claims = payload.get("provenance_claims")
     recipient_company = payload.get("recipient_company")
     draft_id = payload.get("draft_id")
     res = validate_canonical_grounding(
         draft_text=draft_text,
+        claim_bindings=claim_bindings,
         provenance_claims=provenance_claims,
         recipient_company=recipient_company,
         draft_id=draft_id
@@ -935,7 +960,7 @@ def trigger_daemon_run(dry_run: bool = False):
 # --- Opportunity Radar & Outlook Add-in Endpoints ---
 
 from backend.radar.triage_service import classify_email_radar, calculate_opportunity_fit_score, extract_recruiter_details
-from backend.radar.scribe_service import generate_executive_reply
+from backend.radar.scribe_service import generate_executive_reply, generate_executive_reply_structured
 from backend.calendar_broker.availability_service import calculate_optimal_booking_windows
 from backend.calendar_broker.models import FreeBusyRequest
 
@@ -1016,7 +1041,12 @@ def radar_draft_endpoint(payload: Dict[str, Any]):
         custom_instructions=payload.get("custom_instructions", "")
     )
 
-    draft = generate_executive_reply(msg, user_profile, req_params)
+    scribe_res = generate_executive_reply_structured(msg, user_profile, req_params)
+    draft = scribe_res.draft_reply
+    claim_bindings = scribe_res.claim_bindings
+    draft_id = scribe_res.draft_id
+    grounding_status = scribe_res.grounding_status
+    is_grounded = scribe_res.is_grounded
 
     if include_availability:
         start_d = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1043,7 +1073,11 @@ def radar_draft_endpoint(payload: Dict[str, Any]):
 
     return {
         "status": "SUCCESS",
+        "draft_id": draft_id,
         "draft_reply": draft,
+        "claim_bindings": claim_bindings,
+        "grounding_status": grounding_status,
+        "is_grounded": is_grounded,
         "selected_resume": selected_resume or user_profile.active_resume_file,
         "lens": lens,
         "tone": tone
@@ -1097,6 +1131,9 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
     draft_reply = payload.get("draft_reply", "")
     proposed_action = payload.get("proposed_action", "DRAFT")
     execution_context = payload.get("execution_context")
+    draft_id = payload.get("draft_id")
+    claim_bindings = payload.get("claim_bindings")
+    provenance_claims = payload.get("provenance_claims")
 
     msg = EmailMessage(
         id="addin-risk-temp",
@@ -1112,7 +1149,10 @@ def radar_risk_check_endpoint(payload: Dict[str, Any]):
         draft_reply=draft_reply,
         proposed_action=proposed_action,
         execution_context=execution_context,
-        user_profile=user_profile
+        user_profile=user_profile,
+        draft_id=draft_id,
+        claim_bindings=claim_bindings,
+        provenance_claims=provenance_claims
     )
     return res.model_dump()
 

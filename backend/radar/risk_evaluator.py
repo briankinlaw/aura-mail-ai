@@ -309,7 +309,9 @@ def analyze_risk_heuristics(
     draft_text: str,
     action: Union[MailAction, str] = "DRAFT",
     execution_context: Optional[Union[ExecutionContext, str]] = None,
-    provenance_claims: Optional[List[Dict[str, Any]]] = None
+    provenance_claims: Optional[List[Dict[str, Any]]] = None,
+    claim_bindings: Optional[List[Dict[str, Any]]] = None,
+    draft_id: Optional[str] = None
 ) -> RiskAssessmentResult:
     """
     Deterministic, local heuristic pre-screen for immediate security and policy checks.
@@ -365,8 +367,14 @@ def analyze_risk_heuristics(
             break
 
     # 4. Check for unverified career claims and hallucinated metrics via deterministic canonical grounding
+    grounding_res = None
     if draft_text:
-        grounding_res = validate_canonical_grounding(draft_text, provenance_claims=provenance_claims)
+        grounding_res = validate_canonical_grounding(
+            draft_text=draft_text,
+            claim_bindings=claim_bindings,
+            provenance_claims=provenance_claims,
+            draft_id=draft_id
+        )
         if not grounding_res.is_grounded and grounding_res.status != GroundingStatus.NO_CAREER_CLAIMS_DETECTED:
             flags.append(RiskCategory.UNVERIFIED_CAREER_CLAIM)
             if grounding_res.unsupported_claims:
@@ -376,12 +384,17 @@ def analyze_risk_heuristics(
                 warnings.append(f"Canonical Grounding Violation: {grounding_res.validation_summary}")
 
     if not flags:
+        if grounding_res and grounding_res.is_grounded:
+            summary = f"Authoritatively validated {len(grounding_res.supported_claims)} provenance-backed claim(s) against Canonical Career System. Conforms to Draft-First safety standards."
+        else:
+            summary = "No deterministic risk findings were detected. No authoritative career grounding was performed."
+
         raw_res = RiskAssessmentResult(
             severity=RiskSeverity.SAFE,
             is_flagged=False,
             risk_score=5,
             detected_categories=[RiskCategory.CLEAN],
-            second_opinion_summary="Heuristic screen passed. Draft is canonically grounded and conforms to Draft-First safety standards.",
+            second_opinion_summary=summary,
             recommended_action="PROCEED",
             guardrail_warnings=[]
         )
@@ -410,7 +423,10 @@ def evaluate_second_opinion_risk(
     draft_reply: Optional[str] = None,
     proposed_action: Union[MailAction, str] = "DRAFT",
     execution_context: Optional[Union[ExecutionContext, str]] = None,
-    user_profile: Optional[UserProfile] = None
+    user_profile: Optional[UserProfile] = None,
+    provenance_claims: Optional[List[Dict[str, Any]]] = None,
+    claim_bindings: Optional[List[Dict[str, Any]]] = None,
+    draft_id: Optional[str] = None
 ) -> RiskAssessmentResult:
     """
     Evaluates inbound opportunity, proposed draft, and action using Gemini as an independent second-opinion auditor.
@@ -425,7 +441,10 @@ def evaluate_second_opinion_risk(
         email_text=email_text,
         draft_text=draft_text,
         action=proposed_action,
-        execution_context=execution_context
+        execution_context=execution_context,
+        provenance_claims=provenance_claims,
+        claim_bindings=claim_bindings,
+        draft_id=draft_id
     )
 
     client = get_gemini_client()

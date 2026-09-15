@@ -4,7 +4,9 @@ Generates executive, strictly grounded recruiter responses linked to the Canonic
 """
 
 import logging
-from typing import Optional, Dict, Any
+import uuid
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field
 
 from backend.models import (
     EmailMessage,
@@ -14,17 +16,30 @@ from backend.models import (
 from backend.radar.triage_service import get_gemini_client, extract_recruiter_details
 from backend.canonical_grounding import (
     validate_canonical_grounding,
-    generate_canonical_claim
+    generate_canonical_claim,
+    GroundingStatus
 )
 
 logger = logging.getLogger("radar.scribe")
 
-def generate_executive_reply(
+
+class ScribeDraftResult(BaseModel):
+    draft_id: str
+    draft_text: str
+    draft_reply: str
+    claim_bindings: List[Dict[str, Any]] = Field(default_factory=list)
+    grounding_status: str
+    is_grounded: bool
+
+
+def generate_executive_reply_structured(
     email: EmailMessage,
     user_profile: UserProfile,
-    request_params: Optional[ReplyDraftRequest] = None
-) -> str:
-    """Generates an executive, strictly grounded, personalized reply to recruiter with matching canonical resume attached."""
+    request_params: Optional[ReplyDraftRequest] = None,
+    draft_id: Optional[str] = None
+) -> ScribeDraftResult:
+    """Generates an executive, strictly grounded structured reply with preserved draft identity and claim bindings."""
+    did = draft_id or f"draft_{uuid.uuid4().hex[:12]}"
     client = get_gemini_client()
     tone = request_params.tone if request_params else "Professional & Warm"
     custom_instr = (request_params.custom_instructions if request_params and request_params.custom_instructions
@@ -98,60 +113,84 @@ Output ONLY the plain text email body.
             raw_text = getattr(response, "text", None)
             if raw_text is None or not isinstance(raw_text, str) or not raw_text.strip():
                 logger.warning("Gemini generated empty/None response; falling back to deterministic template.")
-                return compose_grounded_response(
+                return compose_grounded_response_structured(
                     recruiter_name=details.recruiter_name,
                     company_name=details.company_name,
                     role_title=details.role_title,
                     required_skills=details.required_skills,
                     selected_resume=selected_resume,
-                    user_profile=user_profile
+                    user_profile=user_profile,
+                    draft_id=did
                 )
 
             generated_text = raw_text.strip()
 
-            # Post-generation deterministic canonical grounding validation
-            validation = validate_canonical_grounding(generated_text, recipient_company=details.company_name)
+            # Post-generation advisory canonical grounding validation
+            validation = validate_canonical_grounding(generated_text, draft_id=did, recipient_company=details.company_name)
             if not validation.is_grounded:
                 logger.warning(
                     f"Generated reply failed canonical grounding validation ({validation.validation_summary}); falling back to deterministic grounded template."
                 )
-                return compose_grounded_response(
+                return compose_grounded_response_structured(
                     recruiter_name=details.recruiter_name,
                     company_name=details.company_name,
                     role_title=details.role_title,
                     required_skills=details.required_skills,
                     selected_resume=selected_resume,
-                    user_profile=user_profile
+                    user_profile=user_profile,
+                    draft_id=did
                 )
-            return generated_text
+            return ScribeDraftResult(
+                draft_id=did,
+                draft_text=generated_text,
+                draft_reply=generated_text,
+                claim_bindings=[],
+                grounding_status=validation.status.value,
+                is_grounded=validation.is_grounded
+            )
         except Exception as e:
             logger.warning(f"Gemini reply generation failed, using fallback: {e}")
 
-    return compose_grounded_response(
+    return compose_grounded_response_structured(
         recruiter_name=details.recruiter_name,
         company_name=details.company_name,
         role_title=details.role_title,
         required_skills=details.required_skills,
         selected_resume=selected_resume,
-        user_profile=user_profile
+        user_profile=user_profile,
+        draft_id=did
     )
 
-def compose_grounded_response(
+
+def generate_executive_reply(
+    email: EmailMessage,
+    user_profile: UserProfile,
+    request_params: Optional[ReplyDraftRequest] = None,
+    draft_id: Optional[str] = None
+) -> str:
+    """Generates an executive, strictly grounded reply string for backward compatibility."""
+    res = generate_executive_reply_structured(email, user_profile, request_params, draft_id)
+    return res.draft_text
+
+
+def compose_grounded_response_structured(
     recruiter_name: str,
     company_name: str,
     role_title: str,
     required_skills: list,
     selected_resume: str,
-    user_profile: UserProfile
-) -> str:
-    """Deterministic, fallback template strictly grounded in verified accomplishments."""
+    user_profile: UserProfile,
+    draft_id: Optional[str] = None
+) -> ScribeDraftResult:
+    """Deterministic, fallback template strictly grounded in verified accomplishments with draft-bound provenance."""
+    did = draft_id or f"draft_{uuid.uuid4().hex[:12]}"
     recruiter_first = recruiter_name.split()[0] if recruiter_name and recruiter_name != "there" else "there"
     skills_bullet = ", ".join(required_skills[:4]) if required_skills else "enterprise cloud, data architectures, and AI systems"
 
-    # Generate authoritative provenance-backed claims
-    c_career = generate_canonical_claim("FACT_CAREER_IMPACT", template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE")
-    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE")
-    c_cdw = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE")
+    # Generate authoritative provenance-backed claims bound to this draft_id
+    c_career = generate_canonical_claim("FACT_CAREER_IMPACT", template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE", draft_id=did)
+    c_google = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
+    c_cdw = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE", draft_id=did)
 
     draft = (
         f"Hi {recruiter_first},\n\n"
@@ -168,12 +207,80 @@ def compose_grounded_response(
         f"{user_profile.phone or '(210) 717-5305'} | {user_profile.linkedin_url or 'https://linkedin.com/in/briankinlaw'}"
     )
 
+    # Compute exact code-point offsets for each claim block in final draft
+    start_career = draft.index(c_career['rendered_text'])
+    end_career = start_career + len(c_career['rendered_text'])
+
+    start_google = draft.index(c_google['rendered_text'])
+    end_google = start_google + len(c_google['rendered_text'])
+
+    start_cdw = draft.index(c_cdw['rendered_text'])
+    end_cdw = start_cdw + len(c_cdw['rendered_text'])
+
+    bindings = [
+        {
+            "claim_instance_id": c_career["claim_instance_id"],
+            "draft_id": did,
+            "block_id": "block_0",
+            "start_offset": start_career,
+            "end_offset": end_career,
+            "submitted_block_text": c_career["rendered_text"]
+        },
+        {
+            "claim_instance_id": c_google["claim_instance_id"],
+            "draft_id": did,
+            "block_id": "block_1",
+            "start_offset": start_google,
+            "end_offset": end_google,
+            "submitted_block_text": c_google["rendered_text"]
+        },
+        {
+            "claim_instance_id": c_cdw["claim_instance_id"],
+            "draft_id": did,
+            "block_id": "block_2",
+            "start_offset": start_cdw,
+            "end_offset": end_cdw,
+            "submitted_block_text": c_cdw["rendered_text"]
+        }
+    ]
+
     # Authoritative revalidation of constructed fallback with registered provenance
     val = validate_canonical_grounding(
         draft,
-        provenance_claims=[c_career, c_google, c_cdw],
+        claim_bindings=bindings,
+        draft_id=did,
         recipient_company=company_name
     )
     if not val.is_grounded:
         raise RuntimeError(f"Deterministic fallback failed canonical grounding validation: {val.validation_summary}")
-    return draft
+
+    return ScribeDraftResult(
+        draft_id=did,
+        draft_text=draft,
+        draft_reply=draft,
+        claim_bindings=bindings,
+        grounding_status=val.status.value,
+        is_grounded=val.is_grounded
+    )
+
+
+def compose_grounded_response(
+    recruiter_name: str,
+    company_name: str,
+    role_title: str,
+    required_skills: list,
+    selected_resume: str,
+    user_profile: UserProfile,
+    draft_id: Optional[str] = None
+) -> str:
+    """Deterministic fallback template returning draft text for backward compatibility."""
+    res = compose_grounded_response_structured(
+        recruiter_name=recruiter_name,
+        company_name=company_name,
+        role_title=role_title,
+        required_skills=required_skills,
+        selected_resume=selected_resume,
+        user_profile=user_profile,
+        draft_id=draft_id
+    )
+    return res.draft_text
