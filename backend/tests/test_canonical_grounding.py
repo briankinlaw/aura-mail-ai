@@ -606,3 +606,240 @@ def test_grounding_success_does_not_create_or_invoke_transmission():
     assert risk_res.severity == RiskSeverity.HIGH_RISK
     assert risk_res.recommended_action == "BLOCKED"
     assert RiskCategory.AUTONOMOUS_SEND_POLICY in risk_res.detected_categories
+
+
+# ===========================================================================
+# Phase 5.3 Required Exact Adversarial Test Cases (Section 13)
+# ===========================================================================
+
+def test_section_13_1_employer_binding_adversarial():
+    """Section 13.1: All employer-binding bypass attempts must be BLOCKED."""
+    blocked_cases = [
+        "Regarding the role at CDW, I influenced $4M in annual revenue at Globex.",
+        "I achieved a 23% POC-to-production conversion rate on behalf of Globex at Promevo.",
+        "At Google, I discussed strategy; at Globex, I influenced $8M in cloud revenue.",
+        "At Promevo, I advised the team, while Contoso achieved a 40% reduction in scoping turnaround."
+    ]
+    for draft in blocked_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is False, f"Employer binding leak allowed ungrounded claim: {draft}"
+        assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+        assert res.requires_human_review is True
+
+    # Compound sentence with one valid and one invalid claim
+    compound_draft = "At CDW, I influenced $4M in annual revenue; at Globex, I closed $2.1M in services."
+    comp_res = validate_canonical_grounding(compound_draft)
+    assert comp_res.is_grounded is False
+    assert comp_res.status == GroundingStatus.UNGROUNDED
+    assert "FACT_CDW_REVENUE" in comp_res.verified_fact_ids
+    assert len(comp_res.unsupported_claims) >= 1
+    assert any("globex" in u.reason.lower() for u in comp_res.unsupported_claims)
+
+
+def test_section_13_2_employment_detection_adversarial():
+    """Section 13.2: Unrecognized and unauthorized employment/payroll assertions must fail closed (never NO_CAREER_CLAIMS)."""
+    detection_cases = [
+        "My paycheck came from Netflix for five years.",
+        "Amazon has employed me since 2020.",
+        "I used to be on Apple’s payroll.",
+        "Globex was my employer.",
+        "I spent several years on Contoso’s payroll.",
+        "The company I worked for was Initech."
+    ]
+    for draft in detection_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is False, f"Employment assertion bypassed detection: {draft}"
+        assert res.status != GroundingStatus.NO_CAREER_CLAIMS
+        assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+        assert res.requires_human_review is True
+
+
+def test_section_13_3_chronology_adversarial():
+    """Section 13.3: Chronology violations across all employers must fail closed."""
+    chrono_attack_cases = [
+        "I worked at Pythian from 2010 to 2020.",
+        "I worked at IBM from 2018 to 2026.",
+        "I currently work at Pythian.",
+        "I joined DXC in 2024.",
+        "I left Google in 2020.",
+        "I worked at Google from 2019 to 2024.",
+        "I currently work at CDW.",
+        "I joined Promevo in 2024."
+    ]
+    for draft in chrono_attack_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is False, f"Chronology violation was not rejected: {draft}"
+        assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+        assert res.requires_human_review is True
+
+
+def test_section_13_3_authentic_chronology_passes():
+    """Section 7.5: Authentic chronology statements across canonical records pass."""
+    positive_chrono_cases = [
+        ("I worked at Google from 2019 to 2021.", "FACT_EMPLOYMENT_GOOGLE"),
+        ("I worked at Google from October 2019 through November 2021.", "FACT_EMPLOYMENT_GOOGLE"),
+        ("I worked at Pythian from 2021 to 2023.", "FACT_EMPLOYMENT_PYTHIAN"),
+        ("I joined Promevo in March 2026.", "FACT_EMPLOYMENT_PROMEVO"),
+        ("I left Promevo in August 2026.", "FACT_EMPLOYMENT_PROMEVO"),
+        ("I currently serve as a Strategic Advisor at MavenCode.", "FACT_EMPLOYMENT_MAVENCODE_ADVISORY")
+    ]
+    for draft, expected_fact_id in positive_chrono_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is True, f"Failed to validate authentic chronology: {draft} ({res.validation_summary})"
+        assert expected_fact_id in res.verified_fact_ids
+
+
+def test_section_13_4_title_relationships_adversarial():
+    """Section 13.4: Substring title attacks and wrong seniority modifiers must fail closed."""
+    title_attack_cases = [
+        "I served as Principal Solutions Architect at Promevo.",
+        "I was Field CTO at MavenCode.",
+        "I was Senior Solutions Architect at Google.",
+        "I was Advisory Solutions Architect at CDW."
+    ]
+    for draft in title_attack_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is False, f"Title violation was not rejected: {draft}"
+        assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+        assert res.requires_human_review is True
+
+
+def test_section_13_5_authentic_title_and_multi_tenure():
+    """Section 13.5: Authentic held titles and multi-tenure selection must pass and select exact record."""
+    authentic_title_cases = [
+        ("I was Advisory Solutions Architect at Promevo.", "FACT_EMPLOYMENT_PROMEVO"),
+        ("I was Cloud Customer Engineer at Google.", "FACT_EMPLOYMENT_GOOGLE"),
+        ("I served as Director, Data Analytics & AI Strategy at MavenCode.", "FACT_EMPLOYMENT_MAVENCODE_DIRECTOR"),
+        ("I was Principal Solutions Architect at MavenCode from 2024 to 2026.", "FACT_EMPLOYMENT_MAVENCODE_DIRECTOR"),
+        ("I was Senior Solutions Architect at CDW.", "FACT_EMPLOYMENT_CDW"),
+        ("I was Principal Cloud Solutions Architect at Pythian.", "FACT_EMPLOYMENT_PYTHIAN"),
+        ("I was Principal Solution Architect at DXC.", "FACT_EMPLOYMENT_DXC")
+    ]
+    for draft, expected_fact_id in authentic_title_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is True, f"Failed to validate authentic title claim: {draft} ({res.validation_summary})"
+        assert expected_fact_id in res.verified_fact_ids
+
+
+def test_section_13_6_negation_and_disclaimer_adversarial():
+    """Section 13.6: Negated, disclaimed, and false accomplishment claims must fail closed (never grounded)."""
+    negated_cases = [
+        "I did not influence $8M in new Google Cloud revenue at Google.",
+        "I falsely claimed that I influenced $8M in new Google Cloud revenue at Google.",
+        "I never closed $2.1M in services at CDW.",
+        "It would be inaccurate to say that I led a $22M portfolio at DXC.",
+        "My résumé mistakenly states that I led a $22M portfolio at DXC.",
+        "I never achieved a 23% POC-to-production conversion rate at Promevo.",
+        "I cannot claim that I led a $22M portfolio at DXC.",
+        "I have not achieved a 23% POC conversion rate at Promevo."
+    ]
+    for draft in negated_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is False, f"Negated/disclaimed claim was falsely grounded: {draft}"
+        assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+        assert res.requires_human_review is True
+
+
+def test_section_13_7_positive_authentic_accomplishments_pass():
+    """Section 13.7: Positive affirmative canonical accomplishments pass."""
+    positive_cases = [
+        ("At Google, I influenced $8M in new Google Cloud revenue.", "FACT_GOOGLE_REVENUE"),
+        ("At CDW, I closed $2.1M in services.", "FACT_CDW_SERVICES"),
+        ("At DXC, I led a $22M analytics and AI portfolio.", "FACT_DXC_PORTFOLIO"),
+        ("At Promevo, I achieved a 23% POC-to-production conversion rate.", "FACT_PROMEVO_POC_CONVERSION"),
+        ("At CDW, I influenced $4M in annual revenue.", "FACT_CDW_REVENUE")
+    ]
+    for draft, expected_fact_id in positive_cases:
+        res = validate_canonical_grounding(draft)
+        assert res.is_grounded is True, f"Failed to validate positive authentic claim: {draft}"
+        assert expected_fact_id in res.verified_fact_ids
+
+
+# ===========================================================================
+# Phase 5.3 Parameterized Mutation Testing Families (Section 12)
+# ===========================================================================
+
+@pytest.mark.parametrize("fictional_company", [
+    "Globex", "Contoso", "Initech", "Umbrella Corporation", "Wayne Enterprises", "Stark Industries", "Hooli", "Acme Corp"
+])
+@pytest.mark.parametrize("claim_template", [
+    "At {company}, I influenced $8M in cloud revenue.",
+    "I closed $2.1M in services at {company}.",
+    "I influenced $4M in annual revenue while at {company}.",
+    "I led a $22M analytics portfolio at {company}.",
+    "I achieved a 23% POC-to-production conversion rate on behalf of {company} at Promevo.",
+    "Regarding the role at CDW, I influenced $4M in annual revenue at {company}."
+])
+def test_mutation_family_employers(fictional_company, claim_template):
+    """Section 12.1: Employer mutations across arbitrary fictional companies must fail without a production denylist."""
+    text = claim_template.format(company=fictional_company)
+    res = validate_canonical_grounding(text)
+    assert res.is_grounded is False, f"Fictional company mutation was falsely grounded: {text}"
+    assert res.requires_human_review is True
+
+
+@pytest.mark.parametrize("negation_prefix", [
+    "I did not", "I didn't", "I never", "I have not", "I haven't", "I cannot claim that I",
+    "I falsely claimed that I", "It would be inaccurate to say that I", "My draft incorrectly states that I"
+])
+def test_mutation_family_attributions(negation_prefix):
+    """Section 12.2: Attribution mutations with negation and disclaimer prefixes must fail closed."""
+    text = f"{negation_prefix} influenced $8M in new Google Cloud revenue at Google."
+    res = validate_canonical_grounding(text)
+    assert res.is_grounded is False, f"Negated attribution mutation was falsely grounded: {text}"
+    assert res.status in [GroundingStatus.UNGROUNDED, GroundingStatus.INDETERMINATE]
+
+
+@pytest.mark.parametrize("invalid_title_at_company", [
+    "I was Senior Cloud Customer Engineer at Google.",
+    "I was Principal Solutions Architect at Promevo.",
+    "I was Advisory Solutions Architect at CDW.",
+    "I was Field CTO at Google.",
+    "I was Chief Executive Officer at Pythian.",
+    "I was Practice Director at DXC Technology.",
+    "I was Director of AI at IBM."
+])
+def test_mutation_family_titles(invalid_title_at_company):
+    """Section 12.3: Title mutations with added seniority, target roles, or adjacent cross-employer titles fail closed."""
+    res = validate_canonical_grounding(invalid_title_at_company)
+    assert res.is_grounded is False, f"Title mutation was falsely grounded: {invalid_title_at_company}"
+    assert res.requires_human_review is True
+
+
+@pytest.mark.parametrize("invalid_chrono_text", [
+    "I worked at Google from 2015 to 2018.",
+    "I worked at Google from 2019 to 2025.",
+    "I joined Pythian in 2019.",
+    "I left CDW in 2026.",
+    "I spent ten years working at Google.",
+    "I worked at IBM from 2016 to 2020.",
+    "I currently work at DXC Technology."
+])
+def test_mutation_family_chronology(invalid_chrono_text):
+    """Section 12.4: Chronology mutations with wrong dates, durations, and status fail closed."""
+    res = validate_canonical_grounding(invalid_chrono_text)
+    assert res.is_grounded is False, f"Chronology mutation was falsely grounded: {invalid_chrono_text}"
+    assert res.requires_human_review is True
+
+
+@pytest.mark.parametrize("grammar_template", [
+    "I worked for {company}.",
+    "{company} employed me.",
+    "{company} hired me.",
+    "{company} was my employer.",
+    "My employer was {company}.",
+    "My paycheck came from {company}.",
+    "I was on {company}'s payroll.",
+    "I used to work for {company}.",
+    "I spent 5 years at {company}.",
+    "During my tenure with {company}, I led architecture.",
+    "While employed by {company}, I directed strategy.",
+    "Before joining CDW, I worked at {company}."
+])
+def test_mutation_family_grammar(grammar_template):
+    """Section 12.5: Grammatical mutations of employment assertions for unapproved companies fail closed."""
+    text = grammar_template.format(company="Globex")
+    res = validate_canonical_grounding(text)
+    assert res.is_grounded is False, f"Grammar mutation bypassed career detection: {text}"
+    assert res.status != GroundingStatus.NO_CAREER_CLAIMS
+    assert res.requires_human_review is True
