@@ -18,7 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import rumps
+try:
+    import rumps
+except ImportError:
+    rumps = None
 
 from backend.config import DATA_DIR, load_settings, get_user_profile, CANONICAL_ORIGIN, require_ssl_context_paths
 
@@ -80,8 +83,19 @@ def ensure_server_running():
     time.sleep(1.0)
 
 
-class AuraMailMenuBarApp(rumps.App):
+if rumps is not None:
+    _BaseApp = rumps.App
+else:
+    _BaseApp = object
+
+
+class AuraMailMenuBarApp(_BaseApp):
     def __init__(self):
+        if rumps is None:
+            raise RuntimeError(
+                "AuraMailMenuBarApp requires 'rumps' and macOS. "
+                "The macOS menu bar companion is only supported on macOS."
+            )
         super(AuraMailMenuBarApp, self).__init__("✉️ Aura", quit_button=None)
         self.menu = [
             rumps.MenuItem("Aura Mail AI (Executive Radar)", callback=None),
@@ -93,7 +107,7 @@ class AuraMailMenuBarApp(rumps.App):
             None,
             rumps.MenuItem("⚡ Run Triage Scan Now", callback=self.on_run_scan_now),
             rumps.MenuItem(f"🌐 Open Web Cockpit (https://localhost:8000)", callback=self.on_open_cockpit),
-
+            None,
             rumps.MenuItem("⚙️ Background Daemon Service", callback=self.on_toggle_daemon),
             None,
             rumps.MenuItem("🚪 Quit Aura Companion", callback=self.on_quit)
@@ -225,6 +239,9 @@ class AuraMailMenuBarApp(rumps.App):
         rumps.quit_application()
 
 def main():
+    if rumps is None:
+        sys.stderr.write("Error: AuraMailMenuBarApp requires 'rumps' and macOS.\n")
+        sys.exit(1)
     app = AuraMailMenuBarApp()
     app.run()
 

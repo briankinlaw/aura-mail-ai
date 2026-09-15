@@ -1,6 +1,6 @@
 # Aura Mail AI (v1.1): Universal Cloud Multi-Account Assistant & Canonical Career Co-Pilot
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Tests](https://img.shields.io/badge/tests-40%20passed-brightgreen.svg)](backend/tests/)
 [![Architecture](https://img.shields.io/badge/architecture-cloud%20first%20multi--account-purple.svg)](ARCHITECTURE.md)
@@ -107,14 +107,14 @@ outlook-ai-assistant/
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd outlook-ai-assistant
+cd aura-mail-ai
 
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+# Create virtual environment (Python 3.12 standardized via .python-version)
+python3.12 -m venv .venv
 
-# Install dependencies
-pip install -r requirements.txt
+# Upgrade pip and install dependencies
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### 2. Microsoft Entra & Cloud Account Setup
@@ -137,7 +137,11 @@ pip install -r requirements.txt
 
 ### 3. Run Automated Tests
 ```bash
-PYTHONPATH=. .venv/bin/pytest backend/tests/ -v
+# Run full Python test suite
+.venv/bin/python -m pytest
+
+# Run frontend risk validator tests (Node 24 standardized via .nvmrc)
+node backend/tests/test_frontend_risk_validator.js
 ```
 
 ### 4. Run Live Read-Only Smoke Test
