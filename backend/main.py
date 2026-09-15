@@ -100,7 +100,13 @@ app = FastAPI(
 )
 
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from backend.auth import require_local_auth, get_local_session_token, ALLOWED_ORIGINS, LoopbackPeerMiddleware
+from backend.auth import (
+    require_local_auth,
+    get_local_session_token,
+    ALLOWED_ORIGINS,
+    LoopbackPeerMiddleware,
+    BrowserContextValidationMiddleware,
+)
 from backend.oauth_state import OAUTH_STATE_MANAGER
 
 ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
@@ -109,6 +115,7 @@ ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 # Required effective pipeline order:
 # ASGI Socket Peer Validation (LoopbackPeerMiddleware)
 # -> Host Validation (TrustedHostMiddleware)
+# -> Pre-CORS Browser Context Validation (BrowserContextValidationMiddleware)
 # -> CORS/Browser Processing (CORSMiddleware)
 # -> Authentication Dependency (require_local_auth)
 # -> Route Handler
@@ -120,6 +127,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["Authorization", "Content-Type", "X-Aura-Session-Token", "X-Aura-Token", "X-Requested-With"],
 )
+
+app.add_middleware(BrowserContextValidationMiddleware)
 
 app.add_middleware(
     TrustedHostMiddleware,

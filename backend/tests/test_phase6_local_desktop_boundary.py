@@ -952,3 +952,267 @@ def test_adversarial_matrix_and_side_effect_prevention(peer, host, origin, cred_
             assert not mock_del.called
         else:
             assert mock_del.called
+
+
+# ==============================================================================
+# PHASE 6.2: PRE-CORS BROWSER-CONTEXT REMEDIATION TESTS (SECTIONS 9.1 - 9.7)
+# ==============================================================================
+
+def test_phase6_2_section_9_1_duplicate_origin_preflight_matrix():
+    """
+    SECTION 9.1: Loopback duplicate-Origin preflight matrix against representative
+    privileged route OPTIONS /api/settings.
+    Proves that all duplicate, conflicting, malformed, non-canonical, or lookalike Origin
+    preflight requests are rejected with 403 before CORS processing, and that
+    Access-Control-Allow-Origin / Access-Control-Allow-Credentials are completely absent.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    origin_matrix_cases = [
+        # (Origin headers tuples, description)
+        ([("Origin", "https://localhost:8000"), ("Origin", "https://evil.example")], "canonical then hostile"),
+        ([("Origin", "https://evil.example"), ("Origin", "https://localhost:8000")], "hostile then canonical"),
+        ([("Origin", "https://localhost:8000"), ("Origin", "https://localhost:8000")], "canonical then canonical"),
+        ([("Origin", "https://localhost:8000"), ("Origin", "null")], "canonical then null"),
+        ([("Origin", "null"), ("Origin", "https://localhost:8000")], "null then canonical"),
+        ([("Origin", "https://localhost:8000"), ("Origin", "")], "canonical then empty"),
+        ([("Origin", ""), ("Origin", "https://localhost:8000")], "empty then canonical"),
+        ([("Origin", "https://localhost:8000, https://evil.example")], "one comma-joined canonical/hostile value"),
+        ([("Origin", " https://localhost:8000 ")], "one whitespace-obfuscated canonical value"),
+        ([("Origin", "*")], "one wildcard Origin"),
+        ([("Origin", "http://localhost:8000")], "one HTTP localhost Origin"),
+        ([("Origin", "https://127.0.0.1:8000")], "one 127.0.0.1 Origin"),
+        ([("Origin", "https://localhost:3000")], "one alternate-port Origin"),
+        ([("Origin", "https://user:pass@localhost:8000")], "one userinfo-bearing Origin"),
+        ([("Origin", "https://localhost:8000.evil.example")], "one lookalike Origin"),
+    ]
+
+    for origin_headers, desc in origin_matrix_cases:
+        full_headers = [
+            ("Host", "localhost"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "Authorization"),
+        ] + origin_headers
+
+        res = client.options("/api/settings", headers=full_headers)
+        assert res.status_code == 403, (
+            f"Preflight duplicate/malformed Origin case '{desc}' expected 403, got {res.status_code}"
+        )
+        assert "access-control-allow-origin" not in res.headers, (
+            f"Access-Control-Allow-Origin MUST NOT be emitted on rejection for '{desc}'"
+        )
+        assert "access-control-allow-credentials" not in res.headers, (
+            f"Access-Control-Allow-Credentials MUST NOT be emitted on rejection for '{desc}'"
+        )
+
+
+def test_phase6_2_section_9_2_fetch_metadata_preflight_matrix():
+    """
+    SECTION 9.2: Loopback Fetch Metadata preflight matrix using exactly one canonical Origin.
+    Proves that cross-site, duplicate, empty, whitespace-only, comma-joined, unrecognized,
+    or mixed-case duplicate Sec-Fetch-Site preflight requests are rejected with 403 before CORS.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    fetch_metadata_cases = [
+        # (Sec-Fetch-Site headers tuples, description)
+        ([("Sec-Fetch-Site", "cross-site")], "cross-site"),
+        ([("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Site", "cross-site")], "same-origin then cross-site"),
+        ([("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Site", "same-origin")], "cross-site then same-origin"),
+        ([("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Site", "same-origin")], "same-origin then same-origin"),
+        ([("Sec-Fetch-Site", "")], "empty"),
+        ([("Sec-Fetch-Site", "   ")], "whitespace-only"),
+        ([("Sec-Fetch-Site", " same-origin ")], "leading/trailing whitespace"),
+        ([("Sec-Fetch-Site", "same-origin,cross-site")], "comma-joined values"),
+        ([("Sec-Fetch-Site", "invalid-value")], "unrecognized value"),
+        ([("sec-fetch-site", "same-origin"), ("Sec-Fetch-Site", "same-origin")], "mixed-case duplicate header names"),
+        ([("SEC-FETCH-SITE", "cross-site"), ("sec-fetch-site", "same-origin")], "mixed-case conflicting duplicate header names"),
+    ]
+
+    for fetch_headers, desc in fetch_metadata_cases:
+        full_headers = [
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "Authorization"),
+        ] + fetch_headers
+
+        res = client.options("/api/settings", headers=full_headers)
+        assert res.status_code == 403, (
+            f"Preflight Fetch Metadata case '{desc}' expected 403, got {res.status_code}"
+        )
+        assert "access-control-allow-origin" not in res.headers, (
+            f"Access-Control-Allow-Origin MUST NOT be returned on rejection for '{desc}'"
+        )
+        assert "access-control-allow-credentials" not in res.headers
+
+
+def test_phase6_2_section_9_3_legitimate_preflight_regression():
+    """
+    SECTION 9.3: Legitimate preflight regression.
+    Proves that legitimate preflights from 127.0.0.1 and ::1 succeed with 200 OK and
+    emit Access-Control-Allow-Origin: https://localhost:8000 without requiring an
+    Authorization header.
+    """
+    loopback_peers = [("127.0.0.1", 50000), ("::1", 50000)]
+    methods = ["GET", "POST"]
+
+    for peer in loopback_peers:
+        client = TestClient(app, base_url="https://localhost:8000", client=peer)
+        for method in methods:
+            res = client.options(
+                "/api/settings",
+                headers=[
+                    ("Host", "localhost"),
+                    ("Origin", "https://localhost:8000"),
+                    ("Sec-Fetch-Site", "same-origin"),
+                    ("Access-Control-Request-Method", method),
+                    ("Access-Control-Request-Headers", "Authorization"),
+                ]
+            )
+            assert res.status_code == 200, f"Legitimate preflight for {method} from {peer} failed: {res.status_code}"
+            assert res.headers.get("access-control-allow-origin") == "https://localhost:8000"
+            assert "authorization" not in [k.lower() for k, _ in res.headers.raw]
+
+
+def test_phase6_2_section_9_4_non_browser_regression():
+    """
+    SECTION 9.4: Non-browser regression.
+    Proves that an authenticated loopback non-browser request with no Origin and no
+    Sec-Fetch-Site headers still succeeds without requiring browser headers.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    res = client.get(
+        "/api/status",
+        headers=[
+            ("Host", "localhost"),
+            ("Authorization", f"Bearer {token}"),
+        ]
+    )
+    assert res.status_code == 200
+    assert res.json().get("status") == "ONLINE"
+
+
+def test_phase6_2_section_9_5_remote_preflight_regression():
+    """
+    SECTION 9.5: Remote preflight regression.
+    Proves that remote peers are rejected by LoopbackPeerMiddleware before Host validation,
+    browser-context validation, or CORS processing can occur.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("192.168.1.5", 50000))
+
+    remote_origin_cases = [
+        [("Origin", "https://localhost:8000")],
+        [("Origin", "https://evil.example")],
+        [("Origin", "null")],
+        [("Origin", "https://localhost:8000"), ("Origin", "https://evil.example")],
+        [],  # missing Origin
+    ]
+
+    for origins in remote_origin_cases:
+        full_headers = [
+            ("Host", "localhost"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "Authorization"),
+        ] + origins
+
+        res = client.options("/api/settings", headers=full_headers)
+        assert res.status_code == 403, f"Remote preflight with {origins} expected 403, got {res.status_code}"
+        assert "Non-loopback peer address rejected" in res.text
+        assert "access-control-allow-origin" not in res.headers
+
+
+def test_phase6_2_section_9_6_routed_request_regression():
+    """
+    SECTION 9.6: Routed-request regression.
+    Proves that actual duplicate or contradictory browser metadata is rejected on
+    non-preflight privileged requests before state mutation (e.g. save_settings).
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    invalid_browser_cases = [
+        ([("Origin", "https://localhost:8000"), ("Origin", "https://evil.example")], "Duplicate Origin"),
+        ([("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Site", "cross-site")], "Duplicate Sec-Fetch-Site"),
+        ([("Sec-Fetch-Site", "cross-site")], "Cross-site Fetch Metadata"),
+        ([("Origin", "null")], "Null Origin"),
+        ([("Origin", "https://evil.example")], "Hostile Origin"),
+    ]
+
+    for headers_tuples, desc in invalid_browser_cases:
+        full_headers = [
+            ("Host", "localhost"),
+            ("Authorization", f"Bearer {token}"),
+        ] + headers_tuples
+
+        with patch("backend.main.save_settings") as mock_save:
+            res = client.post("/api/settings", json={"demo_mode": True}, headers=full_headers)
+            assert res.status_code == 403, f"Routed request case '{desc}' expected 403, got {res.status_code}"
+            assert not mock_save.called, f"save_settings MUST NOT be called on rejected case '{desc}'"
+
+
+def test_phase6_2_section_9_7_behavioral_middleware_order_regression():
+    """
+    SECTION 9.7: Middleware-order regression.
+    Behaviorally proves the exact execution order:
+    1. Remote canonical preflight -> rejected by LoopbackPeerMiddleware (403, peer message)
+    2. Loopback invalid Host preflight -> rejected by TrustedHostMiddleware (400, "Invalid host header")
+    3. Loopback duplicate Origin preflight -> rejected by BrowserContextValidationMiddleware (403, "Origin verification failed", no ACAO)
+    4. Loopback canonical preflight -> accepted by CORSMiddleware (200, ACAO = "https://localhost:8000")
+    """
+    # 1. Remote peer -> rejected by LoopbackPeerMiddleware
+    client_remote = TestClient(app, base_url="https://localhost:8000", client=("192.168.1.5", 50000))
+    res1 = client_remote.options(
+        "/api/settings",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Access-Control-Request-Method", "POST"),
+        ]
+    )
+    assert res1.status_code == 403
+    assert "Non-loopback peer address rejected" in res1.text
+    assert "access-control-allow-origin" not in res1.headers
+
+    # 2. Loopback peer with invalid Host -> rejected by TrustedHostMiddleware
+    client_loopback = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    res2 = client_loopback.options(
+        "/api/settings",
+        headers=[
+            ("Host", "evil.example"),
+            ("Origin", "https://localhost:8000"),
+            ("Access-Control-Request-Method", "POST"),
+        ]
+    )
+    assert res2.status_code == 400
+    assert "Invalid host header" in res2.text
+
+    # 3. Loopback peer with valid Host but duplicate Origin -> rejected by BrowserContextValidationMiddleware
+    res3 = client_loopback.options(
+        "/api/settings",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Origin", "https://evil.example"),
+            ("Access-Control-Request-Method", "POST"),
+        ]
+    )
+    assert res3.status_code == 403
+    assert "Origin verification failed" in res3.text
+    assert "access-control-allow-origin" not in res3.headers
+
+    # 4. Loopback peer with valid Host and canonical Origin -> accepted by CORSMiddleware
+    res4 = client_loopback.options(
+        "/api/settings",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "Authorization"),
+        ]
+    )
+    assert res4.status_code == 200
+    assert res4.headers.get("access-control-allow-origin") == "https://localhost:8000"

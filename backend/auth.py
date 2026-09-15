@@ -14,7 +14,7 @@ import secrets
 import logging
 import ipaddress
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from fastapi import Request, Header, HTTPException, status
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -177,14 +177,82 @@ def verify_local_token(candidate_token: Optional[str]) -> bool:
     return hmac.compare_digest(candidate_token.strip(), active)
 
 
-def _get_raw_header_values(request: Request, name: str) -> List[str]:
+def validate_browser_context(scope: Scope) -> Optional[str]:
+    """
+    Authoritative structural browser-context validator (Origin and Sec-Fetch-Site).
+    Returns None if valid, or an error detail string if invalid/conflicting.
+    Shared between BrowserContextValidationMiddleware and require_local_auth().
+    """
+    # 1. Server-Side Origin Defense
+    origin_headers = _get_raw_header_values(scope, "Origin")
+    if len(origin_headers) > 1:
+        return "Origin verification failed: Duplicate Origin headers rejected."
+    elif len(origin_headers) == 1:
+        raw_origin = origin_headers[0]
+        if not raw_origin or not raw_origin.strip():
+            return "Origin verification failed: Empty Origin header rejected."
+        if "," in raw_origin:
+            return "Origin verification failed: Comma-joined Origin header rejected."
+        if raw_origin != raw_origin.strip():
+            return "Origin verification failed: Malformed Origin whitespace rejected."
+        if raw_origin == "null":
+            return "Origin verification failed: Opaque null origin rejected."
+        if raw_origin not in ALLOWED_ORIGINS:
+            return "Origin verification failed: Unauthorized browser origin rejected."
+
+    # 2. Fetch Metadata Verification
+    sec_fetch_headers = _get_raw_header_values(scope, "Sec-Fetch-Site")
+    if len(sec_fetch_headers) > 1:
+        return "Browser context verification failed: Duplicate Sec-Fetch-Site headers rejected."
+    elif len(sec_fetch_headers) == 1:
+        site_raw = sec_fetch_headers[0]
+        if not site_raw or not site_raw.strip():
+            return "Browser context verification failed: Empty Sec-Fetch-Site header rejected."
+        if "," in site_raw:
+            return "Browser context verification failed: Comma-joined Sec-Fetch-Site header rejected."
+        if site_raw != site_raw.strip():
+            return "Browser context verification failed: Malformed Sec-Fetch-Site whitespace rejected."
+        site_clean = site_raw.lower()
+        if site_clean not in ("same-origin", "same-site", "none", "cross-site"):
+            return "Browser context verification failed: Malformed Sec-Fetch-Site value rejected."
+        if site_clean == "cross-site":
+            return "Browser context verification failed: Cross-site request rejected."
+
+    return None
+
+
+class BrowserContextValidationMiddleware:
+    """
+    ASGI middleware enforcing structural browser-context validation (Origin and Sec-Fetch-Site)
+    on all incoming HTTP requests before CORSMiddleware can process or answer preflights.
+    Rejects duplicate, malformed, comma-joined, whitespace-obfuscated, non-canonical Origin,
+    or cross-site Fetch Metadata headers fail-closed with 403 Forbidden and zero CORS headers.
+    """
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] in ("http", "websocket"):
+            err = validate_browser_context(scope)
+            if err is not None:
+                response = JSONResponse(
+                    {"detail": err},
+                    status_code=403
+                )
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
+
+
+def _get_raw_header_values(scope: Scope, name: str) -> List[str]:
     """
     Extracts all raw values for a given header name from ASGI scope headers,
     matching the header name case-insensitively.
     Preserves every repeated occurrence.
     """
     target_bytes = name.lower().encode("latin-1")
-    raw_headers = request.scope.get("headers", [])
+    raw_headers = scope.get("headers", [])
     values: List[str] = []
     for k, v in raw_headers:
         if k.lower() == target_bytes:
@@ -199,100 +267,32 @@ def require_local_auth(request: Request) -> str:
     """
     FastAPI security dependency protecting privileged endpoints.
     Enforces:
-    1. Server-Side Origin Verification:
-       - No Origin is permitted for authenticated non-browser loopback clients.
-       - Exactly one canonical Origin is accepted (https://localhost:8000).
-       - Duplicate, comma-joined, empty, whitespace-obfuscated, 'null', or non-canonical Origins are rejected.
-    2. Fetch Metadata Verification:
-       - Absence is permitted.
-       - Duplicate, comma-joined, empty, malformed, or 'cross-site' Sec-Fetch-Site headers are rejected.
-    3. Multi-Header Credential Parsing & Conflict Rejection:
+    1. Browser-Context Verification:
+       - Uses the authoritative validate_browser_context() parser.
+    2. Multi-Header Credential Parsing & Conflict Rejection:
        - Supports Authorization (Bearer), X-Aura-Session-Token, and X-Aura-Token.
        - Duplicate occurrences of any credential header are rejected (even identical values).
        - Empty, comma-joined, whitespace-bearing, or malformed credentials fail closed.
        - If multiple distinct credential mechanisms are provided simultaneously, all normalized values
          must be identical (compatibility policy for clients sending Authorization + X-Aura-Session-Token);
          any conflicting credentials fail closed.
-    4. Constant-Time Verification:
+    3. Constant-Time Verification:
        - Verified against the active local session token using constant-time comparison.
        - No credential values appear in logs or error details.
     """
-    # 1. Server-Side Origin Defense
-    origin_headers = _get_raw_header_values(request, "Origin")
-    if len(origin_headers) > 1:
+    # 1. Browser-Context Verification
+    err = validate_browser_context(request.scope)
+    if err is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Origin verification failed: Duplicate Origin headers rejected."
+            detail=err
         )
-    elif len(origin_headers) == 1:
-        raw_origin = origin_headers[0]
-        if not raw_origin or not raw_origin.strip():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Origin verification failed: Empty Origin header rejected."
-            )
-        if "," in raw_origin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Origin verification failed: Comma-joined Origin header rejected."
-            )
-        if raw_origin != raw_origin.strip():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Origin verification failed: Malformed Origin whitespace rejected."
-            )
-        if raw_origin == "null":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Origin verification failed: Opaque null origin rejected."
-            )
-        if raw_origin not in ALLOWED_ORIGINS:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Origin verification failed: Unauthorized browser origin '{raw_origin}'."
-            )
 
-    # 2. Fetch Metadata Verification
-    sec_fetch_headers = _get_raw_header_values(request, "Sec-Fetch-Site")
-    if len(sec_fetch_headers) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Browser context verification failed: Duplicate Sec-Fetch-Site headers rejected."
-        )
-    elif len(sec_fetch_headers) == 1:
-        site_raw = sec_fetch_headers[0]
-        if not site_raw or not site_raw.strip():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Browser context verification failed: Empty Sec-Fetch-Site header rejected."
-            )
-        if "," in site_raw:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Browser context verification failed: Comma-joined Sec-Fetch-Site header rejected."
-            )
-        if site_raw != site_raw.strip():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Browser context verification failed: Malformed Sec-Fetch-Site whitespace rejected."
-            )
-        site_clean = site_raw.lower()
-        if site_clean not in ("same-origin", "same-site", "none", "cross-site"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Browser context verification failed: Malformed Sec-Fetch-Site value rejected."
-            )
-        if site_clean == "cross-site":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Browser context verification failed: Cross-site request rejected."
-            )
-
-    # 3. Credential Parsing and Conflict Detection
+    # 2. Credential Parsing and Conflict Detection
     provided_tokens: List[Tuple[str, str]] = []
 
-    # 3a. Authorization header
-    auth_headers = _get_raw_header_values(request, "Authorization")
+    # 2a. Authorization header
+    auth_headers = _get_raw_header_values(request.scope, "Authorization")
     if len(auth_headers) > 1:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -324,8 +324,8 @@ def require_local_auth(request: Request) -> str:
             )
         provided_tokens.append(("Authorization", bearer_val))
 
-    # 3b. X-Aura-Session-Token header
-    session_headers = _get_raw_header_values(request, "X-Aura-Session-Token")
+    # 2b. X-Aura-Session-Token header
+    session_headers = _get_raw_header_values(request.scope, "X-Aura-Session-Token")
     if len(session_headers) > 1:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -346,8 +346,8 @@ def require_local_auth(request: Request) -> str:
             )
         provided_tokens.append(("X-Aura-Session-Token", x_trimmed))
 
-    # 3c. X-Aura-Token header
-    token_headers = _get_raw_header_values(request, "X-Aura-Token")
+    # 2c. X-Aura-Token header
+    token_headers = _get_raw_header_values(request.scope, "X-Aura-Token")
     if len(token_headers) > 1:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -368,7 +368,7 @@ def require_local_auth(request: Request) -> str:
             )
         provided_tokens.append(("X-Aura-Token", xtok_trimmed))
 
-    # 3d. Check presence
+    # 2d. Check presence
     if not provided_tokens:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -376,7 +376,7 @@ def require_local_auth(request: Request) -> str:
             headers={"WWW-Authenticate": "Bearer"}
         )
 
-    # 3e. Cross-mechanism conflict detection & compatibility
+    # 2e. Cross-mechanism conflict detection & compatibility
     # Compatibility policy: Simultaneous presentation of different valid credential headers
     # (e.g. Authorization and X-Aura-Session-Token) is accepted if and only if all token values are identical.
     first_hdr_name, first_token = provided_tokens[0]
@@ -387,7 +387,7 @@ def require_local_auth(request: Request) -> str:
                 detail="Authentication failed: Conflicting credential headers provided."
             )
 
-    # 4. Constant-Time Verification
+    # 3. Constant-Time Verification
     if not verify_local_token(first_token):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
