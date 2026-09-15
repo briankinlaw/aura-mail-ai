@@ -275,12 +275,18 @@ def test_draft_invalidation_lifecycle_multi_claim():
     assert count >= 2
 
     # Verification of both claims now fails with INVALIDATED
-    is_valid1, status1, reason1, _ = verify_provenance_claim(c1["claim_instance_id"], c1["rendered_text"], draft_id=did)
+    is_valid1, status1, reason1, _ = verify_provenance_claim(
+        c1["claim_instance_id"], c1["rendered_text"], draft_id=did,
+        start_offset=0, end_offset=len(c1["rendered_text"]), draft_text=c1["rendered_text"]
+    )
     assert is_valid1 is False
     assert status1 == ClaimStatus.INVALIDATED
     assert "invalidated" in reason1.lower()
 
-    is_valid2, status2, reason2, _ = verify_provenance_claim(c2["claim_instance_id"], c2["rendered_text"], draft_id=did)
+    is_valid2, status2, reason2, _ = verify_provenance_claim(
+        c2["claim_instance_id"], c2["rendered_text"], draft_id=did,
+        start_offset=0, end_offset=len(c2["rendered_text"]), draft_text=c2["rendered_text"]
+    )
     assert is_valid2 is False
     assert status2 == ClaimStatus.INVALIDATED
 
@@ -312,12 +318,18 @@ def test_provenance_record_verifies_active_digests():
 
     # Tamper with template_digest in stored record
     rec_tampered = rec.model_copy(update={"template_digest": "0" * 64})
-    PROVENANCE_STORE._records[rec.claim_instance_id] = rec_tampered
+    try:
+        PROVENANCE_STORE._records[rec.claim_instance_id] = rec_tampered
 
-    is_valid, status, reason, _ = verify_provenance_claim(rec.claim_instance_id, rec.exact_rendered_text, draft_id=did)
-    assert is_valid is False
-    assert status == ClaimStatus.STALE_PROVENANCE
-    assert "Template" in reason and "changed" in reason
+        is_valid, status, reason, _ = verify_provenance_claim(
+            rec.claim_instance_id, rec.exact_rendered_text, draft_id=did,
+            start_offset=0, end_offset=len(rec.exact_rendered_text), draft_text=rec.exact_rendered_text
+        )
+        assert is_valid is False
+        assert status == ClaimStatus.STALE_PROVENANCE
+        assert "Template" in reason and ("modified" in reason or "mismatch" in reason or "changed" in reason)
+    finally:
+        PROVENANCE_STORE._records[rec.claim_instance_id] = rec
 
 
 def test_provenance_record_tampered_rendered_text_hash_fails():
@@ -327,11 +339,17 @@ def test_provenance_record_tampered_rendered_text_hash_fails():
     rec = PROVENANCE_STORE.get_claim_instance(c["claim_instance_id"])
 
     rec_tampered = rec.model_copy(update={"exact_rendered_text": "I made up a number."})
-    PROVENANCE_STORE._records[rec.claim_instance_id] = rec_tampered
+    try:
+        PROVENANCE_STORE._records[rec.claim_instance_id] = rec_tampered
 
-    is_valid, status, reason, _ = verify_provenance_claim(rec.claim_instance_id, "I made up a number.", draft_id=did)
-    assert is_valid is False
-    assert status in [ClaimStatus.STALE_PROVENANCE, ClaimStatus.UNVERIFIED]
+        is_valid, status, reason, _ = verify_provenance_claim(
+            rec.claim_instance_id, "I made up a number.", draft_id=did,
+            start_offset=0, end_offset=len("I made up a number."), draft_text="I made up a number."
+        )
+        assert is_valid is False
+        assert status in [ClaimStatus.STALE_PROVENANCE, ClaimStatus.UNVERIFIED]
+    finally:
+        PROVENANCE_STORE._records[rec.claim_instance_id] = rec
 
 
 # ===========================================================================
@@ -445,7 +463,15 @@ def test_ibm_watson_record_association():
     assert "IBM" in c["rendered_text"]
     assert "Watson" in c["rendered_text"]
 
-    res = validate_canonical_grounding(c["rendered_text"], provenance_claims=[c], draft_id=did)
+    binding = {
+        "claim_instance_id": c["claim_instance_id"],
+        "draft_id": did,
+        "block_id": "b0",
+        "start_offset": 0,
+        "end_offset": len(c["rendered_text"]),
+        "submitted_block_text": c["rendered_text"]
+    }
+    res = validate_canonical_grounding(c["rendered_text"], claim_bindings=[binding], draft_id=did)
     assert res.is_grounded is True
     assert "FACT_EMPLOYMENT_IBM_WATSON" in res.verified_fact_ids
 

@@ -659,8 +659,41 @@ function selectRecruiterEmail(emailId) {
     elements.resumeVariantSelect.value = defaultResume;
   }
   
-  // Draft Reply
+  // Draft Reply & Structured Grounding State
   elements.replyBodyText.value = emailMsg.draft_reply || '';
+  updateGroundingBadge(emailMsg);
+}
+
+function updateGroundingBadge(emailMsg) {
+  const badge = document.querySelector('.ledger-grounded-badge');
+  if (!badge) return;
+  if (!emailMsg || !emailMsg.draft_reply) {
+    badge.textContent = 'ℹ️ No Draft';
+    badge.title = 'No draft reply has been generated for this email.';
+    badge.style.background = 'rgba(148, 163, 184, 0.15)';
+    badge.style.color = '#94a3b8';
+    badge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+    return;
+  }
+  if (emailMsg.is_grounded && emailMsg.grounding_status === 'GROUNDED') {
+    badge.textContent = '🔒 Provenance Grounded';
+    badge.title = 'Authoritatively verified against Canonical Career System provenance records';
+    badge.style.background = 'rgba(16, 185, 129, 0.15)';
+    badge.style.color = '#10b981';
+    badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+  } else if (emailMsg.grounding_status === 'NO_CAREER_CLAIMS_DETECTED') {
+    badge.textContent = 'ℹ️ No Career Claims Detected';
+    badge.title = 'No career claims detected — no authoritative grounding performed';
+    badge.style.background = 'rgba(148, 163, 184, 0.15)';
+    badge.style.color = '#94a3b8';
+    badge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+  } else {
+    badge.textContent = '⚠️ Grounding Validation Required';
+    badge.title = 'Draft text is unverified, unprovenanced, or edited; prior grounding authority is invalid.';
+    badge.style.background = 'rgba(245, 158, 11, 0.15)';
+    badge.style.color = '#f59e0b';
+    badge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+  }
 }
 
 function renderTriageTable() {
@@ -1061,6 +1094,22 @@ function setupEventListeners() {
     });
   }
 
+  // Manual Edit Listener on Reply Textarea (Step 7 & 8)
+  if (elements.replyBodyText) {
+    elements.replyBodyText.addEventListener('input', () => {
+      const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
+      if (emailMsg) {
+        emailMsg.draft_reply = elements.replyBodyText.value;
+        emailMsg.is_grounded = false;
+        emailMsg.grounding_status = 'UNVERIFIED';
+        emailMsg.draft_id = null;
+        emailMsg.claim_bindings = [];
+        emailMsg.draft_text_hash = null;
+        updateGroundingBadge(emailMsg);
+      }
+    });
+  }
+
   // Regenerate Draft
   elements.btnRegenerateDraft.addEventListener('click', async () => {
     if (!APP_STATE.selectedEmailId) return;
@@ -1075,8 +1124,26 @@ function setupEventListeners() {
         body: JSON.stringify({ tone: tone, selected_resume: chosenResume })
       });
       const data = await res.json();
-      elements.replyBodyText.value = data.draft_reply;
-      showToast('Personalized grounded response updated!', 'success');
+      elements.replyBodyText.value = data.draft_reply || '';
+
+      const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
+      if (emailMsg) {
+        emailMsg.draft_reply = data.draft_reply;
+        emailMsg.draft_id = data.draft_id;
+        emailMsg.claim_bindings = data.claim_bindings || [];
+        emailMsg.grounding_status = data.grounding_status;
+        emailMsg.is_grounded = data.is_grounded || false;
+        emailMsg.draft_text_hash = null;
+        updateGroundingBadge(emailMsg);
+      }
+
+      if (data.is_grounded) {
+        showToast('Provenance-backed claims verified', 'success');
+      } else if (data.grounding_status === 'NO_CAREER_CLAIMS_DETECTED') {
+        showToast('Draft generated — no career claims detected', 'info');
+      } else {
+        showToast('Draft generated — grounding validation required', 'info');
+      }
       await fetchEmails();
     } catch (err) {
       showToast('Generation failed: ' + err.message, 'error');
@@ -1087,17 +1154,29 @@ function setupEventListeners() {
   if (elements.btnSaveDraft) {
     elements.btnSaveDraft.addEventListener('click', async () => {
       if (!APP_STATE.selectedEmailId) return;
+      const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
       const replyBody = elements.replyBodyText.value;
       const chosenResume = elements.resumeVariantSelect.value;
       showToast(`Staging draft in cloud mailbox with '${chosenResume}' attached...`, 'info');
 
       try {
+        const payload = {
+          reply_body: replyBody,
+          resume_filename: chosenResume,
+          draft_id: emailMsg ? emailMsg.draft_id : null,
+          claim_bindings: emailMsg ? emailMsg.claim_bindings : []
+        };
         const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/save-draft`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reply_body: replyBody, resume_filename: chosenResume })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
+        if (emailMsg && data) {
+          emailMsg.is_grounded = data.is_grounded || false;
+          emailMsg.grounding_status = data.grounding_status || 'UNVERIFIED';
+          updateGroundingBadge(emailMsg);
+        }
         if (data.success) {
           showToast(data.safe_message || 'Draft successfully staged in cloud Drafts folder! Review and send in Outlook/Gmail.', 'success');
         } else {

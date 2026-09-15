@@ -78,6 +78,11 @@ class EmailMessage(BaseModel):
     folder: str = "Inbox"
     classification: Optional[ClassificationResult] = None
     draft_reply: Optional[str] = None
+    draft_id: Optional[str] = None
+    claim_bindings: List[Dict[str, Any]] = Field(default_factory=list)
+    grounding_status: Optional[str] = None
+    is_grounded: bool = False
+    draft_text_hash: Optional[str] = None
     selected_resume_file: Optional[str] = None
     status: str = "PENDING"  # PENDING, REPLIED, TRASHED, ARCHIVED, SKIPPED
 

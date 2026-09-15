@@ -50,11 +50,19 @@ def test_safe_grounded_interaction():
         f"Thank you for reaching out. {c_career['rendered_text']} {c_google['rendered_text']}\n\n"
         "I have attached my updated resume. Let me know if you would like to connect for 15 minutes."
     )
+    s1 = draft.index(c_career["rendered_text"])
+    e1 = s1 + len(c_career["rendered_text"])
+    s2 = draft.index(c_google["rendered_text"])
+    e2 = s2 + len(c_google["rendered_text"])
+    bindings = [
+        {"claim_instance_id": c_career["claim_instance_id"], "draft_id": did, "block_id": "b1", "start_offset": s1, "end_offset": e1, "submitted_block_text": c_career["rendered_text"]},
+        {"claim_instance_id": c_google["claim_instance_id"], "draft_id": did, "block_id": "b2", "start_offset": s2, "end_offset": e2, "submitted_block_text": c_google["rendered_text"]}
+    ]
     result = analyze_risk_heuristics(
         email.body_text,
         draft,
         action="DRAFT",
-        provenance_claims=[c_career, c_google],
+        claim_bindings=bindings,
         draft_id=did
     )
     assert result.severity == RiskSeverity.SAFE

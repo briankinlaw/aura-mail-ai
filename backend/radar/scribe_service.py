@@ -30,6 +30,7 @@ class ScribeDraftResult(BaseModel):
     claim_bindings: List[Dict[str, Any]] = Field(default_factory=list)
     grounding_status: str
     is_grounded: bool
+    validation_summary: str = "Authoritatively grounded in Canonical Career System provenance records."
 
 
 def generate_executive_reply_structured(

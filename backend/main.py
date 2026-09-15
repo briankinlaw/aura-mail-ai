@@ -7,6 +7,7 @@ Gmail API, IMAP, Keychain secret security, and SQLite analytics telemetry.
 import os
 import json
 import shutil
+import uuid
 import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -526,7 +527,9 @@ from backend.canonical_grounding import (
     verify_provenance_claim_binding,
     ClaimBlockBinding,
     get_available_templates,
-    GroundingStatus
+    GroundingStatus,
+    ClaimStatus,
+    compute_sha256
 )
 
 @app.get("/api/canonical/templates", dependencies=[Depends(require_local_auth)])
@@ -559,35 +562,47 @@ def generate_claim_endpoint(payload: Dict[str, Any]):
 
 @app.post("/api/canonical/claims/verify", dependencies=[Depends(require_local_auth)])
 def verify_claim_endpoint(payload: Dict[str, Any]):
-    claim_id = payload.get("claim_instance_id")
-    submitted_text = payload.get("submitted_text") or payload.get("text") or ""
+    claim_id = payload.get("claim_instance_id") or payload.get("claim_id")
+    submitted_text = payload.get("submitted_block_text") or payload.get("submitted_text") or payload.get("text") or ""
     draft_id = payload.get("draft_id")
     start_offset = payload.get("start_offset")
     end_offset = payload.get("end_offset")
     block_id = payload.get("block_id")
     draft_text = payload.get("draft_text")
 
-    if start_offset is not None and end_offset is not None:
-        binding = ClaimBlockBinding(
-            claim_instance_id=claim_id or "",
-            draft_id=draft_id or "",
-            block_id=block_id or "block_0",
-            start_offset=int(start_offset),
-            end_offset=int(end_offset),
-            submitted_block_text=submitted_text
-        )
-        is_valid, c_status, c_reason, supp = verify_provenance_claim_binding(
-            binding=binding,
-            draft_text=draft_text
-        )
-    else:
-        is_valid, c_status, c_reason, supp = verify_provenance_claim(
-            claim_instance_id=claim_id,
-            submitted_text=submitted_text,
-            draft_id=draft_id
-        )
+    # Mandatory complete authoritative binding context (Step 3)
+    if (
+        not claim_id or not isinstance(claim_id, str) or not claim_id.strip() or
+        not draft_id or not isinstance(draft_id, str) or not draft_id.strip() or
+        not block_id or not isinstance(block_id, str) or not block_id.strip() or
+        draft_text is None or not isinstance(draft_text, str) or
+        start_offset is None or end_offset is None or
+        not isinstance(start_offset, int) or not isinstance(end_offset, int) or
+        isinstance(start_offset, bool) or isinstance(end_offset, bool) or
+        not submitted_text
+    ):
+        return {
+            "status": "VALIDATION_FAILED",
+            "is_valid": False,
+            "claim_status": ClaimStatus.VALIDATION_FAILED.value,
+            "reason": "Missing mandatory binding context: claim_instance_id, draft_id, block_id, draft_text, start_offset, end_offset, and submitted_block_text are required.",
+            "claim": None
+        }
+
+    binding = ClaimBlockBinding(
+        claim_instance_id=claim_id.strip(),
+        draft_id=draft_id.strip(),
+        block_id=block_id.strip(),
+        start_offset=start_offset,
+        end_offset=end_offset,
+        submitted_block_text=submitted_text
+    )
+    is_valid, c_status, c_reason, supp = verify_provenance_claim_binding(
+        binding=binding,
+        draft_text=draft_text
+    )
     return {
-        "status": "SUCCESS",
+        "status": "SUCCESS" if is_valid else "VALIDATION_FAILED",
         "is_valid": is_valid,
         "claim_status": c_status.value if hasattr(c_status, "value") else str(c_status),
         "reason": c_reason,
@@ -778,21 +793,40 @@ def generate_reply_for_email(email_id: str, request_params: ReplyDraftRequest):
     
     email_msg = CACHED_EMAILS[email_id]
     user_profile = get_user_profile()
-    draft = generate_personalized_reply(email_msg, user_profile, request_params)
-    email_msg.draft_reply = draft
+    draft_id = f"draft_email_{email_id}_{uuid.uuid4().hex[:8]}"
+
+    from backend.radar.scribe_service import generate_executive_reply_structured
+    scribe_res = generate_executive_reply_structured(
+        email=email_msg,
+        user_profile=user_profile,
+        request_params=request_params,
+        draft_id=draft_id
+    )
+
+    email_msg.draft_reply = scribe_res.draft_text
+    email_msg.draft_id = scribe_res.draft_id
+    email_msg.claim_bindings = scribe_res.claim_bindings
+    email_msg.grounding_status = scribe_res.grounding_status
+    email_msg.is_grounded = scribe_res.is_grounded
+    email_msg.draft_text_hash = compute_sha256(scribe_res.draft_text)
     save_cached_emails()
-    
+
     log_event(
         event_type="DRAFT_GENERATED",
         opportunity_id=email_id,
         resume_file=request_params.selected_resume or email_msg.selected_resume_file,
-        details=f"Draft regenerated with {request_params.tone} tone."
+        details=f"Draft regenerated with {request_params.tone} tone (draft_id={scribe_res.draft_id}, grounded={scribe_res.is_grounded})."
     )
-    
+
     return {
         "status": "SUCCESS",
         "email_id": email_id,
-        "draft_reply": draft
+        "draft_id": scribe_res.draft_id,
+        "draft_reply": scribe_res.draft_text,
+        "claim_bindings": scribe_res.claim_bindings,
+        "grounding_status": scribe_res.grounding_status,
+        "is_grounded": scribe_res.is_grounded,
+        "validation_summary": scribe_res.validation_summary
     }
 
 @app.post("/api/emails/{email_id}/save-draft", dependencies=[Depends(require_local_auth)])
@@ -804,8 +838,37 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
     reply_body = payload.get("reply_body", email_msg.draft_reply or "")
     user_profile = get_user_profile()
     resume_file = payload.get("resume_filename", user_profile.active_resume_file)
-    
-    # Execute cloud operation
+    draft_id = payload.get("draft_id") or email_msg.draft_id
+    claim_bindings = payload.get("claim_bindings") if "claim_bindings" in payload else email_msg.claim_bindings
+
+    # Grounding integrity validation on submitted draft (Step 7)
+    is_still_grounded = False
+    grounding_status_val = GroundingStatus.UNVERIFIED.value
+    validation_summary = "Grounding unverified for staged draft."
+
+    if draft_id and claim_bindings and reply_body:
+        val_res = validate_canonical_grounding(
+            draft_text=reply_body,
+            claim_bindings=claim_bindings,
+            draft_id=draft_id
+        )
+        is_still_grounded = val_res.is_grounded
+        grounding_status_val = val_res.status.value if hasattr(val_res.status, "value") else str(val_res.status)
+        validation_summary = val_res.validation_summary
+    else:
+        is_still_grounded = False
+        grounding_status_val = GroundingStatus.UNVERIFIED.value
+        validation_summary = "Draft text modified or provenance metadata missing; prior grounding authority cleared."
+
+    # Update cache
+    email_msg.draft_reply = reply_body
+    email_msg.draft_id = draft_id if is_still_grounded else None
+    email_msg.claim_bindings = claim_bindings if is_still_grounded else []
+    email_msg.grounding_status = grounding_status_val
+    email_msg.is_grounded = is_still_grounded
+    email_msg.draft_text_hash = compute_sha256(reply_body) if reply_body else None
+
+    # Execute cloud operation under draft-first policy
     result = provider_manager.save_draft_reply(
         message_id=email_msg.id,
         reply_body=reply_body,
@@ -821,12 +884,16 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
             event_type="DRAFT_SAVED",
             opportunity_id=email_id,
             resume_file=resume_file,
-            details=f"Draft created in {result.provider} with {resume_file} attached."
+            details=f"Draft created in {result.provider} with {resume_file} attached (grounded={is_still_grounded})."
         )
     else:
         logger.warning(f"Failed to save draft for {email_id}: {result.safe_message}")
 
-    return result.model_dump()
+    res_dict = result.model_dump()
+    res_dict["is_grounded"] = is_still_grounded
+    res_dict["grounding_status"] = grounding_status_val
+    res_dict["validation_summary"] = validation_summary
+    return res_dict
 
 @app.post("/api/emails/{email_id}/send-reply", dependencies=[Depends(require_local_auth)])
 def send_email_reply(email_id: str, payload: Optional[SendReplyRequest] = None):

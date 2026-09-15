@@ -586,7 +586,18 @@ def test_generate_reply_api_endpoint_success():
     _setup_test_cached_email("api_gen_reply_msg")
     token = get_local_session_token()
 
-    with patch("backend.main.generate_personalized_reply", return_value="Thank you for reaching out. I am interested."):
+    from backend.radar.scribe_service import ScribeDraftResult
+    mock_result = ScribeDraftResult(
+        draft_text="Thank you for reaching out. I am interested.",
+        draft_reply="Thank you for reaching out. I am interested.",
+        draft_id="draft_test_123",
+        claim_bindings=[],
+        grounding_status="NO_CAREER_CLAIMS_DETECTED",
+        is_grounded=False,
+        validation_summary="No claims detected."
+    )
+
+    with patch("backend.radar.scribe_service.generate_executive_reply_structured", return_value=mock_result):
         res = client.post(
             "/api/emails/api_gen_reply_msg/generate-reply",
             json={"tone": "Executive"},

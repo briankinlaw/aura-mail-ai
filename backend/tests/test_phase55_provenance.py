@@ -74,7 +74,17 @@ def test_phase55_untouched_claim_returns_grounded():
     c = generate_canonical_claim("FACT_CAREER_IMPACT", template_id="TPL_CAREER_ENTERPRISE_REVENUE_CONCISE", draft_id=did)
     draft = f"Hi Sarah,\n\n{c['rendered_text']}\n\nBest,\nBrian"
 
-    res = validate_canonical_grounding(draft, provenance_claims=[c], draft_id=did)
+    start_off = draft.index(c['rendered_text'])
+    end_off = start_off + len(c['rendered_text'])
+    binding = {
+        "claim_instance_id": c["claim_instance_id"],
+        "draft_id": did,
+        "block_id": "b0",
+        "start_offset": start_off,
+        "end_offset": end_off,
+        "submitted_block_text": c["rendered_text"]
+    }
+    res = validate_canonical_grounding(draft, claim_bindings=[binding], draft_id=did)
     assert res.is_grounded is True
     assert res.status == GroundingStatus.GROUNDED
     assert res.requires_human_review is False
@@ -90,7 +100,15 @@ def test_phase55_multiple_untouched_claims_return_grounded():
     c2 = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE", draft_id=did)
     draft = f"Hi,\n\n{c1['rendered_text']}\n{c2['rendered_text']}\n\nBest regards,\nBrian"
 
-    res = validate_canonical_grounding(draft, provenance_claims=[c1, c2], draft_id=did)
+    s1 = draft.index(c1['rendered_text'])
+    e1 = s1 + len(c1['rendered_text'])
+    s2 = draft.index(c2['rendered_text'])
+    e2 = s2 + len(c2['rendered_text'])
+
+    b1 = {"claim_instance_id": c1["claim_instance_id"], "draft_id": did, "block_id": "b1", "start_offset": s1, "end_offset": e1, "submitted_block_text": c1["rendered_text"]}
+    b2 = {"claim_instance_id": c2["claim_instance_id"], "draft_id": did, "block_id": "b2", "start_offset": s2, "end_offset": e2, "submitted_block_text": c2["rendered_text"]}
+
+    res = validate_canonical_grounding(draft, claim_bindings=[b1, b2], draft_id=did)
     assert res.is_grounded is True
     assert res.status == GroundingStatus.GROUNDED
     assert len(res.supported_claims) == 2
@@ -180,7 +198,10 @@ def test_phase55_invalidated_claim_cannot_be_replayed():
 def test_phase55_deleted_provenance_store_fails_closed(tmp_path):
     """Section 19.4: Missing provenance record in storage fails closed."""
     empty_store = ProvenanceStore(storage_path=tmp_path / "empty_prov.json")
-    is_valid, status, reason, supp = verify_provenance_claim("claim_inst_nonexistent", "Some claim", draft_id="draft_test")
+    is_valid, status, reason, supp = verify_provenance_claim(
+        "claim_inst_nonexistent", "Some claim", draft_id="draft_test",
+        start_offset=0, end_offset=len("Some claim"), draft_text="Some claim"
+    )
     assert is_valid is False
     assert status == ClaimStatus.UNVERIFIED
 
@@ -239,7 +260,17 @@ def test_phase55_grounded_claim_plus_manual_career_prose_returns_mixed_review():
     c = generate_canonical_claim("FACT_GOOGLE_REVENUE", template_id="TPL_GOOGLE_REVENUE_CONCISE", draft_id=did)
     mixed_draft = f"Hi Sarah,\n\n{c['rendered_text']}\n\nAlso, at Amazon I generated $50M in cloud revenue.\n\nBest,\nBrian"
 
-    res = validate_canonical_grounding(mixed_draft, provenance_claims=[c], draft_id=did)
+    start_off = mixed_draft.index(c['rendered_text'])
+    end_off = start_off + len(c['rendered_text'])
+    b = {
+        "claim_instance_id": c["claim_instance_id"],
+        "draft_id": did,
+        "block_id": "b0",
+        "start_offset": start_off,
+        "end_offset": end_off,
+        "submitted_block_text": c["rendered_text"]
+    }
+    res = validate_canonical_grounding(mixed_draft, claim_bindings=[b], draft_id=did)
     assert res.is_grounded is False
     assert res.status == GroundingStatus.MIXED_REVIEW_REQUIRED
     assert res.requires_human_review is True
@@ -253,7 +284,17 @@ def test_phase55_grounded_claim_plus_greeting_is_grounded():
     c = generate_canonical_claim("FACT_CDW_SERVICES", template_id="TPL_CDW_SERVICES_CONCISE", draft_id=did)
     draft = f"Hi Sarah,\n\nThank you for reaching out.\n\n{c['rendered_text']}\n\nLooking forward to speaking.\n\nBest regards,\nBrian"
 
-    res = validate_canonical_grounding(draft, provenance_claims=[c], draft_id=did)
+    start_off = draft.index(c['rendered_text'])
+    end_off = start_off + len(c['rendered_text'])
+    b = {
+        "claim_instance_id": c["claim_instance_id"],
+        "draft_id": did,
+        "block_id": "b0",
+        "start_offset": start_off,
+        "end_offset": end_off,
+        "submitted_block_text": c["rendered_text"]
+    }
+    res = validate_canonical_grounding(draft, claim_bindings=[b], draft_id=did)
     assert res.is_grounded is True
     assert res.status == GroundingStatus.GROUNDED
     assert len(res.supported_claims) == 1
