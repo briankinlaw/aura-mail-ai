@@ -79,6 +79,7 @@ class EmailMessage(BaseModel):
     classification: Optional[ClassificationResult] = None
     draft_reply: Optional[str] = None
     draft_id: Optional[str] = None
+    draft_version: int = 0
     claim_bindings: List[Dict[str, Any]] = Field(default_factory=list)
     grounding_status: Optional[str] = None
     is_grounded: bool = False

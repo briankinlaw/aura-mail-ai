@@ -1243,6 +1243,16 @@ function setupEventListeners() {
       showToast('Running Gemini Risk Sentinel audit on current draft...', 'info');
       elements.btnRiskCheck.disabled = true;
 
+      const snapshot = {
+        token: currentToken,
+        generation: currentGen,
+        selectedEmailId: capturedSelectedEmailId,
+        emailId: capturedEmailId,
+        draftId: capturedDraftId,
+        draftText: capturedDraftText,
+        draftTextHash: capturedDraftTextHash
+      };
+
       try {
         const payload = {
           draft_id: emailMsg ? emailMsg.draft_id : null,
@@ -1256,46 +1266,64 @@ function setupEventListeners() {
         });
         const data = await res.json();
 
-        // Check if asynchronous state changed during network transit
-        const isStale = (
-          APP_STATE.activeRiskToken !== currentToken ||
-          APP_STATE.riskRequestGeneration !== currentGen ||
-          APP_STATE.selectedEmailId !== capturedSelectedEmailId ||
-          !emailMsg ||
-          emailMsg.id !== capturedEmailId ||
-          emailMsg.draft_id !== capturedDraftId ||
-          elements.replyBodyText.value !== capturedDraftText
-        );
+        // Check if asynchronous state changed during network transit using RiskValidator
+        const validator = (typeof RiskValidator !== 'undefined') ? RiskValidator : (typeof require !== 'undefined' ? require('./risk_validator.js') : null);
 
-        if (isStale) {
-          console.warn('Stale asynchronous risk response discarded.');
+        const currentState = {
+          activeToken: APP_STATE.activeRiskToken,
+          generation: APP_STATE.riskRequestGeneration,
+          selectedEmailId: APP_STATE.selectedEmailId,
+          emailMsg: emailMsg,
+          currentText: elements.replyBodyText.value
+        };
+
+        const staleCheck = validator ? validator.isRiskResponseStale(snapshot, currentState) : {
+          isStale: (
+            APP_STATE.activeRiskToken !== currentToken ||
+            APP_STATE.riskRequestGeneration !== currentGen ||
+            APP_STATE.selectedEmailId !== capturedSelectedEmailId ||
+            !emailMsg ||
+            emailMsg.id !== capturedEmailId ||
+            emailMsg.draft_id !== capturedDraftId ||
+            elements.replyBodyText.value !== capturedDraftText
+          ),
+          reason: 'Stale client state'
+        };
+
+        if (staleCheck.isStale) {
+          console.warn(`Stale asynchronous risk response discarded: ${staleCheck.reason}`);
           return;
         }
 
-        // Validate response structure integrity
-        const isMalformed = (
-          !data ||
-          typeof data !== 'object' ||
-          !['SUCCESS', 'VALIDATION_FAILED', 'DIVERGENCE_DETECTED'].includes(data.status) ||
-          data.email_id !== capturedEmailId ||
-          (data.status === 'SUCCESS' && (
-            data.draft_id !== capturedDraftId ||
-            !data.risk_is_current ||
-            !data.risk ||
-            typeof data.risk.severity !== 'string' ||
-            typeof data.risk.recommended_action !== 'string'
-          ))
-        );
+        // Validate response structure and cryptographic draft_text_hash equality
+        const valCheck = validator ? validator.validateRiskResponse(data, snapshot) : {
+          isValid: (
+            data &&
+            typeof data === 'object' &&
+            ['SUCCESS', 'VALIDATION_FAILED', 'DIVERGENCE_DETECTED', 'INVALIDATION_PERSISTENCE_FAILURE'].includes(data.status) &&
+            data.email_id === capturedEmailId &&
+            (data.status !== 'SUCCESS' || (
+              data.draft_id === capturedDraftId &&
+              data.draft_text_hash === capturedDraftTextHash &&
+              data.risk_is_current === true &&
+              data.risk &&
+              typeof data.risk.severity === 'string' &&
+              typeof data.risk.recommended_action === 'string'
+            ))
+          ),
+          isMalformed: true,
+          reason: 'Invalid response structure or hash mismatch'
+        };
 
-        if (isMalformed) {
-          console.error('Malformed risk response received. Failing closed.');
+        if (!valCheck.isValid) {
+          console.error(`Malformed or invalid risk response received: ${valCheck.reason}. Failing closed.`);
           emailMsg.risk_is_current = false;
           emailMsg.risk_result = null;
           emailMsg.is_grounded = false;
           emailMsg.grounding_status = 'UNVERIFIED';
           updateGroundingBadge(emailMsg);
           updateRiskBadge(emailMsg);
-          showToast('Risk check returned an invalid response — verification failed', 'error');
+          showToast(`Risk check verification failed: ${valCheck.reason}`, 'error');
           return;
         }
 

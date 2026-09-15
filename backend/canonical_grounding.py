@@ -34,6 +34,7 @@ import time
 import uuid
 import json
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple, Union
 from enum import Enum
@@ -43,6 +44,17 @@ logger = logging.getLogger("canonical_grounding")
 
 CANONICAL_LEDGER_SCHEMA_VERSION = "2.1.0"
 RECORD_SCHEMA_VERSION = 2
+
+
+class InvalidationPersistenceError(RuntimeError):
+    """
+    Raised when draft or claim invalidation fails to persist to disk.
+    Indicates that the affected draft identity has been placed into fail-closed quarantine.
+    """
+    def __init__(self, target_id: str, message: str):
+        super().__init__(message)
+        self.target_id = target_id
+
 
 
 class GroundingStatus(str, Enum):
@@ -1215,10 +1227,11 @@ class ProvenanceStore:
                 self._records[claim_instance_id] = updated_rec
                 return True
             except Exception as e:
+                target_did = rec.draft_id or claim_instance_id
                 if rec.draft_id:
                     self._quarantined_draft_ids.add(rec.draft_id)
                 logger.error(f"Persistence failure during claim invalidation for {claim_instance_id}. Quarantined draft: {e}")
-                raise
+                raise InvalidationPersistenceError(target_did, f"Persistence failure during claim invalidation for {claim_instance_id}: {e}") from e
 
     def invalidate_draft_claims(self, draft_id: str, reason: str = "Draft edited") -> int:
         with self._lock:
@@ -1227,7 +1240,7 @@ class ProvenanceStore:
             did_clean = draft_id.strip() if isinstance(draft_id, str) else str(draft_id)
             if not self._is_available:
                 self._quarantined_draft_ids.add(did_clean)
-                raise RuntimeError(f"Provenance store is unavailable; quarantined draft '{did_clean}'")
+                raise InvalidationPersistenceError(did_clean, f"Provenance store is unavailable; quarantined draft '{did_clean}'")
             count = 0
             candidate = dict(self._records)
             for cid, rec in self._records.items():
@@ -1241,7 +1254,7 @@ class ProvenanceStore:
                 except Exception as e:
                     self._quarantined_draft_ids.add(did_clean)
                     logger.error(f"Persistence failure during draft invalidation for {did_clean}. Quarantined draft authority: {e}")
-                    raise
+                    raise InvalidationPersistenceError(did_clean, f"Persistence failure during draft invalidation for {did_clean}: {e}") from e
             return count
 
     def reset_store(self):
@@ -1314,6 +1327,108 @@ def canonicalize_binding_manifest(bindings: Optional[List[Any]]) -> Optional[Lis
             "submitted_block_text": sbt
         })
     return canonical_list
+
+
+def compute_manifest_digest(bindings: Optional[List[Any]]) -> str:
+    """
+    Computes a deterministic SHA-256 digest over the canonical 6-field binding manifest.
+    """
+    canonical = canonicalize_binding_manifest(bindings)
+    if canonical is None:
+        return ""
+    serialized = json.dumps(canonical, sort_keys=True)
+    return compute_sha256(serialized)
+
+
+@dataclass(frozen=True)
+class RiskEvaluationSnapshot:
+    """
+    Immutable server-side snapshot of draft identity and grounding authority
+    captured prior to asynchronous or potentially slow risk evaluation.
+    """
+    email_id: str
+    draft_id: str
+    draft_text: str
+    draft_text_hash: str
+    canonical_manifest: List[Dict[str, Any]]
+    manifest_digest: str
+    is_grounded: bool
+    grounding_status: str
+    draft_version: int
+    ledger_version: str
+    ledger_digest: str
+    created_at: float = field(default_factory=time.time)
+
+
+def capture_risk_evaluation_snapshot(email_id: str, email_msg: Any) -> Optional[RiskEvaluationSnapshot]:
+    """
+    Captures an immutable snapshot of server-cached draft state prior to risk evaluation.
+    """
+    if not email_msg or not email_msg.draft_id or not email_msg.draft_text_hash:
+        return None
+
+    canonical_manifest = canonicalize_binding_manifest(email_msg.claim_bindings)
+    if canonical_manifest is None:
+        canonical_manifest = []
+
+    manifest_digest = compute_manifest_digest(canonical_manifest)
+    draft_text = email_msg.draft_reply or ""
+
+    return RiskEvaluationSnapshot(
+        email_id=email_id,
+        draft_id=email_msg.draft_id,
+        draft_text=draft_text,
+        draft_text_hash=email_msg.draft_text_hash,
+        canonical_manifest=canonical_manifest,
+        manifest_digest=manifest_digest,
+        is_grounded=bool(email_msg.is_grounded),
+        grounding_status=str(email_msg.grounding_status or GroundingStatus.UNVERIFIED.value),
+        draft_version=getattr(email_msg, "draft_version", 0),
+        ledger_version=CANONICAL_LEDGER_SCHEMA_VERSION,
+        ledger_digest=get_active_ledger_digest()
+    )
+
+
+def verify_risk_evaluation_snapshot(snapshot: RiskEvaluationSnapshot, email_msg: Any) -> Tuple[bool, str]:
+    """
+    Atomically re-validates a pre-evaluation snapshot against current live state.
+    Returns (is_valid, reason).
+    """
+    if not email_msg:
+        return False, "Addressed email message was removed from cache."
+
+    if PROVENANCE_STORE.is_draft_quarantined(snapshot.draft_id):
+        return False, f"Draft '{snapshot.draft_id}' was quarantined due to an invalidation persistence failure."
+
+    if email_msg.draft_id != snapshot.draft_id:
+        return False, f"Draft ID changed: expected '{snapshot.draft_id}', currently '{email_msg.draft_id}'."
+
+    if getattr(email_msg, "draft_version", 0) != snapshot.draft_version:
+        return False, f"Draft version changed from {snapshot.draft_version} to {getattr(email_msg, 'draft_version', 0)}."
+
+    current_text_hash = email_msg.draft_text_hash or (compute_sha256(email_msg.draft_reply) if email_msg.draft_reply else None)
+    if current_text_hash != snapshot.draft_text_hash:
+        return False, f"Draft text hash changed: expected '{snapshot.draft_text_hash}', currently '{current_text_hash}'."
+
+    current_canonical = canonicalize_binding_manifest(email_msg.claim_bindings)
+    if current_canonical != snapshot.canonical_manifest:
+        return False, "Canonical claim manifest bindings changed during evaluation."
+
+    current_manifest_digest = compute_manifest_digest(email_msg.claim_bindings)
+    if current_manifest_digest != snapshot.manifest_digest:
+        return False, "Canonical claim manifest digest changed during evaluation."
+
+    if email_msg.is_grounded != snapshot.is_grounded:
+        return False, f"Grounding authority changed: expected {snapshot.is_grounded}, currently {email_msg.is_grounded}."
+
+    if getattr(email_msg, "invalidation_issued", False):
+        return False, "Draft invalidation was issued during evaluation."
+
+    if get_active_ledger_digest() != snapshot.ledger_digest:
+        return False, "Canonical ledger digest changed during evaluation."
+
+    return True, "Snapshot verified and unchanged."
+
 
 
 def generate_canonical_claim(

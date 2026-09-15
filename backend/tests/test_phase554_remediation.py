@@ -235,7 +235,7 @@ def test_failure_a_save_and_risk_cannot_report_grounded_after_invalidation_persi
             json={"draft_id": orig_draft_id}
         )
         assert res_inv.status_code == 500
-        assert res_inv.json()["detail"]["error_code"] == "PERSISTENCE_FAILURE"
+        assert res_inv.json()["detail"]["error_code"] in ["PERSISTENCE_FAILURE", "INVALIDATION_PERSISTENCE_FAILURE"]
 
     # Cache is cleared of authority and draft is quarantined
     assert PROVENANCE_STORE.is_draft_quarantined(orig_draft_id) is True
