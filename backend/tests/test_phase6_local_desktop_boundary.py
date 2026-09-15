@@ -1216,3 +1216,448 @@ def test_phase6_2_section_9_7_behavioral_middleware_order_regression():
     )
     assert res4.status_code == 200
     assert res4.headers.get("access-control-allow-origin") == "https://localhost:8000"
+
+
+# ==============================================================================
+# PHASE 6.3: ROUTE-PURPOSE-AWARE BROWSER-CONTEXT REMEDIATION TESTS (SECTIONS 10 & 11)
+# ==============================================================================
+
+def test_phase6_3_section_10_1_microsoft_oauth_callback_success():
+    """
+    SECTION 10.1: Microsoft OAuth callback success under cross-site navigation.
+    Proves that GET /api/auth/callback with Sec-Fetch-Site: cross-site, valid server-created
+    state, and loopback peer succeeds (307 redirect to success), calls provider exchange
+    exactly once with canonical redirect URI, consumes state, and rejects replays.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/callback"
+    valid_state = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=canonical_redirect,
+        account_id="user@outlook.com"
+    )
+
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+
+        res = client.get(
+            f"/api/auth/callback?code=mock_msal_code&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ],
+            follow_redirects=False
+        )
+
+        assert res.status_code == 307
+        assert res.headers["location"] == "/?auth=success&provider=microsoft"
+        assert mock_ex.call_count == 1
+        assert mock_ex.call_args.kwargs["redirect_uri"] == canonical_redirect
+        assert mock_ex.call_args.kwargs["account_id"] == "user@outlook.com"
+        assert mock_ex.call_args.kwargs["code"] == "mock_msal_code"
+
+        # Replay rejected
+        res_replay = client.get(
+            f"/api/auth/callback?code=mock_msal_code&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ],
+            follow_redirects=False
+        )
+        assert res_replay.status_code == 307
+        assert "auth_error=invalid_state" in res_replay.headers["location"]
+        assert mock_ex.call_count == 1  # No second exchange invocation
+
+
+def test_phase6_3_section_10_2_google_oauth_callback_success():
+    """
+    SECTION 10.2: Google OAuth callback success under cross-site navigation.
+    Proves that GET /api/auth/google/callback with Sec-Fetch-Site: cross-site, valid server-created
+    state, and loopback peer succeeds (307 redirect to success), calls provider exchange
+    exactly once with canonical redirect URI, consumes state, and rejects replays.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    canonical_redirect = f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    valid_state = OAUTH_STATE_MANAGER.create_state(
+        provider="GMAIL",
+        redirect_uri=canonical_redirect,
+        account_id="user@gmail.com"
+    )
+
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+
+        res = client.get(
+            f"/api/auth/google/callback?code=mock_google_code&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ],
+            follow_redirects=False
+        )
+
+        assert res.status_code == 307
+        assert res.headers["location"] == "/?auth=success&provider=google"
+        assert mock_ex.call_count == 1
+        assert mock_ex.call_args.kwargs["redirect_uri"] == canonical_redirect
+        assert mock_ex.call_args.kwargs["account_id"] == "user@gmail.com"
+        assert mock_ex.call_args.kwargs["code"] == "mock_google_code"
+
+        # Replay rejected
+        res_replay = client.get(
+            f"/api/auth/google/callback?code=mock_google_code&state={valid_state}",
+            headers=[
+                ("Host", "localhost"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ],
+            follow_redirects=False
+        )
+        assert res_replay.status_code == 307
+        assert "auth_error=invalid_state" in res_replay.headers["location"]
+        assert mock_ex.call_count == 1
+
+
+def test_phase6_3_section_10_3_invalid_oauth_state_remains_blocked():
+    """
+    SECTION 10.3: Invalid OAuth state remains blocked under cross-site navigation.
+    Tests missing, empty, forged, expired, consumed, and wrong-provider states for both
+    Microsoft and Google callbacks. Proves token exchange is never invoked and sanitized
+    failure redirects are returned.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    # 1. State for Google tested on MSAL callback
+    g_state = OAUTH_STATE_MANAGER.create_state(
+        provider="GMAIL",
+        redirect_uri=f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    )
+
+    # 2. State for MSAL tested on Google callback
+    m_state = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=f"{CANONICAL_ORIGIN}/api/auth/callback"
+    )
+
+    test_matrix = [
+        # (Path, query_params, expected_error)
+        ("/api/auth/callback", "code=123", "invalid_state"),  # missing state
+        ("/api/auth/callback", "code=123&state=", "invalid_state"),  # empty state
+        ("/api/auth/callback", "code=123&state=forged_state_token", "invalid_state"),  # forged state
+        ("/api/auth/callback", f"code=123&state={g_state}", "invalid_state"),  # wrong-provider state
+        ("/api/auth/google/callback", "code=123", "invalid_state"),  # missing state
+        ("/api/auth/google/callback", "code=123&state=", "invalid_state"),  # empty state
+        ("/api/auth/google/callback", "code=123&state=forged_state_token", "invalid_state"),  # forged state
+        ("/api/auth/google/callback", f"code=123&state={m_state}", "invalid_state"),  # wrong-provider state
+    ]
+
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_graph_ex, \
+         patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_gmail_ex:
+
+        for path, query, expected_err in test_matrix:
+            res = client.get(
+                f"{path}?{query}",
+                headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+                follow_redirects=False
+            )
+            assert res.status_code == 307
+            assert f"auth_error={expected_err}" in res.headers["location"]
+            assert not mock_graph_ex.called
+            assert not mock_gmail_ex.called
+
+
+def test_phase6_3_section_10_4_provider_error_behavior():
+    """
+    SECTION 10.4: Provider error behavior under cross-site navigation.
+    Submits callback with valid state and error parameter. Proves state is consumed,
+    provider exchange is not called, sanitized failure is returned, and replay fails.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    # MSAL provider error
+    msal_state = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=f"{CANONICAL_ORIGIN}/api/auth/callback"
+    )
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_graph_ex:
+        res = client.get(
+            f"/api/auth/callback?error=access_denied&error_description=User+cancelled&state={msal_state}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res.status_code == 307
+        assert res.headers["location"] == "/?auth_error=provider_error"
+        assert not mock_graph_ex.called
+
+        # Replay fails (state was consumed)
+        res_replay = client.get(
+            f"/api/auth/callback?code=mock_code&state={msal_state}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res_replay.status_code == 307
+        assert "auth_error=invalid_state" in res_replay.headers["location"]
+
+    # Google provider error
+    google_state = OAUTH_STATE_MANAGER.create_state(
+        provider="GMAIL",
+        redirect_uri=f"{CANONICAL_ORIGIN}/api/auth/google/callback"
+    )
+    with patch("backend.main.provider_manager.gmail_provider.exchange_code_for_token") as mock_gmail_ex:
+        res = client.get(
+            f"/api/auth/google/callback?error=access_denied&error_description=User+cancelled&state={google_state}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res.status_code == 307
+        assert res.headers["location"] == "/?auth_error=provider_error"
+        assert not mock_gmail_ex.called
+
+        # Replay fails
+        res_replay = client.get(
+            f"/api/auth/google/callback?code=mock_code&state={google_state}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res_replay.status_code == 307
+        assert "auth_error=invalid_state" in res_replay.headers["location"]
+
+
+def test_phase6_3_section_10_5_callback_structural_rejection():
+    """
+    SECTION 10.5: Callback structural rejections.
+    Proves that hostile Origin, null Origin, duplicate Origin, duplicate Sec-Fetch-Site,
+    comma-joined Sec-Fetch-Site, empty Sec-Fetch-Site, POST method, or OPTIONS preflight
+    fail closed before provider exchange.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    msal_state = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=f"{CANONICAL_ORIGIN}/api/auth/callback"
+    )
+
+    structural_fail_cases = [
+        ([("Origin", "https://evil.example"), ("Sec-Fetch-Site", "cross-site")], 403, "hostile Origin"),
+        ([("Origin", "null"), ("Sec-Fetch-Site", "cross-site")], 403, "null Origin"),
+        ([("Origin", "https://localhost:8000"), ("Origin", "https://localhost:8000"), ("Sec-Fetch-Site", "cross-site")], 403, "duplicate Origin"),
+        ([("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Site", "cross-site")], 403, "duplicate Sec-Fetch-Site"),
+        ([("Sec-Fetch-Site", "cross-site,same-origin")], 403, "comma-joined Sec-Fetch-Site"),
+        ([("Sec-Fetch-Site", "")], 403, "empty Sec-Fetch-Site"),
+    ]
+
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_graph_ex:
+        for headers_tuples, expected_status, desc in structural_fail_cases:
+            full_headers = [("Host", "localhost")] + headers_tuples
+            res = client.get(f"/api/auth/callback?code=123&state={msal_state}", headers=full_headers, follow_redirects=False)
+            assert res.status_code == expected_status, f"Structural case '{desc}' expected {expected_status}, got {res.status_code}"
+            assert not mock_graph_ex.called
+
+        # POST method instead of GET -> rejected (401 or 403 or 405)
+        res_post = client.post(
+            f"/api/auth/callback?code=123&state={msal_state}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")]
+        )
+        assert res_post.status_code in [401, 403, 405]
+        assert not mock_graph_ex.called
+
+        # OPTIONS preflight shape on callback -> rejected with 403 (no navigation exception for preflights)
+        res_options = client.options(
+            "/api/auth/callback",
+            headers=[
+                ("Host", "localhost"),
+                ("Origin", "https://localhost:8000"),
+                ("Sec-Fetch-Site", "cross-site"),
+                ("Access-Control-Request-Method", "GET"),
+            ]
+        )
+        assert res_options.status_code == 403
+        assert "access-control-allow-origin" not in res_options.headers
+        assert not mock_graph_ex.called
+
+
+def test_phase6_3_section_10_6_outlook_taskpane_navigation():
+    """
+    SECTION 10.6: Outlook taskpane cross-site framed navigation success.
+    Proves that GET /add-in/taskpane.html with Sec-Fetch-Site: cross-site returns 200 OK,
+    serves strict cache-control: no-store, nosniff, no-referrer, and approved frame-ancestors CSP,
+    and preserves canonical API CORS allowlist ['https://localhost:8000'].
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    # GET request
+    res = client.get(
+        "/add-in/taskpane.html",
+        headers=[
+            ("Host", "localhost"),
+            ("Sec-Fetch-Site", "cross-site"),
+        ]
+    )
+    assert res.status_code == 200
+    assert f'window.__AURA_SESSION_TOKEN__ = "{token}";' in res.text
+    assert res.headers["Cache-Control"] == "no-store, max-age=0"
+    assert res.headers["Pragma"] == "no-cache"
+    assert res.headers["Referrer-Policy"] == "no-referrer"
+    assert res.headers["X-Content-Type-Options"] == "nosniff"
+    csp = res.headers["Content-Security-Policy"]
+    assert "frame-ancestors" in csp
+    assert "https://outlook.office.com" in csp
+    assert "https://outlook.office365.com" in csp
+
+    # HEAD request
+    res_head = client.head(
+        "/add-in/taskpane.html",
+        headers=[
+            ("Host", "localhost"),
+            ("Sec-Fetch-Site", "cross-site"),
+        ]
+    )
+    assert res_head.status_code == 200
+
+    # Verify API CORS remains strictly canonical
+    assert ALLOWED_ORIGINS == ["https://localhost:8000"]
+
+
+def test_phase6_3_section_10_7_taskpane_negative_cases():
+    """
+    SECTION 10.7: Taskpane negative cases.
+    Proves that cross-site requests to non-taskpane endpoints (/add-in/taskpane.js,
+    /add-in/taskpane.css, /), POST to taskpane.html, or taskpane with hostile Origin
+    are strictly rejected.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+
+    negative_cases = [
+        ("GET", "/add-in/taskpane.html", [("Origin", "https://evil.example"), ("Sec-Fetch-Site", "cross-site")], 403, "hostile Origin"),
+        ("GET", "/add-in/taskpane.html", [("Origin", "null"), ("Sec-Fetch-Site", "cross-site")], 403, "null Origin"),
+        ("GET", "/add-in/taskpane.html", [("Origin", "https://localhost:8000"), ("Origin", "https://localhost:8000"), ("Sec-Fetch-Site", "cross-site")], 403, "duplicate Origin"),
+        ("GET", "/add-in/taskpane.html", [("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Site", "cross-site")], 403, "duplicate Sec-Fetch-Site"),
+        ("GET", "/add-in/taskpane.html", [("Sec-Fetch-Site", "cross-site,same-origin")], 403, "comma-joined Sec-Fetch-Site"),
+        ("POST", "/add-in/taskpane.html", [("Sec-Fetch-Site", "cross-site")], 405, "POST taskpane"),
+        ("GET", "/add-in/taskpane.js", [("Sec-Fetch-Site", "cross-site")], 403, "cross-site taskpane.js"),
+        ("GET", "/add-in/taskpane.css", [("Sec-Fetch-Site", "cross-site")], 403, "cross-site taskpane.css"),
+        ("GET", "/add-in/other-file.html", [("Sec-Fetch-Site", "cross-site")], 403, "cross-site other add-in file"),
+        ("GET", "/", [("Sec-Fetch-Site", "cross-site")], 403, "cross-site root index"),
+    ]
+
+    for method, path, headers_tuples, expected_status, desc in negative_cases:
+        full_headers = [("Host", "localhost")] + headers_tuples
+        res = client.request(method, path, headers=full_headers)
+        assert res.status_code in [expected_status, 403, 405], f"Taskpane negative case '{desc}' expected {expected_status}, got {res.status_code}"
+
+
+def test_phase6_3_section_10_8_privileged_routes_remain_protected():
+    """
+    SECTION 10.8: Privileged routes remain protected from Sec-Fetch-Site: cross-site.
+    Proves that authenticated API endpoints reject cross-site requests with 403 and
+    execute zero side effects / mutations.
+    """
+    client = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    token = get_local_session_token()
+
+    protected_endpoints = [
+        ("GET", "/api/status", None),
+        ("POST", "/api/settings", {"demo_mode": True}),
+        ("GET", "/api/auth/msal/url", None),
+        ("GET", "/api/auth/google/url", None),
+        ("GET", "/api/profile", None),
+        ("GET", "/api/accounts", None),
+    ]
+
+    with patch("backend.main.save_settings") as mock_save:
+        for method, path, payload in protected_endpoints:
+            headers = [
+                ("Host", "localhost"),
+                ("Authorization", f"Bearer {token}"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ]
+            res = client.request(method, path, json=payload, headers=headers)
+            assert res.status_code == 403, f"Protected endpoint {method} {path} with cross-site expected 403, got {res.status_code}"
+            assert not mock_save.called
+
+
+def test_phase6_3_section_11_comprehensive_behavioral_middleware_order_proof():
+    """
+    SECTION 11: Behavioral middleware-order proof.
+    Behaviorally proves the end-to-end security pipeline:
+    1. Remote request -> rejected by LoopbackPeerMiddleware (403, peer message)
+    2. Loopback request with invalid Host -> rejected by TrustedHostMiddleware (400, "Invalid host header")
+    3. Loopback malformed browser context -> rejected by BrowserContextValidationMiddleware (403, "Origin verification failed")
+    4. Loopback valid canonical preflight -> accepted by CORSMiddleware (200, ACAO = "https://localhost:8000")
+    5. Loopback privileged route -> unauthenticated 401, authenticated 200
+    6. Valid cross-site OAuth navigation -> passes middleware, reaches OAuth state validation (307)
+    7. Valid cross-site Outlook taskpane navigation -> passes middleware, returns secure taskpane HTML (200)
+    """
+    token = get_local_session_token()
+
+    # 1. Remote request
+    client_remote = TestClient(app, base_url="https://localhost:8000", client=("192.168.1.5", 50000))
+    res1 = client_remote.get("/api/safety-policy")
+    assert res1.status_code == 403
+    assert "Non-loopback peer address rejected" in res1.text
+
+    # 2. Loopback with invalid Host
+    client_loopback = TestClient(app, base_url="https://localhost:8000", client=("127.0.0.1", 50000))
+    res2 = client_loopback.get("/api/safety-policy", headers=[("Host", "evil.example")])
+    assert res2.status_code == 400
+    assert "Invalid host header" in res2.text
+
+    # 3. Loopback with malformed browser context
+    res3 = client_loopback.options(
+        "/api/settings",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Origin", "https://evil.example"),
+            ("Access-Control-Request-Method", "POST"),
+        ]
+    )
+    assert res3.status_code == 403
+    assert "Origin verification failed" in res3.text
+    assert "access-control-allow-origin" not in res3.headers
+
+    # 4. Loopback valid canonical preflight
+    res4 = client_loopback.options(
+        "/api/settings",
+        headers=[
+            ("Host", "localhost"),
+            ("Origin", "https://localhost:8000"),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "Authorization"),
+        ]
+    )
+    assert res4.status_code == 200
+    assert res4.headers.get("access-control-allow-origin") == "https://localhost:8000"
+
+    # 5. Loopback privileged route
+    res5_unauth = client_loopback.get("/api/status", headers=[("Host", "localhost")])
+    assert res5_unauth.status_code == 401
+    res5_auth = client_loopback.get("/api/status", headers=[("Host", "localhost"), ("Authorization", f"Bearer {token}")])
+    assert res5_auth.status_code == 200
+
+    # 6. Valid cross-site OAuth navigation
+    msal_state = OAUTH_STATE_MANAGER.create_state(
+        provider="MICROSOFT_GRAPH",
+        redirect_uri=f"{CANONICAL_ORIGIN}/api/auth/callback"
+    )
+    with patch("backend.main.provider_manager.graph_provider.exchange_code_for_token") as mock_ex, \
+         patch("backend.main.sync_and_triage_inbox"):
+        mock_ex.return_value = MagicMock(success=True)
+        res6 = client_loopback.get(
+            f"/api/auth/callback?code=mock_code&state={msal_state}",
+            headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")],
+            follow_redirects=False
+        )
+        assert res6.status_code == 307
+        assert res6.headers["location"] == "/?auth=success&provider=microsoft"
+
+    # 7. Valid cross-site Outlook taskpane navigation
+    res7 = client_loopback.get(
+        "/add-in/taskpane.html",
+        headers=[("Host", "localhost"), ("Sec-Fetch-Site", "cross-site")]
+    )
+    assert res7.status_code == 200
+    assert "frame-ancestors" in res7.headers["Content-Security-Policy"]

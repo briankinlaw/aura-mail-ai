@@ -14,7 +14,7 @@ import secrets
 import logging
 import ipaddress
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, Set
 from fastapi import Request, Header, HTTPException, status
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -26,6 +26,15 @@ logger = logging.getLogger("aura.auth")
 ALLOWED_ORIGINS: List[str] = [
     "https://localhost:8000",
 ]
+
+# Immutable exact allowlist for legitimate cross-site document navigations (Phase 6.3).
+# Permits external identity-provider OAuth callback redirects and Outlook taskpane iframe framing.
+CROSS_SITE_NAVIGATION_ALLOWLIST: Set[Tuple[str, str]] = {
+    ("GET", "/api/auth/callback"),
+    ("GET", "/api/auth/google/callback"),
+    ("GET", "/add-in/taskpane.html"),
+    ("HEAD", "/add-in/taskpane.html"),
+}
 
 
 class LoopbackPeerMiddleware:
@@ -216,7 +225,10 @@ def validate_browser_context(scope: Scope) -> Optional[str]:
         if site_clean not in ("same-origin", "same-site", "none", "cross-site"):
             return "Browser context verification failed: Malformed Sec-Fetch-Site value rejected."
         if site_clean == "cross-site":
-            return "Browser context verification failed: Cross-site request rejected."
+            method = scope.get("method", "").upper()
+            path = scope.get("path", "")
+            if (method, path) not in CROSS_SITE_NAVIGATION_ALLOWLIST:
+                return "Browser context verification failed: Cross-site request rejected."
 
     return None
 
