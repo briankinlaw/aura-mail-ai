@@ -367,8 +367,11 @@ def analyze_risk_heuristics(
         grounding_res = validate_canonical_grounding(draft_text)
         if not grounding_res.is_grounded:
             flags.append(RiskCategory.UNVERIFIED_CAREER_CLAIM)
-            for u in grounding_res.unsupported_claims:
-                warnings.append(f"Canonical Grounding Violation: {u.reason}")
+            if grounding_res.unsupported_claims:
+                for u in grounding_res.unsupported_claims:
+                    warnings.append(f"Canonical Grounding Violation: {u.reason}")
+            else:
+                warnings.append(f"Canonical Grounding Violation: {grounding_res.validation_summary}")
 
     if not flags:
         raw_res = RiskAssessmentResult(

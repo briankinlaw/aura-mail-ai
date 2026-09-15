@@ -92,7 +92,19 @@ Output ONLY the plain text email body.
                 model="gemini-3.6-flash",
                 contents=prompt
             )
-            generated_text = (response.text or "").strip()
+            raw_text = getattr(response, "text", None)
+            if raw_text is None or not isinstance(raw_text, str) or not raw_text.strip():
+                logger.warning("Gemini generated empty/None response; falling back to deterministic template.")
+                return compose_grounded_response(
+                    recruiter_name=details.recruiter_name,
+                    company_name=details.company_name,
+                    role_title=details.role_title,
+                    required_skills=details.required_skills,
+                    selected_resume=selected_resume,
+                    user_profile=user_profile
+                )
+
+            generated_text = raw_text.strip()
 
             # Post-generation deterministic canonical grounding validation
             validation = validate_canonical_grounding(generated_text, recipient_company=details.company_name)
@@ -133,7 +145,7 @@ def compose_grounded_response(
     recruiter_first = recruiter_name.split()[0] if recruiter_name and recruiter_name != "there" else "there"
     skills_bullet = ", ".join(required_skills[:4]) if required_skills else "enterprise cloud, data architectures, and AI systems"
     
-    return (
+    draft = (
         f"Hi {recruiter_first},\n\n"
         f"Thank you for reaching out regarding the {role_title} opportunity at {company_name}. "
         f"The scope aligns directly with my background in {skills_bullet}.\n\n"
@@ -148,3 +160,9 @@ def compose_grounded_response(
         f"{user_profile.current_title}\n"
         f"{user_profile.phone or '(210) 717-5305'} | {user_profile.linkedin_url or 'https://linkedin.com/in/briankinlaw'}"
     )
+
+    # Authoritative revalidation of constructed fallback
+    val = validate_canonical_grounding(draft, recipient_company=company_name)
+    if not val.is_grounded:
+        raise RuntimeError(f"Deterministic fallback failed canonical grounding validation: {val.validation_summary}")
+    return draft
