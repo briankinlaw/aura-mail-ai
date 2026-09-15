@@ -299,6 +299,72 @@ def test_privileged_endpoints_reject_invalid_token():
     assert res3.status_code == 403
 
 
+def test_privileged_endpoints_reject_duplicate_headers():
+    """
+    SECURITY INVARIANT:
+    Verifies that raw duplicate credential, Origin, and Sec-Fetch-Site headers are rejected with 403.
+    """
+    valid_token = get_local_session_token()
+    wrong_token = "0" * 64
+
+    # 1. Duplicate Authorization headers
+    res_dup_auth = unauth_client.post(
+        "/api/calendar/availability",
+        json={},
+        headers=[
+            ("Authorization", f"Bearer {valid_token}"),
+            ("Authorization", f"Bearer {wrong_token}"),
+        ]
+    )
+    assert res_dup_auth.status_code == 403
+    assert "Duplicate Authorization" in res_dup_auth.json().get("detail", "")
+
+    # 2. Duplicate Origin headers
+    res_dup_origin = unauth_client.post(
+        "/api/calendar/availability",
+        json={},
+        headers=[
+            ("Authorization", f"Bearer {valid_token}"),
+            ("Origin", "https://localhost:8000"),
+            ("Origin", "https://evil.example"),
+        ]
+    )
+    assert res_dup_origin.status_code == 403
+    assert "Duplicate Origin" in res_dup_origin.json().get("detail", "")
+
+    # 3. Duplicate Sec-Fetch-Site headers
+    res_dup_sfs = unauth_client.post(
+        "/api/calendar/availability",
+        json={},
+        headers=[
+            ("Authorization", f"Bearer {valid_token}"),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Site", "cross-site"),
+        ]
+    )
+    assert res_dup_sfs.status_code == 403
+    assert "Duplicate Sec-Fetch-Site" in res_dup_sfs.json().get("detail", "")
+
+
+def test_remote_preflight_rejected_by_peer_middleware():
+    """
+    SECURITY INVARIANT:
+    Verifies that CORS preflight from a non-loopback socket peer is rejected by
+    LoopbackPeerMiddleware (403) before CORSMiddleware processes it.
+    """
+    remote_client = TestClient(app, base_url="https://localhost:8000", client=("192.168.1.5", 50000))
+    res = remote_client.options(
+        "/api/safety-policy",
+        headers=[
+            ("Origin", "https://localhost:8000"),
+            ("Access-Control-Request-Method", "GET")
+        ]
+    )
+    assert res.status_code == 403
+    assert "Non-loopback peer address rejected" in res.text
+    assert "access-control-allow-origin" not in res.headers
+
+
 # --- 6. Side-Effect Prevention Verification ---
 
 def test_unauthenticated_send_reply_executes_no_side_effects():

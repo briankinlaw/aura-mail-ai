@@ -33,12 +33,15 @@ class LoopbackPeerMiddleware:
     ASGI middleware enforcing that all incoming connections originate strictly
     from a verified loopback IP address (127.0.0.0/8 or ::1).
     Rejects private LAN, link-local, public, hostname-valued, malformed, or missing client peers.
+    Also validates that duplicate Host headers are rejected per RFC 9112 Section 7.2 before
+    downstream host or routing processing.
     """
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] in ("http", "websocket"):
+            # 1. Peer validation from direct ASGI socket client
             client = scope.get("client")
             if not client or not isinstance(client, (list, tuple)) or len(client) < 1:
                 response = JSONResponse(
@@ -71,6 +74,15 @@ class LoopbackPeerMiddleware:
                     {"detail": "Access forbidden: Unparseable client IP address rejected."},
                     status_code=403
                 )
+                await response(scope, receive, send)
+                return
+
+            # 2. Duplicate Host header check (RFC 9112 Section 7.2)
+            raw_headers = scope.get("headers", [])
+            host_count = sum(1 for k, _ in raw_headers if k.lower() == b"host")
+            if host_count > 1:
+                from starlette.responses import PlainTextResponse
+                response = PlainTextResponse("Invalid host header", status_code=400)
                 await response(scope, receive, send)
                 return
 
@@ -165,34 +177,111 @@ def verify_local_token(candidate_token: Optional[str]) -> bool:
     return hmac.compare_digest(candidate_token.strip(), active)
 
 
-def require_local_auth(
-    request: Request,
-    authorization: Optional[str] = Header(None),
-    x_aura_session_token: Optional[str] = Header(None, alias="X-Aura-Session-Token"),
-    x_aura_token: Optional[str] = Header(None, alias="X-Aura-Token"),
-    origin: Optional[str] = Header(None),
-    sec_fetch_site: Optional[str] = Header(None, alias="Sec-Fetch-Site")
-) -> str:
+def _get_raw_header_values(request: Request, name: str) -> List[str]:
+    """
+    Extracts all raw values for a given header name from ASGI scope headers,
+    matching the header name case-insensitively.
+    Preserves every repeated occurrence.
+    """
+    target_bytes = name.lower().encode("latin-1")
+    raw_headers = request.scope.get("headers", [])
+    values: List[str] = []
+    for k, v in raw_headers:
+        if k.lower() == target_bytes:
+            try:
+                values.append(v.decode("utf-8"))
+            except UnicodeDecodeError:
+                values.append(v.decode("latin-1", errors="replace"))
+    return values
+
+
+def require_local_auth(request: Request) -> str:
     """
     FastAPI security dependency protecting privileged endpoints.
     Enforces:
-    1. Origin verification (when Origin header is supplied, must match canonical origin exactly).
-    2. Fetch Metadata verification (Sec-Fetch-Site: cross-site is rejected).
-    3. Multi-credential parsing with strict rejection of malformed, empty, duplicate, or conflicting tokens.
-    4. Constant-time token verification against the active local session token.
+    1. Server-Side Origin Verification:
+       - No Origin is permitted for authenticated non-browser loopback clients.
+       - Exactly one canonical Origin is accepted (https://localhost:8000).
+       - Duplicate, comma-joined, empty, whitespace-obfuscated, 'null', or non-canonical Origins are rejected.
+    2. Fetch Metadata Verification:
+       - Absence is permitted.
+       - Duplicate, comma-joined, empty, malformed, or 'cross-site' Sec-Fetch-Site headers are rejected.
+    3. Multi-Header Credential Parsing & Conflict Rejection:
+       - Supports Authorization (Bearer), X-Aura-Session-Token, and X-Aura-Token.
+       - Duplicate occurrences of any credential header are rejected (even identical values).
+       - Empty, comma-joined, whitespace-bearing, or malformed credentials fail closed.
+       - If multiple distinct credential mechanisms are provided simultaneously, all normalized values
+         must be identical (compatibility policy for clients sending Authorization + X-Aura-Session-Token);
+         any conflicting credentials fail closed.
+    4. Constant-Time Verification:
+       - Verified against the active local session token using constant-time comparison.
+       - No credential values appear in logs or error details.
     """
     # 1. Server-Side Origin Defense
-    if origin is not None:
-        origin_clean = origin.strip()
-        if origin_clean == "null" or origin_clean not in ALLOWED_ORIGINS:
+    origin_headers = _get_raw_header_values(request, "Origin")
+    if len(origin_headers) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Origin verification failed: Duplicate Origin headers rejected."
+        )
+    elif len(origin_headers) == 1:
+        raw_origin = origin_headers[0]
+        if not raw_origin or not raw_origin.strip():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Origin verification failed: Unauthorized browser origin '{origin_clean}'."
+                detail="Origin verification failed: Empty Origin header rejected."
+            )
+        if "," in raw_origin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Origin verification failed: Comma-joined Origin header rejected."
+            )
+        if raw_origin != raw_origin.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Origin verification failed: Malformed Origin whitespace rejected."
+            )
+        if raw_origin == "null":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Origin verification failed: Opaque null origin rejected."
+            )
+        if raw_origin not in ALLOWED_ORIGINS:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Origin verification failed: Unauthorized browser origin '{raw_origin}'."
             )
 
     # 2. Fetch Metadata Verification
-    if sec_fetch_site is not None:
-        site_clean = sec_fetch_site.strip().lower()
+    sec_fetch_headers = _get_raw_header_values(request, "Sec-Fetch-Site")
+    if len(sec_fetch_headers) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Browser context verification failed: Duplicate Sec-Fetch-Site headers rejected."
+        )
+    elif len(sec_fetch_headers) == 1:
+        site_raw = sec_fetch_headers[0]
+        if not site_raw or not site_raw.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Browser context verification failed: Empty Sec-Fetch-Site header rejected."
+            )
+        if "," in site_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Browser context verification failed: Comma-joined Sec-Fetch-Site header rejected."
+            )
+        if site_raw != site_raw.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Browser context verification failed: Malformed Sec-Fetch-Site whitespace rejected."
+            )
+        site_clean = site_raw.lower()
+        if site_clean not in ("same-origin", "same-site", "none", "cross-site"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Browser context verification failed: Malformed Sec-Fetch-Site value rejected."
+            )
         if site_clean == "cross-site":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -200,61 +289,86 @@ def require_local_auth(
             )
 
     # 3. Credential Parsing and Conflict Detection
-    provided_tokens: List[str] = []
+    provided_tokens: List[Tuple[str, str]] = []
 
-    if authorization is not None:
-        auth_clean = authorization.strip()
-        if not auth_clean:
+    # 3a. Authorization header
+    auth_headers = _get_raw_header_values(request, "Authorization")
+    if len(auth_headers) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authentication failed: Duplicate Authorization headers rejected."
+        )
+    elif len(auth_headers) == 1:
+        auth_raw = auth_headers[0]
+        auth_trimmed = auth_raw.strip()
+        if not auth_trimmed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Empty Authorization header."
             )
-        if not auth_clean.lower().startswith("bearer "):
+        if not auth_trimmed.lower().startswith("bearer "):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Malformed authorization header. Expected 'Bearer <token>'."
             )
-        bearer_val = auth_clean[7:].strip()
-        if not bearer_val:
+        bearer_val = auth_trimmed[7:]
+        if not bearer_val or not bearer_val.strip():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Empty Bearer token."
             )
-        if "," in bearer_val or " " in bearer_val:
+        if bearer_val != bearer_val.strip() or any(c in bearer_val for c in (",", " ", "\t", "\r", "\n")):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Malformed Bearer token."
             )
-        provided_tokens.append(bearer_val)
+        provided_tokens.append(("Authorization", bearer_val))
 
-    if x_aura_session_token is not None:
-        x_clean = x_aura_session_token.strip()
-        if not x_clean:
+    # 3b. X-Aura-Session-Token header
+    session_headers = _get_raw_header_values(request, "X-Aura-Session-Token")
+    if len(session_headers) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authentication failed: Duplicate X-Aura-Session-Token headers rejected."
+        )
+    elif len(session_headers) == 1:
+        x_raw = session_headers[0]
+        x_trimmed = x_raw.strip()
+        if not x_trimmed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Empty X-Aura-Session-Token header."
             )
-        if "," in x_clean or " " in x_clean:
+        if x_raw != x_trimmed or any(c in x_trimmed for c in (",", " ", "\t", "\r", "\n")):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Malformed X-Aura-Session-Token header."
             )
-        provided_tokens.append(x_clean)
+        provided_tokens.append(("X-Aura-Session-Token", x_trimmed))
 
-    if x_aura_token is not None:
-        xtok_clean = x_aura_token.strip()
-        if not xtok_clean:
+    # 3c. X-Aura-Token header
+    token_headers = _get_raw_header_values(request, "X-Aura-Token")
+    if len(token_headers) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authentication failed: Duplicate X-Aura-Token headers rejected."
+        )
+    elif len(token_headers) == 1:
+        xtok_raw = token_headers[0]
+        xtok_trimmed = xtok_raw.strip()
+        if not xtok_trimmed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Empty X-Aura-Token header."
             )
-        if "," in xtok_clean or " " in xtok_clean:
+        if xtok_raw != xtok_trimmed or any(c in xtok_trimmed for c in (",", " ", "\t", "\r", "\n")):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Malformed X-Aura-Token header."
             )
-        provided_tokens.append(xtok_clean)
+        provided_tokens.append(("X-Aura-Token", xtok_trimmed))
 
+    # 3d. Check presence
     if not provided_tokens:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -262,10 +376,12 @@ def require_local_auth(
             headers={"WWW-Authenticate": "Bearer"}
         )
 
-    # Check for conflicting credentials
-    first_token = provided_tokens[0]
-    for other_tok in provided_tokens[1:]:
-        if not hmac.compare_digest(first_token, other_tok):
+    # 3e. Cross-mechanism conflict detection & compatibility
+    # Compatibility policy: Simultaneous presentation of different valid credential headers
+    # (e.g. Authorization and X-Aura-Session-Token) is accepted if and only if all token values are identical.
+    first_hdr_name, first_token = provided_tokens[0]
+    for other_hdr_name, other_token in provided_tokens[1:]:
+        if not hmac.compare_digest(first_token, other_token):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Authentication failed: Conflicting credential headers provided."

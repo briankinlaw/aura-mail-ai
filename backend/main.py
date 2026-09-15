@@ -105,12 +105,13 @@ from backend.oauth_state import OAUTH_STATE_MANAGER
 
 ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
-app.add_middleware(LoopbackPeerMiddleware)
-
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=ALLOWED_HOSTS
-)
+# Starlette middleware execution order is reverse of add_middleware registration order.
+# Required effective pipeline order:
+# ASGI Socket Peer Validation (LoopbackPeerMiddleware)
+# -> Host Validation (TrustedHostMiddleware)
+# -> CORS/Browser Processing (CORSMiddleware)
+# -> Authentication Dependency (require_local_auth)
+# -> Route Handler
 
 app.add_middleware(
     CORSMiddleware,
@@ -119,6 +120,13 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["Authorization", "Content-Type", "X-Aura-Session-Token", "X-Aura-Token", "X-Requested-With"],
 )
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=ALLOWED_HOSTS
+)
+
+app.add_middleware(LoopbackPeerMiddleware)
 
 # In-Memory Email Cache & State
 CACHED_EMAILS: Dict[str, EmailMessage] = {}
