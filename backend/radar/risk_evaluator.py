@@ -22,6 +22,11 @@ from pydantic import BaseModel, Field
 
 from backend.models import EmailMessage, UserProfile
 from backend.canonical_engine import LOCKED_FACTS
+from backend.canonical_grounding import (
+    validate_canonical_grounding,
+    GroundingValidationResult,
+    ClaimCategory
+)
 from backend.safety_policy import (
     MailAction,
     ExecutionContext,
@@ -357,10 +362,13 @@ def analyze_risk_heuristics(
             warnings.append("Draft contains binding compensation or offer acceptance statement. Executive review required.")
             break
 
-    # 4. Check for unverified metric hallucination
-    if "$80m" in draft_text.lower() or "$50m in google" in draft_text.lower() or "generated $8m" in draft_text.lower():
-        flags.append(RiskCategory.UNVERIFIED_CAREER_CLAIM)
-        warnings.append("Draft phrasing violates Accomplishment Ledger precision ('generated' vs approved 'influenced $8M').")
+    # 4. Check for unverified career claims and hallucinated metrics via deterministic canonical grounding
+    if draft_text:
+        grounding_res = validate_canonical_grounding(draft_text)
+        if not grounding_res.is_grounded:
+            flags.append(RiskCategory.UNVERIFIED_CAREER_CLAIM)
+            for u in grounding_res.unsupported_claims:
+                warnings.append(f"Canonical Grounding Violation: {u.reason}")
 
     if not flags:
         raw_res = RiskAssessmentResult(
@@ -368,7 +376,7 @@ def analyze_risk_heuristics(
             is_flagged=False,
             risk_score=5,
             detected_categories=[RiskCategory.CLEAN],
-            second_opinion_summary="Heuristic screen passed. Draft is grounded and conforms to Draft-First safety standards.",
+            second_opinion_summary="Heuristic screen passed. Draft is canonically grounded and conforms to Draft-First safety standards.",
             recommended_action="PROCEED",
             guardrail_warnings=[]
         )

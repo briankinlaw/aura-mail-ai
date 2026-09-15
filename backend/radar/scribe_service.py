@@ -12,6 +12,7 @@ from backend.models import (
     ReplyDraftRequest
 )
 from backend.radar.triage_service import get_gemini_client, extract_recruiter_details
+from backend.canonical_grounding import validate_canonical_grounding
 
 logger = logging.getLogger("radar.scribe")
 
@@ -91,7 +92,23 @@ Output ONLY the plain text email body.
                 model="gemini-3.6-flash",
                 contents=prompt
             )
-            return response.text.strip()
+            generated_text = (response.text or "").strip()
+
+            # Post-generation deterministic canonical grounding validation
+            validation = validate_canonical_grounding(generated_text, recipient_company=details.company_name)
+            if not validation.is_grounded:
+                logger.warning(
+                    f"Generated reply failed canonical grounding validation ({validation.validation_summary}); falling back to deterministic grounded template."
+                )
+                return compose_grounded_response(
+                    recruiter_name=details.recruiter_name,
+                    company_name=details.company_name,
+                    role_title=details.role_title,
+                    required_skills=details.required_skills,
+                    selected_resume=selected_resume,
+                    user_profile=user_profile
+                )
+            return generated_text
         except Exception as e:
             logger.warning(f"Gemini reply generation failed, using fallback: {e}")
 

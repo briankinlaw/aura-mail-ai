@@ -16,6 +16,15 @@ import logging
 from datetime import datetime
 
 from backend.config import RESUMES_DIR
+from backend.canonical_grounding import (
+    CANONICAL_FACT_REGISTRY,
+    validate_canonical_grounding,
+    GroundingValidationResult,
+    SupportedClaim,
+    UnsupportedClaim,
+    ClaimCategory,
+    ClaimStatus
+)
 
 logger = logging.getLogger("canonical_engine")
 
