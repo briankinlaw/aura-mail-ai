@@ -411,10 +411,8 @@ class GmailProvider(BaseEmailProvider):
         if resume_filename:
             from backend.canonical_engine import resolve_resume_file
             file_path = resolve_resume_file(resume_filename)
-            if not file_path or not file_path.exists():
-                file_path = RESUMES_DIR / resume_filename
-            if not file_path or not file_path.exists():
-                return None, f"Attachment file '{resume_filename}' not found on disk."
+            if not file_path:
+                return None, f"Attachment file '{resume_filename}' is invalid or outside approved attachment roots."
             
             try:
                 with open(file_path, "rb") as f:
@@ -444,6 +442,20 @@ class GmailProvider(BaseEmailProvider):
                 error_code="NOT_AUTHENTICATED",
                 safe_message="Not authenticated with Gmail."
             )
+
+        # Pre-validate attachment if requested
+        if resume_filename:
+            from backend.canonical_engine import resolve_resume_file
+            file_path = resolve_resume_file(resume_filename)
+            if not file_path:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="GMAIL",
+                    account_id=account_id,
+                    operation="CREATE_DRAFT",
+                    error_code="ATTACHMENT_NOT_ALLOWED",
+                    safe_message=f"Requested attachment '{resume_filename}' is invalid or outside approved attachment roots."
+                )
 
         _, _, native_id = decode_composite_id(message_id)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -485,7 +497,7 @@ class GmailProvider(BaseEmailProvider):
                     provider="GMAIL",
                     account_id=account_id,
                     operation="CREATE_DRAFT",
-                    error_code="FILE_NOT_FOUND" if "not found" in (err or "").lower() else "MIME_BUILD_FAILED",
+                    error_code="ATTACHMENT_NOT_ALLOWED" if ("approved" in (err or "").lower() or "attachment" in (err or "").lower()) else "MIME_BUILD_FAILED",
                     safe_message=err or "Failed to construct reply MIME."
                 )
 

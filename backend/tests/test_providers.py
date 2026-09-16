@@ -16,6 +16,7 @@ from backend.providers.base import (
     encode_composite_id,
     decode_composite_id
 )
+from backend.config import RESUMES_DIR
 from backend.providers.demo import DemoProvider
 from backend.providers.graph import MicrosoftGraphProvider
 from backend.providers.gmail import GmailProvider
@@ -145,8 +146,9 @@ def test_graph_pagination(mock_get):
         assert messages[1].subject == "Role 2"
 
 @patch("backend.providers.graph.requests.post")
-def test_graph_threaded_reply_draft_success(mock_post):
-    # Mock createReply (POST 1) and attachFile (POST 2)
+def test_graph_create_reply_draft_with_attachment(mock_post, tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.canonical_engine.RESUMES_DIR", tmp_path)
+    # Mock createReply (201) and addAttachment (201)
     draft_response = MagicMock()
     draft_response.status_code = 201
     draft_response.json.return_value = {"id": "created_draft_id_123"}
@@ -157,9 +159,12 @@ def test_graph_threaded_reply_draft_success(mock_post):
 
     mock_post.side_effect = [draft_response, attach_response]
 
+    test_resume = tmp_path / "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx"
+    test_resume.write_text("Mock resume content")
+
     graph = MicrosoftGraphProvider(client_id="mock-client-id")
     with patch.object(graph, "get_access_token", return_value="mock_token"):
-        with patch("backend.canonical_engine.resolve_resume_file", return_value=Path(__file__)):
+        with patch("backend.canonical_engine.resolve_resume_file", return_value=test_resume):
             res = graph.create_reply_draft(
                 account_id="kinlawb@outlook.com",
                 message_id="MICROSOFT_GRAPH::kinlawb@outlook.com::orig_msg_789",
@@ -170,7 +175,8 @@ def test_graph_threaded_reply_draft_success(mock_post):
             assert res.remote_object_id == "created_draft_id_123"
 
 @patch("backend.providers.graph.requests.post")
-def test_graph_attachment_failure_returns_partial_error(mock_post):
+def test_graph_attachment_failure_returns_partial_error(mock_post, tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.canonical_engine.RESUMES_DIR", tmp_path)
     # Mock createReply success, but attachment upload HTTP 500
     draft_response = MagicMock()
     draft_response.status_code = 201
@@ -182,9 +188,12 @@ def test_graph_attachment_failure_returns_partial_error(mock_post):
 
     mock_post.side_effect = [draft_response, attach_response]
 
+    test_resume = tmp_path / "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx"
+    test_resume.write_text("Mock resume content")
+
     graph = MicrosoftGraphProvider(client_id="mock-client-id")
     with patch.object(graph, "get_access_token", return_value="mock_token"):
-        with patch("backend.canonical_engine.resolve_resume_file", return_value=Path(__file__)):
+        with patch("backend.canonical_engine.resolve_resume_file", return_value=test_resume):
             res = graph.create_reply_draft(
                 account_id="kinlawb@outlook.com",
                 message_id="MICROSOFT_GRAPH::kinlawb@outlook.com::orig_msg_789",
@@ -211,7 +220,8 @@ def test_gmail_validation(mock_get):
 
 @patch("backend.providers.gmail.requests.get")
 @patch("backend.providers.gmail.requests.post")
-def test_gmail_create_draft(mock_post, mock_get):
+def test_gmail_create_draft(mock_post, mock_get, tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.canonical_engine.RESUMES_DIR", tmp_path)
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = {"id": "gmail_draft_999"}
     mock_get.return_value.status_code = 200
@@ -227,9 +237,12 @@ def test_gmail_create_draft(mock_post, mock_get):
         }
     }
 
+    test_resume = tmp_path / "test_resume.docx"
+    test_resume.write_text("Mock resume content")
+
     gmail = GmailProvider(client_id="mock-id", client_secret="mock-sec")
     with patch.object(gmail, "get_access_token", return_value="mock_gmail_token"):
-        with patch("backend.canonical_engine.resolve_resume_file", return_value=Path(__file__)):
+        with patch("backend.canonical_engine.resolve_resume_file", return_value=test_resume):
             res = gmail.create_reply_draft(
                 account_id="briankkinlaw@gmail.com",
                 message_id="GMAIL::briankkinlaw@gmail.com::gmail_thread_111",

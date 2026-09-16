@@ -8,10 +8,11 @@ Indexes, parses, and matches Brian Kinlaw's Canonical Career System across:
 
 import os
 import re
+import stat
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import logging
 from datetime import datetime
 
@@ -114,36 +115,136 @@ LOCKED_FACTS = {
     "current_status": "Strategic Advisor, Data & AI (Contract) at MavenCode (Sep 2026-Present)"
 }
 
+def get_approved_attachment_roots() -> List[Path]:
+    """Returns dynamically resolved approved attachment root directories based on implementation truth."""
+    roots: List[Path] = []
+    for d in [CANONICAL_ACTIVE_DIR, TARGETED_APPS_DIR, DOWNLOADS_VARIANTS_DIR, RESUMES_DIR]:
+        try:
+            roots.append(d.resolve())
+        except Exception:
+            roots.append(d)
+    return roots
+
+
+def is_safe_attachment_path(candidate: Union[str, Path], approved_roots: Optional[List[Path]] = None) -> bool:
+    """
+    Authoritative attachment path security validator.
+
+    FAIL-CLOSED ATTACHMENT INVARIANT (Phase 12.1):
+    A candidate attachment path is valid ONLY IF:
+    1. It exists on disk.
+    2. Its canonical resolved path (following symlinks) is a regular file.
+    3. Its canonical resolved path is strictly contained within an explicitly approved Aura attachment root.
+
+    Rejects:
+    - Files outside approved roots (e.g. /etc/passwd, /etc/hosts, arbitrary absolute paths)
+    - Directory traversal escapes (e.g. ../../etc/passwd)
+    - Symlinks pointing outside approved roots
+    - Non-regular files (directories, FIFOs, sockets, device nodes)
+    - Broken symlinks or nonexistent files
+    """
+    if candidate is None:
+        return False
+    try:
+        cand_path = Path(candidate) if not isinstance(candidate, Path) else candidate
+        resolved_candidate = cand_path.resolve()
+
+        if not resolved_candidate.is_file():
+            return False
+
+        st = resolved_candidate.stat()
+        if not stat.S_ISREG(st.st_mode):
+            return False
+
+        if approved_roots is None:
+            approved_roots = get_approved_attachment_roots()
+
+        for root in approved_roots:
+            try:
+                resolved_root = root.resolve()
+                try:
+                    rel = resolved_candidate.relative_to(resolved_root)
+                    if resolved_candidate != resolved_root:
+                        return True
+                except ValueError:
+                    continue
+            except Exception:
+                continue
+
+        return False
+    except Exception:
+        return False
+
+
 def resolve_resume_file(identifier: Optional[str]) -> Optional[Path]:
-    """Finds the absolute path of a resume given an absolute path, filename, or stem."""
+    """
+    Authoritative resolver for resume attachments.
+
+    Resolves an identifier (filename, subpath, or absolute path) to a validated,
+    canonical Path within approved Aura attachment roots.
+
+    Fails closed (returns None) if the identifier is invalid, missing, malformed,
+    or resolves outside approved attachment roots.
+    """
+    roots = get_approved_attachment_roots()
     search_dirs = [CANONICAL_ACTIVE_DIR, TARGETED_APPS_DIR, DOWNLOADS_VARIANTS_DIR, RESUMES_DIR]
 
-    if not identifier:
-        # Default to level 3A advisor canonical if available
+    if identifier is None:
+        # Default to level 3A advisor canonical if available within approved roots
         for d in search_dirs:
-            if d.exists():
-                adv = list(d.glob("*Advisor_Canonical*.docx")) + list(d.glob("*.docx"))
-                if adv:
-                    return adv[0]
+            if not d.exists() or not d.is_dir():
+                continue
+            adv = (
+                list(d.glob("*Advisor_Canonical*.docx")) +
+                list(d.glob("*.docx")) +
+                list(d.glob("*.pdf"))
+            )
+            for candidate in adv:
+                if is_safe_attachment_path(candidate, roots):
+                    return candidate.resolve()
         return None
 
-    path_obj = Path(identifier)
-    if path_obj.is_absolute() and path_obj.exists():
-        return path_obj
+    if not isinstance(identifier, str):
+        return None
 
-    clean_name = path_obj.name.lower()
+    raw_ident = identifier.strip()
+    if not raw_ident:
+        return None
 
+    path_obj = Path(raw_ident)
+
+    # 1. If caller supplied an absolute path, validate containment directly
+    if path_obj.is_absolute():
+        if is_safe_attachment_path(path_obj, roots):
+            return path_obj.resolve()
+        # Fail closed immediately on unapproved absolute paths
+        return None
+
+    # 2. Search approved directories for exact filename or subpath match
     for d in search_dirs:
-        if not d.exists():
+        if not d.exists() or not d.is_dir():
             continue
-        # Direct exact match
-        direct = d / path_obj.name
-        if direct.exists():
-            return direct
-        # Case-insensitive match
-        for f in d.glob("*"):
-            if f.is_file() and f.name.lower() == clean_name:
-                return f
+        if len(path_obj.parts) > 1:
+            direct = d / path_obj
+            if is_safe_attachment_path(direct, roots):
+                return direct.resolve()
+        else:
+            for f in d.glob("*"):
+                if f.is_file() and f.name == path_obj.name:
+                    if is_safe_attachment_path(f, roots):
+                        return f.resolve()
+
+    # 3. Case-insensitive filename matching against direct files in approved search roots
+    clean_name = path_obj.name.lower()
+    if clean_name:
+        for d in search_dirs:
+            if not d.exists() or not d.is_dir():
+                continue
+            for f in d.glob("*"):
+                if f.is_file() and f.name.lower() == clean_name:
+                    if is_safe_attachment_path(f, roots):
+                        return f.resolve()
+
     return None
 
 _RESUME_CACHE: Dict[str, Any] = {}

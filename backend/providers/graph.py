@@ -465,16 +465,14 @@ class MicrosoftGraphProvider(BaseEmailProvider):
         if resume_filename:
             from backend.canonical_engine import resolve_resume_file
             file_path = resolve_resume_file(resume_filename)
-            if not file_path or not file_path.exists():
-                file_path = RESUMES_DIR / resume_filename
-            if not file_path or not file_path.exists():
+            if not file_path:
                 return ProviderOperationResult(
                     success=False,
                     provider="MICROSOFT_GRAPH",
                     account_id=account_id,
                     operation="CREATE_DRAFT",
-                    error_code="FILE_NOT_FOUND",
-                    safe_message=f"Requested attachment file '{resume_filename}' does not exist on disk."
+                    error_code="ATTACHMENT_NOT_ALLOWED",
+                    safe_message=f"Requested attachment '{resume_filename}' is invalid or outside approved attachment roots."
                 )
 
         try:
@@ -554,14 +552,15 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                 safe_message="Not authenticated with Microsoft Graph."
             )
 
-        if not file_path.exists():
+        from backend.canonical_engine import is_safe_attachment_path
+        if not file_path or not is_safe_attachment_path(file_path):
             return ProviderOperationResult(
                 success=False,
                 provider="MICROSOFT_GRAPH",
                 account_id=account_id,
                 operation="ATTACH_FILE",
-                error_code="FILE_NOT_FOUND",
-                safe_message=f"Attachment file '{filename}' does not exist on disk."
+                error_code="ATTACHMENT_NOT_ALLOWED",
+                safe_message=f"Attachment file '{filename}' is invalid or outside approved attachment roots."
             )
 
         try:

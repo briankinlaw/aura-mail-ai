@@ -376,6 +376,21 @@ class ImapProvider(BaseEmailProvider):
         reply_body: str, 
         resume_filename: Optional[str] = None
     ) -> ProviderOperationResult:
+        # Pre-validate attachment if requested
+        file_path = None
+        if resume_filename:
+            from backend.canonical_engine import resolve_resume_file
+            file_path = resolve_resume_file(resume_filename)
+            if not file_path:
+                return ProviderOperationResult(
+                    success=False,
+                    provider="IMAP",
+                    account_id=account_id,
+                    operation="CREATE_DRAFT",
+                    error_code="ATTACHMENT_NOT_ALLOWED",
+                    safe_message=f"Requested attachment '{resume_filename}' is invalid or outside approved attachment roots."
+                )
+
         client = self._get_imap_connection(account_id)
         if not client:
             return ProviderOperationResult(
@@ -430,31 +445,28 @@ class ImapProvider(BaseEmailProvider):
             if resume_filename:
                 from backend.canonical_engine import resolve_resume_file
                 file_path = resolve_resume_file(resume_filename)
-                if not file_path or not file_path.exists():
-                    file_path = RESUMES_DIR / resume_filename
-                if file_path and file_path.exists():
-                    try:
-                        with open(file_path, "rb") as f:
-                            part = MIMEApplication(f.read(), Name=file_path.name)
-                        part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
-                        msg.attach(part)
-                    except Exception as e:
-                        return ProviderOperationResult(
-                            success=False,
-                            provider="IMAP",
-                            account_id=account_id,
-                            operation="CREATE_DRAFT",
-                            error_code="ATTACHMENT_FAILED",
-                            safe_message=f"Failed to read attachment '{resume_filename}': {str(e)}"
-                        )
-                else:
+                if not file_path:
                     return ProviderOperationResult(
                         success=False,
                         provider="IMAP",
                         account_id=account_id,
                         operation="CREATE_DRAFT",
-                        error_code="FILE_NOT_FOUND",
-                        safe_message=f"Resume file '{resume_filename}' not found on disk."
+                        error_code="ATTACHMENT_NOT_ALLOWED",
+                        safe_message=f"Requested attachment '{resume_filename}' is invalid or outside approved attachment roots."
+                    )
+                try:
+                    with open(file_path, "rb") as f:
+                        part = MIMEApplication(f.read(), Name=file_path.name)
+                    part["Content-Disposition"] = f'attachment; filename="{file_path.name}"'
+                    msg.attach(part)
+                except Exception as e:
+                    return ProviderOperationResult(
+                        success=False,
+                        provider="IMAP",
+                        account_id=account_id,
+                        operation="CREATE_DRAFT",
+                        error_code="ATTACHMENT_FAILED",
+                        safe_message=f"Failed to read attachment '{resume_filename}': {str(e)}"
                     )
 
             raw_bytes = msg.as_bytes()
