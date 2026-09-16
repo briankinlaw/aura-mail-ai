@@ -1,0 +1,109 @@
+================================================================================
+AURA MAIL AI v1.1 — PHASE 13 RAW RELEASE EVIDENCE
+================================================================================
+
+[GIT REPOSITORY STATE & COMMIT TELEMETRY]
+git rev-parse HEAD:
+0cc60495e9fdc64526cd231beb562c2c36de53df
+
+git rev-parse HEAD^{tree}:
+6c6422cc3b26927f5539ac3c8988fb983041a9a9
+
+git status --short:
+(clean working tree - 0 modified, 0 untracked)
+
+git log -3 --oneline --decorate:
+0cc6049 (HEAD -> main) security: restrict draft attachments to approved paths
+cfa15a3 docs: correct residual security documentation claims
+0b9720a docs: align security claims with enforced behavior
+
+--------------------------------------------------------------------------------
+[ENVIRONMENT & DEPENDENCY TELEMETRY]
+Python Version:
+Python 3.12.9
+
+Pip Version:
+pip 26.2.1 from /Users/briankinlaw/aura-mail-ai/.venv/lib/python3.12/site-packages/pip (python 3.12)
+
+Node Version:
+v24.21.0
+
+Clean Installation Result:
+PASS - All dependencies resolved from pyproject.toml & requirements.txt
+
+--------------------------------------------------------------------------------
+[TEST SUITE EXECUTION RESULTS]
+
+Pytest Python Regression Suite:
+================ 1021 passed, 123 warnings in 106.90s (0:01:46) ================
+Collected: 1021
+Passed: 1021
+Failed: 0
+Skipped: 0
+
+Phase 9 Outlook Content Security Suite (JavaScript):
+================================================================================
+All 48/48 Phase 9 JavaScript Outlook Content Security tests passed successfully!
+
+Phase 8 Cloud Draft Staging Suite (JavaScript):
+================================================================================
+All 52/52 Phase 8 JavaScript Draft Staging tests passed successfully!
+
+Frontend Risk Validator Suite (JavaScript):
+================================================================================
+All 17/17 JavaScript Risk Validator tests passed successfully!
+
+Total Test Suite Metrics:
+Python Tests:     1,021 passed / 1,021 total
+JavaScript Tests:   117 passed /   117 total
+Total Tests:      1,138 passed / 1,138 total (100% pass rate)
+
+--------------------------------------------------------------------------------
+[STATIC COMPILATION & BYTECODE INTEGRITY]
+Command: python -m compileall backend scripts
+Output:
+Listing 'backend'...
+Listing 'backend/calendar_broker'...
+Listing 'backend/providers'...
+Listing 'backend/radar'...
+Listing 'backend/tests'...
+Listing 'scripts'...
+Result: PASS (0 errors)
+
+--------------------------------------------------------------------------------
+[SECRET SCANNER SUMMARY]
+Command: python -c "from backend.security import scan_repository_for_secrets; from backend.config import BASE_DIR; print(scan_repository_for_secrets(BASE_DIR))"
+Output:
+[]
+Result: PASS (0 secrets or exposed credentials found)
+
+--------------------------------------------------------------------------------
+[DANGEROUS TRANSMISSION SEARCH SUMMARY]
+Search for Graph Mail.Send:
+backend/config.py:22:# Note: Mail.Send is strictly omitted under Phase 3 Native-Send architecture.
+backend/tests/test_phase563_remediation.py:268:    assert "Mail.Send" not in GRAPH_SCOPES
+backend/tests/test_providers.py:308:    assert "Mail.Send" not in GRAPH_SCOPES
+backend/tests/test_phase6_local_desktop_boundary.py:876:    assert "Mail.Send" not in GRAPH_SCOPES
+
+Search for Gmail messages.send / drafts.send:
+(0 matches in backend implementation code)
+
+Search for sendMail:
+(0 matches in backend implementation code)
+
+Result: PASS (0 executable direct transmission pathways)
+
+--------------------------------------------------------------------------------
+[FINAL GIT REPOSITORY VERIFICATION]
+git status --short:
+(clean working tree)
+
+git rev-parse HEAD:
+0cc60495e9fdc64526cd231beb562c2c36de53df
+
+git diff --exit-code:
+0 (no unstaged changes)
+
+git diff --cached --exit-code:
+0 (no staged changes)
+================================================================================
