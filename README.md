@@ -148,7 +148,7 @@ node backend/tests/test_frontend_risk_validator.js
 
 ### 4. Run Live Read-Only Smoke Test
 ```bash
-python3 scripts/smoke_test_live.py
+.venv/bin/python scripts/smoke_test_live.py
 ```
 
 ### 5. Launch Dashboard

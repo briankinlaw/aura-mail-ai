@@ -28,25 +28,27 @@ Welcome! This guide provides peer reviewers with a structured walkthrough of the
 
 ### 1. Prerequisites
 - macOS (for native AppleScript Outlook integration, Keychain vault, and Menu Bar app) or Linux/Windows (runs in cloud/web mode).
-- Python 3.9+.
+- Python 3.12 (standardized via `.python-version`).
 
 ### 2. Environment Setup
 ```bash
 # Clone or navigate to repository
 cd /Users/briankinlaw/aura-mail-ai
 
-# Activate virtual environment
+# Create virtual environment using Python 3.12
+python3.12 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Upgrade pip and install declared dependencies
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### 3. Run Automated Tests
 ```bash
-.venv/bin/pytest backend/tests/ -v
+.venv/bin/python -m pytest
 ```
-*Expected Output: All tests pass (0 failures)*
+*Expected Output: All tests pass (collection succeeds, 0 failures)*
 
 ### 4. Start the Application
 ```bash

@@ -6,18 +6,27 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
 
 ## 📋 Pre-Flight Verification
 
-- [ ] **Python 3.9+ Virtual Environment**:
+- [ ] **Python 3.12 Virtual Environment**:
   ```bash
-  source .venv/bin/activate
+  # Standardized via .python-version
+  python3.12 -m venv .venv
+  .venv/bin/python -m pip install --upgrade pip
+  .venv/bin/python -m pip install -r requirements.txt
   ```
-- [ ] **Run Automated Test Suite (38 Tests)**:
+- [ ] **Run Automated Test Suite**:
   ```bash
-  PYTHONPATH=. .venv/bin/pytest backend/tests/ -v
+  # Run complete Python test suite
+  .venv/bin/python -m pytest
+
+  # Run frontend JavaScript test suites (Node 24 standardized via .nvmrc)
+  node backend/tests/test_outlook_content_security.js
+  node backend/tests/test_stage_cloud_draft.js
+  node backend/tests/test_frontend_risk_validator.js
   ```
-  *Expected*: `38 passed` with zero errors.
+  *Expected*: Collection succeeds with zero errors and all test cases pass (Phase 10 clean-install validation observed 1006 Python test cases and 117 JavaScript assertions passing).
 - [ ] **Execute Automated Secret Audit**:
   ```bash
-  python3 -c "from backend.security import scan_repository_for_secrets; from backend.config import BASE_DIR; print('Findings:', scan_repository_for_secrets(BASE_DIR))"
+  .venv/bin/python -c "from backend.security import scan_repository_for_secrets; from backend.config import BASE_DIR; print('Findings:', scan_repository_for_secrets(BASE_DIR))"
   ```
   *Expected*: `Findings: []` (zero secrets detected).
 
@@ -27,7 +36,7 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
 
 1. **Run Diagnostics Script (Read-Only)**:
    ```bash
-   python3 scripts/smoke_test_live.py
+   .venv/bin/python scripts/smoke_test_live.py
    ```
    *Verify*:
    - Safety mode is reported as `SAFE_REVIEW`.
