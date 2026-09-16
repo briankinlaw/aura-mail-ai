@@ -876,3 +876,63 @@ def test_phase8_taskpane_js_implementation_invariants():
     # Concurrency control
     assert "isStagingDraft" in js
     assert "btnStageDraft.disabled" in js
+
+
+def test_phase9_taskpane_js_escaping_and_insertion_invariants():
+    """
+    Phase 9 Static Invariant Tests:
+    - taskpane.js implements escapeHtml escaping &, <, >, ", ' in strict order.
+    - taskpane.js implements formatReplyAsSafeHtml escaping before newline conversion.
+    - insertReplyIntoOutlook routes untrusted text through formatReplyAsSafeHtml.
+    - insertReplyIntoOutlook does not insert raw textToInsert into HTML templates.
+    - taskpane.js exports escapeHtml, formatReplyAsSafeHtml, and insertReplyIntoOutlook.
+    """
+    res = client.get("/add-in/taskpane.js")
+    assert res.status_code == 200
+    js = res.text
+
+    # Escaping helper exists and escapes all required entities
+    assert "function escapeHtml(str)" in js
+    assert ".replace(/&/g, \"&amp;\")" in js
+    assert ".replace(/</g, \"&lt;\")" in js
+    assert ".replace(/>/g, \"&gt;\")" in js
+    assert ".replace(/\"/g, \"&quot;\")" in js
+    assert ".replace(/'/g, \"&#39;\")" in js
+
+    # formatReplyAsSafeHtml converts newlines AFTER escaping
+    assert "function formatReplyAsSafeHtml(untrustedText)" in js
+    assert "escapeHtml(untrustedText).replace(/\\r?\\n/g, \"<br/>\")" in js
+
+    # insertReplyIntoOutlook uses safeHtml for Office.js insertion
+    insert_fn = js.split("function insertReplyIntoOutlook()")[1].split("let isStagingDraft")[0]
+    assert "formatReplyAsSafeHtml(textToInsert)" in insert_fn
+    assert "textToInsert.replace(/\\n/g, \"<br/>\")" not in insert_fn
+    assert "${htmlBody}" not in insert_fn
+    assert "${safeHtml}" in insert_fn
+
+    # Exports
+    assert "escapeHtml" in js.split("module.exports = {")[1]
+    assert "formatReplyAsSafeHtml" in js.split("module.exports = {")[1]
+    assert "insertReplyIntoOutlook" in js.split("module.exports = {")[1]
+
+
+def test_phase9_javascript_test_suite_execution():
+    """
+    Executes the direct Phase 9 JavaScript Outlook Content Security test suite.
+    Ensures all 48 test assertions execute and pass in Node.js runtime.
+    """
+    import subprocess
+    import sys
+
+    js_test_path = PROJECT_ROOT / "backend" / "tests" / "test_outlook_content_security.js"
+    assert js_test_path.is_file(), "test_outlook_content_security.js must exist"
+
+    result = subprocess.run(
+        ["node", str(js_test_path)],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT)
+    )
+
+    assert result.returncode == 0, f"Phase 9 JS test suite failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert "All 48/48 Phase 9 JavaScript Outlook Content Security tests passed successfully!" in result.stdout

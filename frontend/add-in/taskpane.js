@@ -560,16 +560,16 @@ function insertReplyIntoOutlook() {
         return;
     }
 
-    const htmlBody = textToInsert.replace(/\n/g, "<br/>");
+    const safeHtml = formatReplyAsSafeHtml(textToInsert);
 
-    if (window.Office && Office.context && Office.context.mailbox && Office.context.mailbox.item) {
+    if (typeof Office !== "undefined" && Office && Office.context && Office.context.mailbox && Office.context.mailbox.item) {
         const item = Office.context.mailbox.item;
         
         // If in Read mode, trigger displayReplyForm
         if (typeof item.displayReplyForm === "function") {
             try {
                 item.displayReplyForm({
-                    htmlBody: `<div style="font-family: Arial, sans-serif; font-size: 14px; color: #222;">${htmlBody}</div>`
+                    htmlBody: `<div style="font-family: Arial, sans-serif; font-size: 14px; color: #222;">${safeHtml}</div>`
                 });
                 showToast("Reply form opened with staged draft!");
                 return;
@@ -581,7 +581,7 @@ function insertReplyIntoOutlook() {
         // If already composing, set body
         if (item.body && typeof item.body.setAsync === "function") {
             item.body.setAsync(
-                `<div style="font-family: Arial, sans-serif; font-size: 14px; color: #222;">${htmlBody}</div>`,
+                `<div style="font-family: Arial, sans-serif; font-size: 14px; color: #222;">${safeHtml}</div>`,
                 { coercionType: Office.CoercionType.Html },
                 (asyncResult) => {
                     if (asyncResult.status === Office.AsyncResultStatus.Succeeded) {
@@ -792,7 +792,17 @@ function showLoading(isLoading, msg = "Loading...") {
 
 function escapeHtml(str) {
     if (!str) return "";
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function formatReplyAsSafeHtml(untrustedText) {
+    if (!untrustedText) return "";
+    return escapeHtml(untrustedText).replace(/\r?\n/g, "<br/>");
 }
 
 // Event Listeners
@@ -851,6 +861,9 @@ if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         validateStageDraftResponse,
         stageCloudDraft,
-        getAuthHeaders
+        getAuthHeaders,
+        escapeHtml,
+        formatReplyAsSafeHtml,
+        insertReplyIntoOutlook
     };
 }
