@@ -1,6 +1,8 @@
 # Python virtual environment & bytecode
 .venv/
+.venv*/
 venv/
+venv*/
 ENV/
 __pycache__/
 *.py[cod]

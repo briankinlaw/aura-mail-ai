@@ -140,7 +140,9 @@ python3.12 -m venv .venv
 # Run full Python test suite
 .venv/bin/python -m pytest
 
-# Run frontend risk validator tests (Node 24 standardized via .nvmrc)
+# Run frontend JavaScript test suites (Node 24 standardized via .nvmrc)
+node backend/tests/test_outlook_content_security.js
+node backend/tests/test_stage_cloud_draft.js
 node backend/tests/test_frontend_risk_validator.js
 ```
 

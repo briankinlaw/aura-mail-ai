@@ -86,7 +86,13 @@ def scan_repository_for_secrets(base_dir: Path) -> List[Dict[str, Any]]:
     scan_exts = {".json", ".py", ".md", ".txt", ".yaml", ".yml", ".env", ".sh"}
 
     for root, dirs, files in os.walk(base_dir):
-        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        dirs[:] = [
+            d for d in dirs
+            if d not in ignore_dirs
+            and not d.startswith(".venv")
+            and not d.startswith("venv")
+            and not d.startswith(".env")
+        ]
         for f in files:
             file_path = Path(root) / f
             # Skip binary and example files
