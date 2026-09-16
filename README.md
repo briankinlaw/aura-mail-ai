@@ -120,13 +120,26 @@ outlook-ai-assistant/
 ├── scripts/
 │   ├── aura-recover-provenance # Offline CLI Provenance Recovery Tool
 │   └── smoke_test_live.py      # Read-Only Live Diagnostics & Smoke Test
-├── manifest.xml                # Native Outlook Web Add-in Manifest
-├── ARCHITECTURE.md             # In-Depth System Design & Topology Document
-├── MAC_SMOKE_TEST_CHECKLIST.md # macOS & New Outlook Step-by-Step Validation Checklist
-├── MIGRATION_v1.0_to_v1.1.md   # Upgrade & Configuration Migration Guide
-├── PEER_REVIEW_GUIDE.md        # Codebase Walkthrough & Peer Review Guide
-├── SECURITY_REPORT.md          # Security Remediation & Secrets Audit Report
-├── THREAT_MODEL.md             # Local Desktop Threat Model & Boundary Specification
+├── docs/
+│   ├── README.md               # Master Authoritative Documentation Index
+│   ├── architecture/           # System & Component Architecture
+│   │   └── ARCHITECTURE.md
+│   ├── security/               # Threat Model & Security Audits
+│   │   ├── THREAT_MODEL.md
+│   │   ├── SECURITY_REPORT.md
+│   │   └── REMEDIATION_BASELINE.md
+│   ├── operations/             # Setup & Smoke Test Guides
+│   │   ├── OUTLOOK_ADDIN_SETUP.md
+│   │   └── MAC_SMOKE_TEST_CHECKLIST.md
+│   ├── development/            # Peer Review & Engineering Standards
+│   │   ├── PEER_REVIEW_GUIDE.md
+│   │   └── CHATGPT_REVIEW_PROMPT.md
+│   ├── release/                # Release & Migration Guides
+│   │   └── MIGRATION_v1.0_to_v1.1.md
+│   └── history/                # Remediation History & Audit Lineage
+│       └── README.md
+├── evidence/                   # Standalone Release Evidence Store
+│   └── README.md
 ├── requirements.txt            # Python Dependencies
 ├── run.sh                      # 1-Click Startup Script
 └── README.md                   # Project Overview
@@ -166,7 +179,7 @@ python3.12 -m venv .venv
 #### B. Google Cloud / Gmail API Setup
 1. In Google Cloud Console, configure OAuth 2.0 Client ID (Desktop application).
 2. Required OAuth scope: `https://www.googleapis.com/auth/gmail.modify` (consolidated scope for inbox fetch, MIME draft composition, and quarantine labels).
-3. While Google's permission model grants broad API capabilities under `gmail.modify`, Aura's application code contains zero transmission execution paths, and Aura policy strictly forbids direct mail transmission.
+3. `gmail.modify` is the sole explicitly configured Gmail scope. Aura exposes it only through operations implemented within the draft-only application boundary. Provider technical capability, Aura application capability, and Aura authorization to act are distinct security concepts. Neither provider credential capability nor user intent grants Aura direct mail-transmission authority.
 
 #### C. Spectrum / Custom IMAP Setup
 - In the **Cloud Accounts** tab, select **Connect New Account** ➔ **IMAP**.
@@ -197,14 +210,17 @@ Open your browser to: **`https://localhost:8000`**
 
 ---
 
-## 📖 Documentation Links
-- 📐 [**System Architecture & Technical Design (ARCHITECTURE.md)**](ARCHITECTURE.md)
-- 🔒 [**Security & Architecture Audit Report (SECURITY_REPORT.md)**](SECURITY_REPORT.md)
-- 🛡️ [**Local Desktop Threat Model (THREAT_MODEL.md)**](THREAT_MODEL.md)
-- 🧭 [**Peer Review & Evaluation Guide (PEER_REVIEW_GUIDE.md)**](PEER_REVIEW_GUIDE.md)
-- 🔄 [**Migration Guide v1.0 ➔ v1.1 (MIGRATION_v1.0_to_v1.1.md)**](MIGRATION_v1.0_to_v1.1.md)
-- 📋 [**macOS Smoke Test Checklist (MAC_SMOKE_TEST_CHECKLIST.md)**](MAC_SMOKE_TEST_CHECKLIST.md)
-- 🧩 [**Outlook Add-in Setup Guide (OUTLOOK_ADDIN_SETUP.md)**](OUTLOOK_ADDIN_SETUP.md)
+## 📖 Authoritative Documentation Index
+For detailed technical documentation, refer to the [**Master Documentation Index (docs/README.md)**](docs/README.md):
+- 📐 [**System Architecture & Technical Design**](docs/architecture/ARCHITECTURE.md) (`Status: CURRENT`)
+- 🛡️ [**Local Desktop Threat Model**](docs/security/THREAT_MODEL.md) (`Status: CURRENT`)
+- 🔒 [**Security & Architecture Audit Report**](docs/security/SECURITY_REPORT.md) (`Status: CURRENT`)
+- 📜 [**Historical Remediation & Audit Lineage**](docs/history/README.md) (`Status: HISTORICAL INDEX`)
+- 🧭 [**Peer Review & Evaluation Guide**](docs/development/PEER_REVIEW_GUIDE.md) (`Status: CURRENT`)
+- 🔄 [**Migration Guide v1.0 ➔ v1.1**](docs/release/MIGRATION_v1.0_to_v1.1.md) (`Status: CURRENT`)
+- 📋 [**macOS Smoke Test Checklist**](docs/operations/MAC_SMOKE_TEST_CHECKLIST.md) (`Status: CURRENT`)
+- 🧩 [**Outlook Add-in Setup Guide**](docs/operations/OUTLOOK_ADDIN_SETUP.md) (`Status: CURRENT`)
+- 📦 [**Release Evidence Repository**](evidence/README.md) (`Status: EVIDENCE STORE`)
 
 ---
 
