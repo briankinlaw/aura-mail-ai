@@ -44,7 +44,6 @@ Aura Mail AI v1.1 includes automatic migration logic in `backend/migration.py`:
 3. Request the following delegated permissions:
    - `Mail.ReadWrite` (Read inboxes and stage cloud drafts in Drafts folder)
    - `User.Read` (Resolve primary email and aliases)
-   - `offline_access` (Token refresh)
    *(Note: `Mail.Send` is strictly omitted as Aura contains zero direct transmission authority)*
 4. Enter your **Application (client) ID** in the **Engine Settings** tab in Aura Mail AI.
 5. In the **Cloud Accounts** tab, click **Start Microsoft Device Sign-In Flow** or sign in via browser.

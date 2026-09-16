@@ -87,9 +87,9 @@ graph TD
 
 #### Provider Scope & Capability Truth Table
 
-| Provider | Declared Scope / Auth | Provider Technical Capability | Aura Exposed Application Capability | Aura Policy Authorization |
+| Provider | Explicit Aura Scope Configuration | Provider Technical Capability | Aura Exposed Application Capability | Aura Policy Authorization |
 | :--- | :--- | :--- | :--- | :--- |
-| **Microsoft Graph** | `User.Read`, `Mail.ReadWrite`, `offline_access` | Read/write mail, create drafts, manage folders (`Mail.Send` omitted) | Read inbox, compose/stage drafts, upload attachments, manage folders | Staging and inbox reading only; direct mail transmission forbidden |
+| **Microsoft Graph** | `User.Read`, `Mail.ReadWrite` | Read/write mail, create drafts, manage folders (`Mail.Send` omitted) | Read inbox, compose/stage drafts, upload attachments, manage folders | Staging and inbox reading only; direct mail transmission forbidden |
 | **Gmail API** | `https://www.googleapis.com/auth/gmail.modify` | Read/write mail, create drafts, modify labels (Token technically permits broader provider actions) | Read inbox, compose/stage MIME drafts, label quarantine/trash | Staging and inbox reading only; direct mail transmission forbidden |
 | **RFC 3501 IMAP** | User-configured mailbox credentials | Read/append/delete mailbox messages | Read inbox, append MIME drafts directly to Drafts folder | Staging and inbox reading only; direct mail transmission forbidden |
 | **Demo Provider** | None (in-memory mock data) | Isolated mock generation | Offline sandbox triage and draft simulation | Sandboxed simulation; transmission impossible |
@@ -130,7 +130,7 @@ graph TD
 - **Gemini Downgrade Prohibition**: Model/LLM analysis may add risk context or elevate severity, but cannot downgrade deterministic security findings below the heuristic baseline floor.
 - **Universal Upward Normalization**: Contradictory signals (e.g. low textual label paired with high-risk heuristic evidence) resolve upward to the strongest valid security rank. Normalization does not fabricate evidence.
 - **Decision Verdict**: `SAFE` / `PROCEED` indicates the evaluated content satisfied the Risk Sentinel decision process for the exact evaluated draft; it never acts as mail transmission authorization.
-- **Exact-Draft Correlation & Invalidation**: Risk audit state is bound to the exact content hash of the draft; manual edits or regeneration mark prior audits as `STALE` and fail closed until re-evaluated.
+- **Exact-Draft Correlation & Fail-Closed Lifecycle**: `VERIFIED SAFE` applies only to a current, successfully completed, structurally valid audit correlated to the exact evaluated draft hash. Stale, failed, malformed, mismatched, or otherwise invalid audit responses fail closed and cannot retain or confer `VERIFIED SAFE` status. Manual edits or regeneration mark prior audits as `STALE` and fail closed until re-evaluated.
 
 ### 3.6 Calendar Availability Broker (`backend/calendar_broker/`)
 - **Proposed vs Verified Availability**: Distinguishes proposed time slots from trusted provider-verified availability.

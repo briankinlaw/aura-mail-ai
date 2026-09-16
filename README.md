@@ -57,7 +57,7 @@ An intelligent, cloud-first AI assistant and executive dashboard compatible with
    - Gemini/LLM output cannot downgrade deterministic security findings.
    - Normalization resolves contradictory risk posture upward without fabricating evidence.
    - A `SAFE` / `PROCEED` audit verdict confirms content passed evaluation for the exact evaluated draft, but never serves as mail transmission authorization.
-   - Audit state is exact-draft scoped; any subsequent draft modification renders prior audits stale and requires re-evaluation.
+   - `VERIFIED SAFE` applies only to a current, successfully completed, structurally valid audit correlated to the exact evaluated draft hash. Stale, failed, malformed, mismatched, or otherwise invalid audit responses fail closed and cannot retain or confer `VERIFIED SAFE` status. Manual edits or regeneration mark prior audits as `STALE` and fail closed until re-evaluated.
 
 8. **Calendar Availability Broker (Proposed vs Verified Availability)**:
    - Distinguishes proposed booking windows from trusted provider-verified availability.
@@ -160,7 +160,6 @@ python3.12 -m venv .venv
 5. Under **API permissions**, add delegated permissions:
    - `Mail.ReadWrite` (Read inboxes and stage drafts in Drafts folder)
    - `User.Read` (Profile resolution)
-   - `offline_access` (Token refresh)
    *(Note: `Mail.Send` is strictly omitted from Graph scopes)*
 6. Copy the **Application (client) ID** and paste it into Aura Mail AI **Engine Settings**.
 

@@ -100,7 +100,7 @@ If you sideload the manifest in Outlook on the Web (Step 3), it will automatical
    - Extracted recruiter name, company, and role are verified.
    - Recommended Canonical Resume variant is selected.
 4. **Choose Tone & Options**:
-   - Toggle **Include 3 Non-Conflicting Booking Windows** to embed real-time calendar availability.
+   - Toggle **Include 3 Non-Conflicting Booking Windows** to embed proposed or provider-verified booking windows (depending on verification state).
    - Select your preferred executive tone (*Warm & Exec*, *Direct*, or *Calendar Focus*).
 5. **Stage or Insert**:
    - Click **Insert into Outlook Reply** to pre-fill Outlook's native compose window. All text is HTML-escaped at the rendering boundary before insertion.
