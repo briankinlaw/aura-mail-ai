@@ -1,5 +1,7 @@
 # Aura Mail AI v1.1 — Security Remediation Baseline (Phase 0)
 
+> **Historical Audit Record (Phase 0 Baseline)**: This document records the historical baseline established on September 13, 2026. For current normative architecture, threat models, and security guarantees, refer to [ARCHITECTURE.md](file:///Users/briankinlaw/aura-mail-ai/ARCHITECTURE.md), [THREAT_MODEL.md](file:///Users/briankinlaw/aura-mail-ai/THREAT_MODEL.md), and [SECURITY_REPORT.md](file:///Users/briankinlaw/aura-mail-ai/SECURITY_REPORT.md).
+
 **Baseline Commit**: `6575b38c9539712a20775da73d69760f0db97ae0`  
 **Date**: September 13, 2026  
 **Status**: Baseline Established & Invariant Verified  
@@ -67,7 +69,7 @@
 ## 3. Dependency Analysis & Identified Issues
 
 ### Undeclared Runtime Dependencies in `requirements.txt`
-The following packages are installed in `.venv` and utilized by optional features, but were missing from `requirements.txt`:
+The following packages were installed in `.venv` and utilized by optional features, but were missing from `requirements.txt` at Phase 0 baseline:
 1. `rumps` (v0.4.0) — Used by `backend/menubar_app.py`.
 2. `pyobjc-core` & `pyobjc-framework-Cocoa` (v10.3.2) — Required backend for macOS native menu bar.
 3. `pillow` (v11.3.0) — Used for add-in icon generation.
@@ -81,8 +83,8 @@ The following packages are installed in `.venv` and utilized by optional feature
    - In non-dry-run mode, `run_daemon_cycle()` invokes `save_draft_reply()` and strictly never calls `send_reply()`.
 2. **`Zero Plaintext Secrets on Disk`**:
    - All OAuth tokens and passwords remain isolated in macOS Keychain (`keyring`).
-3. **`Canonical Grounding & Accomplishment Ledger Accuracy`**:
-   - Zero-hallucination constraint matrix enforced across `canonical_engine.py` and `risk_evaluator.py`.
+3. **`Canonical Grounding & Accomplishment Ledger Evidence Binding`**:
+   - Evidence-bounded constraint matrix enforced across `canonical_engine.py` and `risk_evaluator.py`.
 4. **`Provider Abstraction Compatibility`**:
    - Graph, Gmail, IMAP, and Demo providers conform to `ProviderManager` contracts.
 
@@ -95,11 +97,5 @@ The following packages are installed in `.venv` and utilized by optional feature
 - **Cross-Site Request Attacks (CSRF)**: Prevented via mandatory custom headers (`Authorization: Bearer <token>` or `X-Aura-Session-Token: <token>`) and server-side `Origin` header verification on all privileged endpoints.
 - **Sandboxed & Opaque Origins**: `Origin: null` is strictly rejected by CORS preflight and server-side verification.
 - **DNS Rebinding & Host Manipulation**: Enforced via `TrustedHostMiddleware` (rejecting any unexpected `Host` header).
-- **Accidental Unauthenticated Access**: All 22 state-changing, credential-mutating, or execution-triggering routes require authentication and fail closed (`401 Unauthorized` or `403 Forbidden`).
+- **Accidental Unauthenticated Access**: All state-changing, credential-mutating, or execution-triggering routes require authentication and fail closed (`401 Unauthorized` or `403 Forbidden`).
 - **Loopback-Only Network Isolation**: All launchers bind strictly to `127.0.0.1` / `localhost` (zero `0.0.0.0` exposure).
-
-### Explicit Out-of-Scope / Accepted Risks
-- **Same-User Process Compromise**: Malicious processes already executing under the same logged-in macOS user account ($UID) operate within the same operating-system privilege domain and can access user-space files (`~/.aura_session_token`), databases, and process memory. Aura does not claim OS-process-level isolation against same-user software.
-- **Same-Origin XSS**: If arbitrary JavaScript execution occurs within the same origin (`http://localhost:8000`), in-memory session tokens can be accessed. (CSP hardening is tracked for future UI refinement).
-- **Root/Admin Compromise**: System-wide administrative compromise supersedes application-level controls.
-

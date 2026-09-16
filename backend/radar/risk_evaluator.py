@@ -1,7 +1,7 @@
 """
 Aura Mail AI - Gemini Risk Sentinel & Second Opinion Evaluator
 Provides monotonic, non-downgradable second-opinion risk assessments on inbound recruiter emails,
-generated draft replies, and automated actions to ensure zero-hallucination,
+generated draft replies, and automated actions to ensure factual grounding,
 legal/compensation safety, and strict draft-first enforcement.
 
 SECURITY INVARIANTS:

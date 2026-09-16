@@ -265,7 +265,7 @@ def log_grounding_audit(
     facts_used: List[str],
     reply_text: str
 ):
-    """Logs strict Accomplishment Ledger grounding for compliance & zero-hallucination audits."""
+    """Logs strict Accomplishment Ledger grounding for compliance & information-integrity audits."""
     conn = get_db_connection()
     cursor = conn.cursor()
     now_iso = datetime.now().isoformat()

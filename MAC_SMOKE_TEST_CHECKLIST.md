@@ -39,9 +39,10 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
    .venv/bin/python scripts/smoke_test_live.py
    ```
    *Verify*:
-   - Safety mode is reported as `SAFE_REVIEW`.
+   - Safety mode is reported as `SAFE_REVIEW` (`DRAFT_ONLY` policy enforcement).
    - Accounts report truthful connection statuses (no fake `Connected` just because Outlook is running).
    - Sync errors or empty counts do NOT inject sample/demo emails.
+   - Live email transmission is strictly prohibited (`ANY AURA-CONTROLLED EXECUTION -> DIRECT MAIL TRANSMISSION FORBIDDEN`).
 
 2. **Launch Application Server**:
    ```bash
@@ -73,6 +74,7 @@ Follow this checklist to validate Aura Mail AI v1.1 on your MacBook with **New O
   - Check the **Drafts** folder for `kinlawb@outlook.com`.
   - Verify the reply draft appears as a threaded reply with the original email history preserved.
   - Verify the canonical resume `.docx` or `.pdf` file is attached to the draft.
+  - Verify that final review and sending are performed by the user in Outlook (Aura performs zero direct transmission).
 
 ### Step 3: Noise Cleaner & Quarantine
 - [ ] Switch to the **Noise Cleaner & Triage** tab.

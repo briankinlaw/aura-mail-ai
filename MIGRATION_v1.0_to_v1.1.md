@@ -13,14 +13,14 @@ This guide documents the technical differences between **v1.0** and **v1.1**, th
 | **Multi-Account Support** | Monolithic inbox scrape; no account-level routing | **Composite message IDs** (`provider:account_id:native_id`) with alias de-duplication |
 | **Credential Storage** | Plaintext keys and passwords in `data/settings.json` | **macOS Keychain** via Python `keyring` integration |
 | **Error Handling** | Silent fallback to sample reachouts on failure; fake success | **Structured Operation Results**; truthful diagnostic errors; no fake success |
-| **Safety Defaults** | `SAFE_REVIEW` (drafts only) | `SAFE_REVIEW` (drafts only); live sending strictly prevented in tests |
-| **Draft Creation** | AppleScript GUI manipulation | Threaded cloud API drafts with separate attachment upload validation |
+| **Safety Defaults** | `SAFE_REVIEW` (drafts only) | **`DRAFT_ONLY` & `MANUAL_SEND_ONLY`**: Direct mail transmission by Aura is permanently forbidden (`ANY AURA-CONTROLLED EXECUTION -> DIRECT MAIL TRANSMISSION FORBIDDEN`). Final send executed exclusively by human in native client. |
+| **Draft Creation** | AppleScript GUI manipulation | Threaded cloud API drafts with separate attachment upload validation and provider confirmation (`remote_object_id`) |
 
 ---
 
 ## 2. Automatic Configuration Migration
 
-Aura Mail AI v1.1 includes automatic migration logic in [backend/migration.py](file:///Users/briankinlaw/.gemini/antigravity-ide/scratch/outlook-ai-assistant/backend/migration.py):
+Aura Mail AI v1.1 includes automatic migration logic in `backend/migration.py`:
 
 1. **Non-Secret Preferences**:
    - Brian's profile (`full_name`, `summary_bio`, `core_skills`, `target_roles`, `work_preferences`, `custom_reply_instructions`) is preserved automatically.
@@ -45,16 +45,21 @@ Aura Mail AI v1.1 includes automatic migration logic in [backend/migration.py](f
    - `Mail.ReadWrite` (Read inboxes and stage cloud drafts in Drafts folder)
    - `User.Read` (Resolve primary email and aliases)
    - `offline_access` (Token refresh)
-   *(Note: `Mail.Send` is strictly omitted as Aura uses the native draft-and-send model)*
+   *(Note: `Mail.Send` is strictly omitted as Aura contains zero direct transmission authority)*
 4. Enter your **Application (client) ID** in the **Engine Settings** tab in Aura Mail AI.
 5. In the **Cloud Accounts** tab, click **Start Microsoft Device Sign-In Flow** or sign in via browser.
 
-### B. Spectrum / Roadrunner & Custom IMAP Accounts
+### B. Google Cloud / Gmail API (OAuth 2.0)
+1. Configure OAuth 2.0 Client Credentials in Google Cloud Console.
+2. Requested scope: `https://www.googleapis.com/auth/gmail.modify` (consolidated scope for inbox sync, MIME draft composition, and label quarantine).
+3. *(Note: While Google's permission model grants broad API capabilities under `gmail.modify`, Aura's application code exposes zero transmission routes, and Aura policy strictly forbids direct transmission)*
+
+### C. Spectrum / Roadrunner & Custom IMAP Accounts
 1. In the **Cloud Accounts** tab, select **Connect New Account** ➔ **IMAP**.
 2. Enter your email (e.g. `cbkinlaw@satx.rr.com` or `brian@mavencode.com`) and password.
 3. The password is automatically verified and stored in your **macOS Keychain**.
 4. Draft responses are staged directly in the IMAP `Drafts` folder for native review and dispatch.
 
-### C. Explicit Demo Mode
+### D. Explicit Demo Mode
 - If you wish to demonstrate the application offline or in a sandbox, enable **Demo Mode** in Settings.
 - When enabled, a yellow **DEMO MODE ACTIVE** banner is displayed and mock data is labeled with `[DEMO]`.

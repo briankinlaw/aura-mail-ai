@@ -10,10 +10,10 @@ The Aura Mail AI Outlook Add-in embeds the **Opportunity Radar**, **Canonical Ca
 
 ### Core Capabilities Inside Outlook
 1. **Opportunity Radar Analysis**: 0–100% deterministic fit scoring against your verified executive career pillars, company detection, and role compensation tiering.
-2. **Canonical Career System (CCS v2.1) Grounding**: Strict 100% factual accuracy tied directly to your Accomplishment Ledger (influencing $8M in Google Cloud revenue, $100M+ enterprise impact).
-3. **Availability Broker Integration**: Automatically calculates and embeds 3 non-conflicting booking windows directly into your draft.
-4. **1-Click Outlook Reply Pre-Fill**: Opens or populates Outlook's native compose reply window with your staged draft.
-5. **Draft-First Safety Policy**: Responses are never automatically sent; they are staged for executive review.
+2. **Canonical Career System (CCS v2.1) Grounding**: Information-integrity control binding generated drafts directly to verified metrics in your Accomplishment Ledger ($8M Google Cloud revenue influenced, $100M+ enterprise impact).
+3. **Availability Broker Integration**: Calculates and embeds 3 proposed booking windows or trusted provider-verified availability directly into your draft.
+4. **1-Click Outlook Reply Pre-Fill**: Pre-fills Outlook's native compose reply window with your staged draft after HTML-escaping untrusted content at the rendering boundary (`formatReplyAsSafeHtml`).
+5. **Draft-First Safety Policy**: Direct mail transmission by Aura is permanently forbidden (`ANY AURA-CONTROLLED EXECUTION -> DIRECT MAIL TRANSMISSION FORBIDDEN`). Responses are staged for executive review; final outbound transmission is executed exclusively by the user via Outlook's native Send button.
 
 ---
 
@@ -55,10 +55,9 @@ Or start with `uvicorn`:
 
 The taskpane UI is accessible at `https://localhost:8000/add-in/taskpane.html`.
 
-
 ---
 
-## 🌐 Step 2: Sideload in Outlook on the Web (Recommended)
+## 🌐 Step 3: Sideload in Outlook on the Web (Recommended)
 
 Outlook on the Web provides the fastest and most seamless way to sideload custom add-in manifests across all your devices.
 
@@ -77,10 +76,10 @@ Once installed, the **Aura Radar** button will appear on the ribbon of every mes
 
 ---
 
-## 🍎 Step 3: Sideload in Microsoft Outlook for Mac
+## 🍎 Step 4: Sideload in Microsoft Outlook for Mac
 
 ### Method A: Cloud Sync (Easiest)
-If you sideload the manifest in Outlook on the Web (Step 2), it will automatically synchronize to your **Microsoft Outlook for Mac** client under the same account.
+If you sideload the manifest in Outlook on the Web (Step 3), it will automatically synchronize to your **Microsoft Outlook for Mac** client under the same account.
 
 ### Method B: Manual Sideloading in Outlook for Mac
 1. Open **Microsoft Outlook for Mac**.
@@ -92,7 +91,7 @@ If you sideload the manifest in Outlook on the Web (Step 2), it will automatical
 
 ---
 
-## 📋 Step 4: Using the Add-in
+## 📋 Step 5: Using the Add-in & Workflow Boundary
 
 1. **Open an Inbound Email**: Click on any recruiter outreach or email inquiry in your Inbox.
 2. **Launch Aura Radar**: Click the **Aura Radar** button on the message toolbar.
@@ -104,9 +103,11 @@ If you sideload the manifest in Outlook on the Web (Step 2), it will automatical
    - Toggle **Include 3 Non-Conflicting Booking Windows** to embed real-time calendar availability.
    - Select your preferred executive tone (*Warm & Exec*, *Direct*, or *Calendar Focus*).
 5. **Stage or Insert**:
-   - Click **Insert into Outlook Reply** to pre-fill Outlook's native compose window.
-   - Click **Stage in Cloud Drafts** to save the draft in your mailbox with your canonical `.docx` resume attached.
+   - Click **Insert into Outlook Reply** to pre-fill Outlook's native compose window. All text is HTML-escaped at the rendering boundary before insertion.
+   - Click **Stage in Cloud Drafts** to save the draft to your cloud mailbox (`POST /api/emails/{id}/save-draft`). Aura requires a confirmed provider `remote_object_id` before reporting success.
    - Click **Copy** to grab the response text to your clipboard anytime.
+6. **Final User Transmission**:
+   - Final review and outbound transmission are performed exclusively by the human executive using Outlook's native **Send** button. Aura provides zero direct mail transmission capabilities.
 
 ---
 
@@ -115,12 +116,13 @@ If you sideload the manifest in Outlook on the Web (Step 2), it will automatical
 You can test the add-in and all API endpoints using the automated test suite:
 
 ```bash
-.venv/bin/pytest backend/tests/test_addin.py -v
+.venv/bin/python -m pytest backend/tests/test_addin.py -v
 ```
 
-All 5 test cases will validate:
-- `manifest.xml` schema structure and permission declarations.
-- Taskpane HTML, CSS, JavaScript, and high-res icon asset delivery.
+All test cases validate:
+- `manifest.xml` schema structure and `ReadWriteItem` permission declarations.
+- Taskpane HTML, CSS, JavaScript, and high-res icon asset delivery over HTTPS.
 - `/api/radar/triage` recruiter scoring logic.
-- `/api/radar/draft` grounded reply synthesis.
-- `/api/calendar/availability` booking window calculations.
+- `/api/radar/draft` grounded reply synthesis and untrusted text handling.
+- `/api/calendar/availability` booking window calculations and provenance enforcement.
+- Cloud draft staging response validation and transmission exclusion.
