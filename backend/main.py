@@ -38,7 +38,7 @@ from backend.config import (
     get_ssl_context_paths,
     require_ssl_context_paths
 )
-from backend.providers.base import decode_composite_id
+from backend.providers.base import decode_composite_id, encode_composite_id
 
 from backend.security import get_secret, set_secret, mask_secret
 from backend import safety_policy
@@ -1055,10 +1055,30 @@ def generate_reply_for_email(email_id: str, request_params: ReplyDraftRequest):
 @app.post("/api/emails/{email_id}/save-draft", dependencies=[Depends(require_local_auth)])
 def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
     if email_id not in CACHED_EMAILS:
-        raise HTTPException(status_code=404, detail="Email not found")
+        norm_id = encode_composite_id(*decode_composite_id(email_id))
+        if norm_id in CACHED_EMAILS:
+            email_id = norm_id
+        else:
+            raise HTTPException(status_code=404, detail="Email not found")
     
     with _EMAIL_STATE_LOCK:
         email_msg = CACHED_EMAILS[email_id]
+
+        # Account Context Validation (Phase 8 Invariant: Account/Message mismatch MUST fail closed)
+        req_account_id = payload.get("account_id")
+        _, decoded_account, _ = decode_composite_id(email_msg.id)
+        msg_account_id = email_msg.account_id or decoded_account
+        if req_account_id and msg_account_id:
+            if req_account_id.strip().lower() != msg_account_id.strip().lower():
+                logger.warning(
+                    f"Account/message mismatch for save-draft: requested '{req_account_id}', "
+                    f"message owned by '{msg_account_id}'"
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Account context mismatch: requested account '{req_account_id}' does not match message account '{msg_account_id}'."
+                )
+
         reply_body = payload.get("reply_body", email_msg.draft_reply or "")
         user_profile = get_user_profile()
         resume_file = payload.get("resume_filename", user_profile.active_resume_file)
@@ -1164,7 +1184,8 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
     result = provider_manager.save_draft_reply(
         message_id=email_msg.id,
         reply_body=reply_body,
-        resume_filename=resume_file
+        resume_filename=resume_file,
+        account_id=req_account_id or msg_account_id
     )
     
     with _EMAIL_STATE_LOCK:

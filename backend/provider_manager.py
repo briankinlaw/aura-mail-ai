@@ -316,21 +316,35 @@ class ProviderManager:
         self, 
         message_id: str, 
         reply_body: str, 
-        resume_filename: Optional[str] = None
+        resume_filename: Optional[str] = None,
+        account_id: Optional[str] = None
     ) -> ProviderOperationResult:
-        provider, account_id, native_id, err_code = self.get_provider_for_message(message_id)
+        provider, resolved_account_id, native_id, err_code = self.get_provider_for_message(message_id)
         if not provider:
             return ProviderOperationResult(
                 success=False,
                 provider="UNKNOWN",
-                account_id=account_id or "unknown",
+                account_id=account_id or resolved_account_id or "unknown",
                 operation="CREATE_DRAFT",
                 error_code=err_code or "UNROUTABLE_MESSAGE",
                 safe_message=f"Cannot create draft for unroutable message '{message_id}': {err_code or 'routing failed'}",
                 retryable=False
             )
+
+        if account_id and resolved_account_id:
+            if account_id.strip().lower() != resolved_account_id.strip().lower():
+                return ProviderOperationResult(
+                    success=False,
+                    provider=provider.provider_type.value if hasattr(provider, "provider_type") else "UNKNOWN",
+                    account_id=account_id,
+                    operation="CREATE_DRAFT",
+                    error_code="ACCOUNT_MISMATCH",
+                    safe_message=f"Account mismatch: requested '{account_id}' does not match message owner '{resolved_account_id}'.",
+                    retryable=False
+                )
+
         return provider.create_reply_draft(
-            account_id=account_id,
+            account_id=resolved_account_id,
             message_id=message_id,
             reply_body=reply_body,
             resume_filename=resume_filename

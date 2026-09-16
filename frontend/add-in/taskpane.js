@@ -53,6 +53,8 @@ window.fetch = async function(url, options = {}) {
 
 // State
 let currentEmailData = {
+    id: null,
+    account_id: null,
     subject: "Senior Solutions Architect & Strategic Advisor Reachout",
     senderName: "Sarah Jenkins",
     senderEmail: "sjenkins@techrecruitingpartners.com",
@@ -168,6 +170,7 @@ async function initOutlookItem() {
                     const cachedEmail = resolvedData.email;
                     currentEmailData = {
                         id: resolvedData.composite_id,
+                        account_id: cachedEmail.account_id || userEmail,
                         subject: cachedEmail.subject || item.subject || "No Subject",
                         senderName: cachedEmail.sender_name || (item.from ? item.from.displayName : "Recruiter"),
                         senderEmail: cachedEmail.sender_email || (item.from ? item.from.emailAddress : ""),
@@ -190,6 +193,7 @@ async function initOutlookItem() {
     }
 
     // Direct read from open Outlook item
+    currentEmailData.account_id = userEmail;
     currentEmailData.subject = item.subject || "No Subject";
     
     if (item.from) {
@@ -230,9 +234,11 @@ async function initStandaloneMode() {
         });
         if (res.ok) {
             const emails = await res.json();
-            const recruiterEmail = emails.find(e => e.classification && e.classification.is_resume_request);
+            const recruiterEmail = (Array.isArray(emails) && emails.find(e => e.classification && e.classification.is_resume_request)) || (Array.isArray(emails) && emails[0]) || null;
             if (recruiterEmail) {
                 currentEmailData = {
+                    id: recruiterEmail.id,
+                    account_id: recruiterEmail.account_id,
                     subject: recruiterEmail.subject,
                     senderName: recruiterEmail.sender_name,
                     senderEmail: recruiterEmail.sender_email,
@@ -595,22 +601,157 @@ function insertReplyIntoOutlook() {
     showToast("Copied to clipboard! Ready to paste into Outlook.");
 }
 
+let isStagingDraft = false;
+
+/**
+ * Validates backend response contract for cloud draft staging.
+ * Requires successful HTTP status, parsed JSON object, success flag, and valid non-empty string draft ID.
+ */
+function validateStageDraftResponse(res, data) {
+    if (!res || !res.ok) {
+        return {
+            isValid: false,
+            errorType: "HTTP_ERROR",
+            statusCode: res ? res.status : 0,
+            message: `HTTP ${res ? res.status : "unknown"}`
+        };
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+        return {
+            isValid: false,
+            errorType: "MALFORMED_RESPONSE",
+            message: "Malformed response shape from server."
+        };
+    }
+    if (!data.success) {
+        return {
+            isValid: false,
+            errorType: "PROVIDER_FAILURE",
+            message: data.safe_message || data.error_code || "Provider rejected draft staging."
+        };
+    }
+    const remoteId = data.remote_object_id || data.draft_id;
+    if (!remoteId || typeof remoteId !== "string" || !remoteId.trim()) {
+        return {
+            isValid: false,
+            errorType: "MISSING_DRAFT_ID",
+            message: "Authoritative provider draft identifier missing from confirmation."
+        };
+    }
+    return {
+        isValid: true,
+        draftId: remoteId.trim(),
+        message: data.safe_message || "Draft staged successfully in cloud mailbox!"
+    };
+}
+
 /**
  * Stage in Cloud Drafts via Aura Backend API
+ *
+ * Persistence operation only: creates/stages a provider draft in Outlook/Graph drafts folder.
+ * NEVER invokes, authorizes, or implies provider send.
  */
 async function stageCloudDraft() {
-    const replyText = el.draftReplyText.value.trim();
+    if (isStagingDraft) {
+        return;
+    }
+
+    const emailId = currentEmailData && currentEmailData.id ? currentEmailData.id : null;
+    if (!emailId) {
+        showToast("Cannot stage draft: Email message context is missing or unlinked.");
+        return;
+    }
+
+    const replyText = el.draftReplyText ? el.draftReplyText.value.trim() : "";
+    if (!replyText) {
+        showToast("Cannot stage draft: Draft text is empty.");
+        return;
+    }
+
+    const resumeFilename = (el.activeResumeFilename && el.activeResumeFilename.textContent)
+        ? el.activeResumeFilename.textContent.trim()
+        : null;
+
+    const accountId = (currentEmailData && currentEmailData.account_id)
+        ? currentEmailData.account_id
+        : (typeof Office !== "undefined" && Office.context && Office.context.mailbox && Office.context.mailbox.userProfile && Office.context.mailbox.userProfile.emailAddress
+            ? Office.context.mailbox.userProfile.emailAddress.toLowerCase()
+            : null);
+
+    const payload = {
+        reply_body: replyText,
+        resume_filename: resumeFilename,
+        draft_id: currentDraftId,
+        claim_bindings: currentClaimBindings,
+        account_id: accountId
+    };
+
+    isStagingDraft = true;
+    if (el.btnStageDraft) {
+        el.btnStageDraft.disabled = true;
+    }
     showToast("Staging draft in cloud mailbox...");
 
     try {
-        const res = await fetch(`${API_BASE}/api/emails/sync`, {
+        const res = await fetch(`${API_BASE}/api/emails/${encodeURIComponent(emailId)}/save-draft`, {
             method: "POST",
-            headers: getAuthHeaders()
+            headers: getAuthHeaders(),
+            body: JSON.stringify(payload)
         });
-        // If available in cache or mock
-        showToast("Draft staged in Outlook Drafts folder with resume attached!");
+
+        if (!res.ok) {
+            let errDetail = "";
+            try {
+                const errData = await res.json();
+                if (errData && errData.detail) {
+                    errDetail = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+                } else if (errData && errData.safe_message) {
+                    errDetail = errData.safe_message;
+                }
+            } catch (_) {
+                // Ignore json parse failure on error responses
+            }
+
+            if (res.status === 400) {
+                showToast(`Draft staging failed: Invalid request (HTTP 400)${errDetail ? ' - ' + errDetail : ''}`);
+            } else if (res.status === 401) {
+                showToast("Draft staging failed: Authentication required (HTTP 401). Please re-authenticate.");
+            } else if (res.status === 403) {
+                showToast(`Draft staging failed: Authorization denied or account mismatch (HTTP 403)${errDetail ? ' - ' + errDetail : ''}`);
+            } else if (res.status === 404) {
+                showToast("Draft staging failed: Message context not found in Aura (HTTP 404).");
+            } else if (res.status >= 500) {
+                showToast(`Draft staging failed: Server or provider error (HTTP ${res.status})${errDetail ? ' - ' + errDetail : ''}`);
+            } else {
+                showToast(`Draft staging failed with HTTP status ${res.status}.`);
+            }
+            return;
+        }
+
+        let data;
+        try {
+            data = await res.json();
+        } catch (jsonErr) {
+            showToast("Draft staging failed: Malformed JSON response from server.");
+            return;
+        }
+
+        const validation = validateStageDraftResponse(res, data);
+        if (!validation.isValid) {
+            showToast(`Draft staging failed: ${validation.message}`);
+            return;
+        }
+
+        // Confirmed draft creation success
+        showToast("Draft staged successfully in cloud mailbox!");
     } catch (err) {
-        showToast("Draft saved locally.");
+        console.error("[Aura Add-in] Stage cloud draft network error:", err);
+        showToast(`Draft staging failed: Network error (${err.message || "Unable to reach server"}).`);
+    } finally {
+        isStagingDraft = false;
+        if (el.btnStageDraft) {
+            el.btnStageDraft.disabled = false;
+        }
     }
 }
 
@@ -705,3 +846,11 @@ el.btnCopySlots.addEventListener("click", () => {
         showToast("Default slots copied!");
     }
 });
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+        validateStageDraftResponse,
+        stageCloudDraft,
+        getAuthHeaders
+    };
+}

@@ -589,3 +589,290 @@ def test_phase_4_1_2_risk_audit_lifecycle_and_invalidation_matrix():
     assert res_g == "RENDERED_REVIEW_REQUIRED"
     assert sim.banner_badge == "REVIEW REQUIRED"
     assert "unavailable" in sim.banner_class
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Outlook Cloud-Draft Staging Invariants & Regressions
+# ---------------------------------------------------------------------------
+
+def test_phase8_stage_cloud_draft_successful():
+    """
+    Phase 8 Section 18: Deterministic test proving the successful staging path.
+    - Correct staging backend operation invoked (/api/emails/{id}/save-draft)
+    - Correct account context supplied
+    - Correct message context supplied
+    - Provider draft operation invoked
+    - HTTP success (200) and required remote_object_id returned
+    - Provider send operation count = 0
+    """
+    from unittest.mock import patch
+    from backend.models import EmailMessage
+    from backend.main import CACHED_EMAILS
+    from backend.providers.base import ProviderOperationResult, encode_composite_id
+
+    acc = "kinlawb@outlook.com"
+    native_id = "AAMkAGI8_TEST_MSG"
+    comp_id = encode_composite_id("MICROSOFT_GRAPH", acc, native_id)
+
+    CACHED_EMAILS[comp_id] = EmailMessage(
+        id=comp_id,
+        account_id=acc,
+        subject="Executive Solutions Architecture Opportunity",
+        sender_name="Recruiter Jane",
+        sender_email="jane@techrecruiting.com",
+        body_text="Are you available for a brief introductory discussion?",
+        status="RECEIVED"
+    )
+
+    token = client.headers.get("X-Aura-Session-Token", "")
+
+    with patch("backend.main.provider_manager.save_draft_reply") as mock_save, \
+         patch("backend.main.provider_manager.send_reply") as mock_send:
+
+        mock_save.return_value = ProviderOperationResult(
+            success=True,
+            provider="MICROSOFT_GRAPH",
+            account_id=acc,
+            operation="CREATE_DRAFT",
+            remote_object_id="graph_draft_obj_999",
+            safe_message="Draft created in Outlook Drafts folder."
+        )
+
+        res = client.post(
+            f"/api/emails/{comp_id}/save-draft",
+            json={
+                "reply_body": "Thank you for reaching out. I am available next Tuesday.",
+                "resume_filename": "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx",
+                "account_id": acc
+            },
+            headers={"Authorization": f"Bearer {token}", "Origin": "https://localhost:8000"}
+        )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        assert data["remote_object_id"] == "graph_draft_obj_999"
+        assert CACHED_EMAILS[comp_id].status == "DRAFTED"
+
+        # Verify provider draft was invoked with correct message context & account context
+        mock_save.assert_called_once()
+        call_kwargs = mock_save.call_args.kwargs
+        assert call_kwargs["message_id"] == comp_id
+        assert "Thank you for reaching out" in call_kwargs["reply_body"]
+        assert call_kwargs["account_id"] == acc
+
+        # Invariant: provider send calls = 0
+        assert mock_send.call_count == 0
+
+
+def test_phase8_stage_cloud_draft_http_400():
+    """
+    Phase 8 Section 19: Simulate invalid request / 400.
+    Proves failure is surfaced and no send operation occurs.
+    """
+    from unittest.mock import patch
+    with patch("backend.main.provider_manager.send_reply") as mock_send:
+        # Invalid payload (not a JSON dict)
+        res = client.post(
+            "/api/emails/non_existent_msg/save-draft",
+            content="not_valid_json",
+            headers={"Content-Type": "application/json"}
+        )
+        assert res.status_code in [400, 422]
+        assert mock_send.call_count == 0
+
+
+def test_phase8_stage_cloud_draft_http_401_403_auth_failure():
+    """
+    Phase 8 Section 20: Test authentication and authorization failures (401/403).
+    Proves success is not displayed and no send operation occurs.
+    """
+    from unittest.mock import patch
+    unauth_client = TestClient(app)
+
+    with patch("backend.main.provider_manager.send_reply") as mock_send, \
+         patch("backend.main.provider_manager.save_draft_reply") as mock_save:
+
+        # 401 Unauthorized (missing credentials)
+        res_401 = unauth_client.post(
+            "/api/emails/some_email_id/save-draft",
+            json={"reply_body": "test"}
+        )
+        assert res_401.status_code == 401
+        assert mock_save.call_count == 0
+        assert mock_send.call_count == 0
+
+        # 403 Forbidden (malformed token)
+        res_403 = unauth_client.post(
+            "/api/emails/some_email_id/save-draft",
+            json={"reply_body": "test"},
+            headers={"Authorization": "Bearer invalid_token_12345"}
+        )
+        assert res_403.status_code == 403
+        assert mock_save.call_count == 0
+        assert mock_send.call_count == 0
+
+
+def test_phase8_stage_cloud_draft_http_500_provider_error():
+    """
+    Phase 8 Section 21: Simulate server / provider error during draft creation.
+    Proves success is not recorded and no send operation occurs.
+    """
+    from unittest.mock import patch
+    from backend.models import EmailMessage
+    from backend.main import CACHED_EMAILS
+    from backend.providers.base import ProviderOperationResult, encode_composite_id
+
+    acc = "kinlawb@outlook.com"
+    comp_id = encode_composite_id("MICROSOFT_GRAPH", acc, "MSG_ERR_500")
+
+    CACHED_EMAILS[comp_id] = EmailMessage(
+        id=comp_id,
+        account_id=acc,
+        subject="Opportunity with Provider Error",
+        sender_name="Recruiter",
+        sender_email="recruiter@example.com",
+        body_text="Test",
+        status="RECEIVED"
+    )
+
+    with patch("backend.main.provider_manager.save_draft_reply") as mock_save, \
+         patch("backend.main.provider_manager.send_reply") as mock_send:
+
+        mock_save.return_value = ProviderOperationResult(
+            success=False,
+            provider="MICROSOFT_GRAPH",
+            account_id=acc,
+            operation="CREATE_DRAFT",
+            error_code="GRAPH_UNAVAILABLE",
+            safe_message="Microsoft Graph returned HTTP 503 Service Unavailable."
+        )
+
+        res = client.post(
+            f"/api/emails/{comp_id}/save-draft",
+            json={"reply_body": "Draft body", "account_id": acc}
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert data.get("remote_object_id") is None
+        assert "Service Unavailable" in data["safe_message"]
+        # Invariant: status is NOT updated to DRAFTED
+        assert CACHED_EMAILS[comp_id].status == "RECEIVED"
+        assert mock_send.call_count == 0
+
+
+def test_phase8_stage_cloud_draft_account_message_mismatch_fails_closed():
+    """
+    Phase 8 Section 26: Account A + message owned by Account B must fail closed.
+    Proves provider draft creation and send do not execute, returning HTTP 403.
+    """
+    from unittest.mock import patch
+    from backend.models import EmailMessage
+    from backend.main import CACHED_EMAILS
+    from backend.providers.base import encode_composite_id
+
+    msg_owner_acc = "account_b@outlook.com"
+    comp_id = encode_composite_id("MICROSOFT_GRAPH", msg_owner_acc, "MSG_OWNED_BY_B")
+
+    CACHED_EMAILS[comp_id] = EmailMessage(
+        id=comp_id,
+        account_id=msg_owner_acc,
+        subject="Secret Outreach to Account B",
+        sender_name="Recruiter Bob",
+        sender_email="bob@recruiting.com",
+        body_text="Sensitive message"
+    )
+
+    with patch("backend.main.provider_manager.save_draft_reply") as mock_save, \
+         patch("backend.main.provider_manager.send_reply") as mock_send:
+
+        # Attacker / client passes account_a@outlook.com for a message owned by account_b
+        res = client.post(
+            f"/api/emails/{comp_id}/save-draft",
+            json={
+                "reply_body": "Attempted cross-account staging",
+                "account_id": "account_a@outlook.com"
+            }
+        )
+        assert res.status_code == 403
+        assert "mismatch" in res.json().get("detail", "").lower()
+        assert mock_save.call_count == 0
+        assert mock_send.call_count == 0
+
+
+def test_phase8_draft_staging_never_calls_send():
+    """
+    Phase 8 Section 27: Central security invariant.
+    Under NO condition does draft staging ever invoke send_reply or mail transmission.
+    """
+    from unittest.mock import patch
+    from backend.provider_manager import provider_manager
+    from backend.models import EmailMessage
+    from backend.main import CACHED_EMAILS
+    from backend.providers.base import encode_composite_id
+
+    comp_id = encode_composite_id("MICROSOFT_GRAPH", "kinlawb@outlook.com", "MSG_INVARIANT")
+    CACHED_EMAILS[comp_id] = EmailMessage(
+        id=comp_id,
+        account_id="kinlawb@outlook.com",
+        subject="Invariant Test",
+        sender_name="Recruiter",
+        sender_email="recruiter@example.com",
+        body_text="Test"
+    )
+
+    with patch.object(provider_manager, "send_reply") as mock_pm_send, \
+         patch.object(provider_manager.graph_provider, "send_reply") as mock_graph_send:
+
+        # 1. Successful draft staging
+        res = client.post(f"/api/emails/{comp_id}/save-draft", json={"reply_body": "Draft"})
+        assert mock_pm_send.call_count == 0
+        assert mock_graph_send.call_count == 0
+
+        # 2. Provider manager direct call to save_draft_reply
+        provider_manager.save_draft_reply(
+            message_id=comp_id,
+            reply_body="Direct test",
+            account_id="kinlawb@outlook.com"
+        )
+        assert mock_pm_send.call_count == 0
+        assert mock_graph_send.call_count == 0
+
+
+def test_phase8_taskpane_js_implementation_invariants():
+    """
+    Verifies taskpane.js source code correctness:
+    - Invokes /api/emails/{id}/save-draft (NOT /api/emails/sync)
+    - Validates res.ok
+    - Validates remote_object_id || draft_id
+    - Distinguishes HTTP 400, 401, 403, 404, 500
+    - Contains no 'Draft saved locally.' fallback
+    - Strictly preserves draft vs transmission terminology (no 'email sent' or 'delivered')
+    """
+    res = client.get("/add-in/taskpane.js")
+    assert res.status_code == 200
+    js = res.text
+
+    # Correct endpoint & parameterization
+    assert "/api/emails/${encodeURIComponent(emailId)}/save-draft" in js or "/save-draft" in js
+    assert "/api/emails/sync" not in js.split("stageCloudDraft")[1].split("}")[0]
+
+    # HTTP validation
+    assert "!res.ok" in js
+    assert "res.status === 400" in js
+    assert "res.status === 401" in js
+    assert "res.status === 403" in js
+    assert "res.status >= 500" in js
+
+    # Response contract validation
+    assert "validateStageDraftResponse" in js
+    assert "remote_object_id" in js
+
+    # Truthful UI reporting
+    assert "Draft staged successfully in cloud mailbox!" in js
+    assert "Draft saved locally." not in js
+
+    # Concurrency control
+    assert "isStagingDraft" in js
+    assert "btnStageDraft.disabled" in js
