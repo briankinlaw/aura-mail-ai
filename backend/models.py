@@ -1,7 +1,8 @@
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
 from enum import Enum
+import urllib.parse
 
 class EmailCategory(str, Enum):
     RESUME_REQUEST = "RESUME_REQUEST"
@@ -92,6 +93,17 @@ class EmailMessage(BaseModel):
     risk_is_current: bool = False
     invalidation_issued: bool = False
 
+    @model_validator(mode="after")
+    def _normalize_account_id(self) -> "EmailMessage":
+        if self.id and "::" in self.id:
+            parts = self.id.split("::", 2)
+            if len(parts) == 3:
+                decoded_acc = urllib.parse.unquote_plus(parts[1]).strip().lower()
+                if decoded_acc and decoded_acc not in ("primary", "default", "unknown@auramail.local"):
+                    if self.account_id in ("primary", "default", "", None):
+                        self.account_id = decoded_acc
+        return self
+
 class UserProfile(BaseModel):
     full_name: str = "Brian K. Kinlaw"
     current_title: str = "Enterprise Cloud, Data & AI Solutions Architecture Advisor"
@@ -122,7 +134,6 @@ class UserProfile(BaseModel):
             "kinlawb@outlook.com",
             "brian.kinlaw@outlook.com",
             "briankkinlaw@gmail.com",
-            "cbkinlaw@satx.rr.com",
             "briankinlaw@satx.rr.com",
             "brian@mavencode.com"
         ]

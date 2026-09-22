@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 
-from backend.config import DATA_DIR, get_user_profile
+from backend.config import DATA_DIR, get_user_profile, load_settings
 from backend.runtime_lock import acquire_shared_runtime_lock
 from backend.models import EmailMessage, EmailCategory, UserProfile, ReplyDraftRequest
 from backend.provider_manager import ProviderManager
@@ -107,7 +107,8 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
     2. Runs Opportunity Radar classification & fit scoring.
     3. Integrates Calendar Broker availability if scheduling is requested.
     4. Stages grounded executive response drafts in cloud Drafts folders.
-    5. Dispatches macOS desktop alerts for high-fit roles.
+    5. Automatically relocates noise emails to cloud safe folder if auto-quarantine is active.
+    6. Dispatches macOS desktop alerts for high-fit roles.
     """
     logger.info(f"Starting Aura Daemon cycle (dry_run={dry_run})...")
     lock_ctx = acquire_shared_runtime_lock()
@@ -118,6 +119,7 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
         "messages_checked": 0,
         "drafts_staged": 0,
         "noise_skipped": 0,
+        "noise_quarantined": 0,
         "high_fit_opportunities": [],
         "errors": []
     }
@@ -127,11 +129,14 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
         processed_ids = load_processed_ids()
         manager = ProviderManager()
         profile = get_user_profile()
+        settings = load_settings()
+        auto_quarantine = settings.get("auto_quarantine_noise", True)
+        safe_folder = settings.get("safe_folder_name", "AI Cleaned - Noise")
+
         # Fetch emails from all configured provider accounts
         emails, sync_stats = manager.sync_unified_inbox(limit_per_account=50)
         summary["messages_checked"] = len(emails)
         summary["accounts_scanned"] = sync_stats.get("accounts_synced", 0)
-
 
         for email in emails:
             # Skip if already processed in previous cycles
@@ -143,10 +148,20 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
             email.classification = classification
 
             if classification.is_noise:
-                summary["noise_skipped"] += 1
+                quarantine_action = "SKIPPED_NOISE"
+                if auto_quarantine and not dry_run:
+                    q_res = manager.quarantine_message(email.id, folder_name=safe_folder)
+                    if q_res.success:
+                        summary["noise_quarantined"] += 1
+                        quarantine_action = "QUARANTINED_NOISE"
+                    else:
+                        summary["errors"].append(f"Failed to auto-quarantine {email.id}: {q_res.safe_message}")
+                else:
+                    summary["noise_skipped"] += 1
+
                 save_processed_id(email.id, {
                     "category": classification.category.value,
-                    "action": "SKIPPED_NOISE",
+                    "action": quarantine_action,
                     "subject": email.subject
                 })
                 continue

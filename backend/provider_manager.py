@@ -102,6 +102,10 @@ class ProviderManager:
             return None
         return None
 
+    def get_configured_accounts(self) -> List[Dict[str, Any]]:
+        settings = load_settings()
+        return settings.get("configured_accounts", [])
+
     def get_account_config(self, account_id: str) -> Optional[Dict[str, Any]]:
         settings = load_settings()
         clean_id = (account_id or "").strip().lower()
@@ -204,17 +208,17 @@ class ProviderManager:
                 ))
             else:
                 is_connected = False
-                last_error = None
+                last_error = acc.get("last_error")
                 if validate_remote:
                     val_res = provider.validate_connection(acc_id)
                     is_connected = val_res.success
                     last_error = val_res.safe_message if not val_res.success else None
                 elif p_type == "MICROSOFT_GRAPH":
-                    is_connected = bool(self.graph_provider.get_access_token(acc_id))
+                    is_connected = bool(self.graph_provider.get_access_token(acc_id)) and not bool(last_error)
                 elif p_type == "GMAIL":
-                    is_connected = bool(self.gmail_provider.get_access_token(acc_id))
+                    is_connected = bool(self.gmail_provider.get_access_token(acc_id)) and not bool(last_error)
                 elif p_type == "IMAP":
-                    is_connected = bool(get_secret(f"imap_password_{acc_id}"))
+                    is_connected = bool(get_secret(f"imap_password_{acc_id}")) and not bool(last_error)
 
                 all_identities.append(AccountIdentity(
                     account_id=acc_id,
@@ -231,10 +235,10 @@ class ProviderManager:
 
         return all_identities
 
-    def sync_unified_inbox(self, limit_per_account: int = 50) -> Tuple[List[EmailMessage], Dict[str, Any]]:
+    def sync_unified_inbox(self, limit_per_account: int = 50, since_date: Optional[str] = None) -> Tuple[List[EmailMessage], Dict[str, Any]]:
         """Fetches and merges messages across all active mailboxes into a unified inbox."""
         if self.is_demo_mode():
-            msgs, _ = self.demo_provider.fetch_inbox_messages("demo@auramail.local")
+            msgs, _ = self.demo_provider.fetch_inbox_messages("demo@auramail.local", limit=limit_per_account, since_date=since_date)
             return msgs, {
                 "status": "SUCCESS",
                 "demo_mode": True, 
@@ -282,7 +286,7 @@ class ProviderManager:
                 continue
 
             try:
-                msgs, err = provider.fetch_inbox_messages(acc_id, limit=limit_per_account)
+                msgs, err = provider.fetch_inbox_messages(acc_id, limit=limit_per_account, since_date=since_date)
                 if err:
                     sync_stats["accounts_failed"] += 1
                     sync_stats["errors"].append({"account_id": acc_id, "error": err})
@@ -332,7 +336,9 @@ class ProviderManager:
             )
 
         if account_id and resolved_account_id:
-            if account_id.strip().lower() != resolved_account_id.strip().lower():
+            clean_acc = account_id.strip().lower()
+            clean_res = resolved_account_id.strip().lower()
+            if clean_acc not in ("primary", "default", clean_res):
                 return ProviderOperationResult(
                     success=False,
                     provider=provider.provider_type.value if hasattr(provider, "provider_type") else "UNKNOWN",

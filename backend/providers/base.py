@@ -108,7 +108,7 @@ class BaseEmailProvider(ABC):
         pass
 
     @abstractmethod
-    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "Inbox") -> Tuple[List[EmailMessage], Optional[str]]:
+    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "Inbox", since_date: Optional[str] = None) -> Tuple[List[EmailMessage], Optional[str]]:
         """Fetches live inbox messages from cloud mailbox.
         
         Returns (messages, error_message_if_any).

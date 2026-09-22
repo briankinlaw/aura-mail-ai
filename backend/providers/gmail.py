@@ -333,7 +333,7 @@ class GmailProvider(BaseEmailProvider):
                     pass
         return ""
 
-    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "INBOX") -> Tuple[List[EmailMessage], Optional[str]]:
+    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "INBOX", since_date: Optional[str] = None) -> Tuple[List[EmailMessage], Optional[str]]:
         token = self.get_access_token(account_id)
         if not token:
             return [], f"Not authenticated with Gmail for account {account_id}"
@@ -342,7 +342,14 @@ class GmailProvider(BaseEmailProvider):
         messages: List[EmailMessage] = []
 
         try:
-            list_url = f"{GMAIL_API_BASE}/messages?q=label:{folder}&maxResults={min(limit, 50)}"
+            query = f"label:{folder}"
+            if since_date:
+                try:
+                    d_str = since_date.split("T")[0].replace("-", "/")
+                    query += f" after:{d_str}"
+                except Exception:
+                    pass
+            list_url = f"{GMAIL_API_BASE}/messages?q={query}&maxResults={min(limit, 100)}"
             res = requests.get(list_url, headers=headers, timeout=15)
             if res.status_code != 200:
                 return [], f"Gmail fetch failed: HTTP {res.status_code}"

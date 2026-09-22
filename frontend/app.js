@@ -38,6 +38,10 @@ let APP_STATE = {
   resumes: [],
   status: null,
   activeFilter: 'ALL',
+  activeNoiseAccountFilter: 'ALL',
+  queueFilter: 'pending',
+  followups: [],
+  followupFilter: 'PENDING',
   activeVaultFilter: 'ALL',
   vaultSearchQuery: '',
   devicePollInterval: null,
@@ -53,20 +57,34 @@ const elements = {
   statCleanliness: document.getElementById('stat-cleanliness'),
   
   tabBadgeRecruiters: document.getElementById('tab-badge-recruiters'),
+  tabBadgeFollowups: document.getElementById('tab-badge-followups'),
   tabBadgeNoise: document.getElementById('tab-badge-noise'),
   tabBadgeVault: document.getElementById('tab-badge-vault'),
   tabBadgeAccounts: document.getElementById('tab-badge-accounts'),
   headerConnCount: document.getElementById('header-conn-count'),
   recruiterCountPill: document.getElementById('recruiter-count-pill'),
   
+  // Queue sub-filters
+  filterBtnPending: document.getElementById('filter-btn-pending'),
+  filterBtnStaged: document.getElementById('filter-btn-staged'),
+  filterBtnReplied: document.getElementById('filter-btn-replied'),
+  filterBtnAll: document.getElementById('filter-btn-all'),
+  filterCountPending: document.getElementById('filter-count-pending'),
+  filterCountStaged: document.getElementById('filter-count-staged'),
+  filterCountReplied: document.getElementById('filter-count-replied'),
+  filterCountAll: document.getElementById('filter-count-all'),
+  
   recruiterEmailsList: document.getElementById('recruiter-emails-list'),
   triageTableBody: document.getElementById('triage-table-body'),
+  noiseAccountsGrid: document.getElementById('noise-accounts-grid'),
+  triageAccountFilterGroup: document.getElementById('triage-account-filter-group'),
   accountsCardsGrid: document.getElementById('accounts-cards-grid'),
   demoModeBanner: document.getElementById('demo-mode-banner'),
   btnDisableDemo: document.getElementById('btn-disable-demo'),
   
   inboundSubject: document.getElementById('inbound-subject'),
   inboundSender: document.getElementById('inbound-sender'),
+  inboundAccountPill: document.getElementById('inbound-account-pill'),
   inboundDate: document.getElementById('inbound-date'),
   inboundMessageBody: document.getElementById('inbound-message-body'),
   
@@ -90,15 +108,39 @@ const elements = {
   btnSyncInbox: document.getElementById('btn-sync-inbox'),
   btnRegenerateDraft: document.getElementById('btn-regenerate-draft'),
   btnSaveDraft: document.getElementById('btn-save-draft'),
+  btnSaveDraftLabel: document.getElementById('btn-save-draft-label'),
+  btnMarkReplied: document.getElementById('btn-mark-replied'),
   btnCopyDraft: document.getElementById('btn-copy-draft'),
   btnRiskCheck: document.getElementById('btn-risk-check'),
   webCockpitRiskBadge: document.getElementById('web-cockpit-risk-badge'),
+  btnOrchestrateAllNoise: document.getElementById('btn-orchestrate-all-noise'),
   btnBatchCleanNoise: document.getElementById('btn-batch-clean-noise'),
   btnOpenAccounts: document.getElementById('btn-open-accounts'),
   btnAddAccountModal: document.getElementById('btn-add-account-modal'),
   btnOpenSettings: document.getElementById('btn-open-settings'),
   btnSaveProfile: document.getElementById('btn-save-profile'),
   btnSaveSettings: document.getElementById('btn-save-settings'),
+  settingAutoQuarantine: document.getElementById('setting-auto-quarantine-noise'),
+
+  // Follow-up Elements
+  followupTasksList: document.getElementById('followup-tasks-list'),
+  fuCountPending: document.getElementById('fu-count-pending'),
+  fuCountCompleted: document.getElementById('fu-count-completed'),
+  fuCountAll: document.getElementById('fu-count-all'),
+  fuFilterPending: document.getElementById('fu-filter-pending'),
+  fuFilterCompleted: document.getElementById('fu-filter-completed'),
+  fuFilterAll: document.getElementById('fu-filter-all'),
+  btnAddOrchestratePipeline: document.getElementById('btn-orchestrate-pipeline'),
+  btnAddCustomFollowup: document.getElementById('btn-add-custom-followup'),
+  followupModal: document.getElementById('followup-modal'),
+  followupModalCloseBtn: document.getElementById('followup-modal-close-btn'),
+  btnCancelFollowup: document.getElementById('btn-cancel-followup'),
+  btnSaveCustomFollowup: document.getElementById('btn-save-custom-followup'),
+  fuRecruiterInput: document.getElementById('fu-recruiter-input'),
+  fuCompanyInput: document.getElementById('fu-company-input'),
+  fuRoleInput: document.getElementById('fu-role-input'),
+  fuDateInput: document.getElementById('fu-date-input'),
+  fuNotesInput: document.getElementById('fu-notes-input'),
   
   // Vault Elements
   vaultGridContainer: document.getElementById('vault-grid-container'),
@@ -152,8 +194,37 @@ const elements = {
 document.addEventListener('DOMContentLoaded', async () => {
   setupTabNavigation();
   setupEventListeners();
+  handleUrlAuthParams();
   await refreshAll();
 });
+
+function handleUrlAuthParams() {
+  const params = new URLSearchParams(window.location.search);
+  const authSuccess = params.get('auth');
+  const authError = params.get('auth_error');
+  const provider = params.get('provider');
+
+  if (authSuccess === 'success') {
+    const provName = provider === 'google' ? 'Google / Gmail' : provider === 'microsoft' ? 'Microsoft Outlook' : 'Cloud Account';
+    showToast(`✓ Successfully connected ${provName}!`, 'success');
+  } else if (authError) {
+    if (authError === 'invalid_state') {
+      showToast('Authentication session expired or state was already used. Click "Sign In" on your account card to connect.', 'warning');
+    } else if (authError === 'exchange_failed') {
+      showToast('OAuth token exchange failed. Please verify your client credentials and permissions.', 'error');
+    } else if (authError === 'missing_code') {
+      showToast('No authorization code was returned by the provider.', 'error');
+    } else if (authError === 'provider_error') {
+      showToast('The email provider encountered an error during sign-in.', 'error');
+    } else {
+      showToast(`Authentication error: ${authError}`, 'error');
+    }
+  }
+
+  if (authSuccess || authError) {
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+}
 
 async function refreshAll() {
   await Promise.all([
@@ -163,8 +234,10 @@ async function refreshAll() {
     fetchSettings(),
     fetchCanonicalResumes(),
     fetchEmails(),
-    fetchStats()
+    fetchStats(),
+    fetchFollowups()
   ]);
+  renderNoiseAccountCards();
   await fetchAnalyticsData();
 }
 
@@ -190,6 +263,7 @@ function setupTabNavigation() {
 async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
+    if (!res.ok) return;
     const data = await res.json();
     APP_STATE.status = data;
     
@@ -259,6 +333,7 @@ async function fetchStatus() {
 async function fetchAccounts() {
   try {
     const res = await fetch('/api/accounts');
+    if (!res.ok) return;
     const accounts = await res.json();
     APP_STATE.accounts = accounts;
     
@@ -267,6 +342,7 @@ async function fetchAccounts() {
     if (elements.tabBadgeAccounts) elements.tabBadgeAccounts.textContent = accounts.length;
     
     renderAccountsGrid();
+    renderNoiseAccountCards();
   } catch (err) {
     console.error('Failed to fetch accounts', err);
   }
@@ -275,6 +351,7 @@ async function fetchAccounts() {
 async function fetchStats() {
   try {
     const res = await fetch('/api/stats');
+    if (!res.ok) return;
     const stats = await res.json();
     
     elements.statResumeInquiries.textContent = stats.resume_requests || 0;
@@ -293,11 +370,13 @@ async function fetchStats() {
 async function fetchEmails() {
   try {
     const res = await fetch('/api/emails');
+    if (!res.ok) return;
     const emails = await res.json();
     APP_STATE.emails = emails;
     
     renderRecruiterList();
     renderTriageTable();
+    renderNoiseAccountCards();
   } catch (err) {
     console.error('Failed to fetch emails', err);
   }
@@ -369,6 +448,9 @@ async function fetchSettings() {
     const folderInput = document.getElementById('setting-safe-folder');
     if (folderInput && settings.safe_folder_name) folderInput.value = settings.safe_folder_name;
 
+    const autoQuarantineCheck = document.getElementById('setting-auto-quarantine-noise');
+    if (autoQuarantineCheck) autoQuarantineCheck.checked = settings.auto_quarantine_noise !== false;
+
     const demoCheck = document.getElementById('setting-demo-mode');
     if (demoCheck) demoCheck.checked = !!settings.demo_mode;
   } catch (err) {
@@ -428,10 +510,14 @@ function renderAccountsGrid() {
       provColor = '#eab308';
     }
     
-    const isConn = acc.is_connected;
-    const statusPill = isConn ? 
-      `<span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">● Connected</span>` :
-      `<span style="font-size: 0.75rem; color: #ef4444; font-weight: 600;">○ Disconnected</span>`;
+    const hasError = Boolean(acc.last_error);
+    const isConn = acc.is_connected && !hasError;
+    let statusPill = `<span style="font-size: 0.75rem; color: #10b981; font-weight: 600;">● Connected</span>`;
+    if (hasError) {
+      statusPill = `<span style="font-size: 0.75rem; color: #f59e0b; font-weight: 600;">⚠️ Needs Attention</span>`;
+    } else if (!isConn) {
+      statusPill = `<span style="font-size: 0.75rem; color: #ef4444; font-weight: 600;">○ Disconnected</span>`;
+    }
     
     const caps = (acc.capabilities || []).filter(c => c !== 'SEND').map(c => `<span class="skill-chip" style="font-size: 0.65rem; padding: 2px 6px;">${c}</span>`).join(' ');
     
@@ -447,7 +533,7 @@ function renderAccountsGrid() {
         <div class="vault-card-headline" style="color: var(--text-secondary); margin-top: 4px;">${acc.display_name}</div>
         
         ${acc.is_alias ? `<p style="font-size: 0.75rem; color: #93c5fd; margin-top: 6px;">↳ Alias of parent mailbox: <code>${acc.alias_of}</code></p>` : ''}
-        ${acc.last_error ? `<div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--radius-sm); padding: 6px 10px; margin-top: 8px; font-size: 0.75rem; color: #fca5a5;">⚠️ ${acc.last_error}</div>` : ''}
+        ${hasError ? `<div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 8px; font-size: 0.775rem; color: #fca5a5; line-height: 1.4;"><strong>Action Needed:</strong> ${acc.last_error}</div>` : ''}
         
         <div style="margin-top: 10px;">
           <div style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 4px;">Capabilities:</div>
@@ -462,8 +548,8 @@ function renderAccountsGrid() {
           </span>
           <div style="display: flex; gap: 6px;">
             <button class="btn btn-secondary btn-sm" onclick="testAccount('${acc.account_id}')">Test</button>
-            <button class="btn btn-secondary btn-sm" onclick="openAuthModalFor('${acc.provider}', '${acc.account_id}')">
-              ${isConn ? 'Re-Auth' : 'Sign In'}
+            <button class="btn ${hasError ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="openAuthModalFor('${acc.provider}', '${acc.account_id}')">
+              ${hasError ? 'Fix / Sign In' : (isConn ? 'Re-Auth' : 'Sign In')}
             </button>
           </div>
         </div>
@@ -566,22 +652,90 @@ function populateResumeDropdown() {
   select.appendChild(masterGroup);
 }
 
+function getAccountInfoForEmail(emailMsg) {
+  if (!emailMsg) return { accountId: 'kinlawb@outlook.com', provider: 'MICROSOFT_GRAPH', label: 'kinlawb@outlook.com (Outlook)', type: 'outlook' };
+  
+  let accountId = emailMsg.account_id || '';
+  let provider = emailMsg.provider || '';
+  
+  if (emailMsg.id && emailMsg.id.includes('::')) {
+    const parts = emailMsg.id.split('::');
+    if (parts.length === 3) {
+      provider = parts[0].trim().toUpperCase();
+      accountId = decodeURIComponent(parts[1]).toLowerCase();
+    }
+  }
+  
+  if (!accountId || accountId === 'primary' || accountId === 'default') {
+    accountId = 'kinlawb@outlook.com';
+  }
+  
+  let label = accountId;
+  let type = 'outlook';
+  
+  if (accountId.includes('gmail.com') || accountId.includes('mavencode.com') || provider === 'GMAIL') {
+    label = `${accountId} (Google Workspace)`;
+    type = 'google';
+  } else if (accountId.includes('satx.rr.com') || provider === 'IMAP') {
+    label = `${accountId} (Spectrum)`;
+    type = 'imap';
+  } else if (accountId.includes('outlook.com') || provider === 'MICROSOFT_GRAPH') {
+    label = `${accountId} (Outlook)`;
+    type = 'outlook';
+  } else if (provider === 'DEMO') {
+    label = `${accountId} (Sandbox)`;
+    type = 'demo';
+  }
+  
+  return { accountId, provider, label, type };
+}
+
 function renderRecruiterList() {
   const container = elements.recruiterEmailsList;
+  if (!container) return;
   container.innerHTML = '';
   
-  const recruiterEmails = APP_STATE.emails.filter(e => e.classification && e.classification.is_resume_request);
+  const allRecruiters = APP_STATE.emails.filter(e => e.classification && e.classification.is_resume_request);
+  const pendingEmails = allRecruiters.filter(e => e.status !== 'DRAFTED' && e.status !== 'REPLIED' && e.status !== 'TRASHED' && e.status !== 'ARCHIVED');
+  const stagedEmails = allRecruiters.filter(e => e.status === 'DRAFTED');
+  const repliedEmails = allRecruiters.filter(e => e.status === 'REPLIED');
   
-  if (recruiterEmails.length === 0) {
+  if (elements.filterCountPending) elements.filterCountPending.textContent = pendingEmails.length;
+  if (elements.filterCountStaged) elements.filterCountStaged.textContent = stagedEmails.length;
+  if (elements.filterCountReplied) elements.filterCountReplied.textContent = repliedEmails.length;
+  if (elements.filterCountAll) elements.filterCountAll.textContent = allRecruiters.length;
+  if (elements.recruiterCountPill) elements.recruiterCountPill.textContent = `${pendingEmails.length} pending / ${allRecruiters.length} total`;
+  
+  const currentFilter = APP_STATE.queueFilter || 'pending';
+  let filteredEmails = pendingEmails;
+  if (currentFilter === 'staged') filteredEmails = stagedEmails;
+  else if (currentFilter === 'replied') filteredEmails = repliedEmails;
+  else if (currentFilter === 'all') filteredEmails = allRecruiters;
+  
+  if (filteredEmails.length === 0) {
+    let emptyMsg = 'No pending recruiter reachouts in queue.';
+    let emptyIcon = '🎉';
+    if (currentFilter === 'staged') {
+      emptyMsg = 'No reachouts currently staged in Drafts.';
+      emptyIcon = '📝';
+    } else if (currentFilter === 'replied') {
+      emptyMsg = 'No reachouts marked as Replied yet.';
+      emptyIcon = '📬';
+    } else if (currentFilter === 'all') {
+      emptyMsg = 'No recruiter reachouts found in connected mailboxes.';
+      emptyIcon = '📭';
+    } else {
+      emptyMsg = 'All caught up! All recruiter reachouts have been drafted or processed.';
+    }
     container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">📭</div>
-        <p>No recruiter reachouts currently in queue.</p>
+      <div class="empty-state" style="padding: 2.5rem 1rem;">
+        <div class="empty-state-icon" style="font-size: 2.25rem; margin-bottom: 8px;">${emptyIcon}</div>
+        <p style="font-size: 0.85rem; color: #94a3b8; text-align: center;">${emptyMsg}</p>
       </div>`;
     return;
   }
   
-  recruiterEmails.forEach(emailMsg => {
+  filteredEmails.forEach(emailMsg => {
     const card = document.createElement('div');
     card.className = `email-card ${emailMsg.id === APP_STATE.selectedEmailId ? 'selected' : ''}`;
     card.id = `card-${emailMsg.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -590,8 +744,22 @@ function renderRecruiterList() {
     const compName = emailMsg.classification?.recruiter_details?.company_name || 'Hiring Team';
     const match = emailMsg.classification?.resume_match;
     const lensBadge = match?.lens_badge || 'Advisor (Level 3A)';
+    const accInfo = getAccountInfoForEmail(emailMsg);
+    
+    let statusBadgeHtml = '<span class="status-chip pending">Pending</span>';
+    if (emailMsg.status === 'DRAFTED') {
+      statusBadgeHtml = '<span class="status-chip drafted">📝 Draft Staged</span>';
+    } else if (emailMsg.status === 'REPLIED') {
+      statusBadgeHtml = '<span class="status-chip replied">✅ Replied</span>';
+    }
     
     card.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span class="account-chip ${accInfo.type}" title="Received on ${accInfo.label}">
+          ${accInfo.type === 'google' ? '🌐' : (accInfo.type === 'outlook' ? '📬' : '⚡')} ${accInfo.accountId}
+        </span>
+        ${statusBadgeHtml}
+      </div>
       <div class="email-card-header">
         <span class="sender-name">${emailMsg.sender_name}</span>
         <span class="email-time">${emailMsg.received_at.split(' ')[1] || ''}</span>
@@ -608,8 +776,8 @@ function renderRecruiterList() {
     container.appendChild(card);
   });
   
-  if (!APP_STATE.selectedEmailId && recruiterEmails.length > 0) {
-    selectRecruiterEmail(recruiterEmails[0].id);
+  if (!filteredEmails.some(e => e.id === APP_STATE.selectedEmailId) && filteredEmails.length > 0) {
+    selectRecruiterEmail(filteredEmails[0].id);
   }
 }
 
@@ -625,8 +793,14 @@ function selectRecruiterEmail(emailId) {
   const emailMsg = APP_STATE.emails.find(e => e.id === emailId);
   if (!emailMsg) return;
   
+  const accInfo = getAccountInfoForEmail(emailMsg);
+  
   elements.inboundSubject.textContent = emailMsg.subject;
   elements.inboundSender.textContent = `From: ${emailMsg.sender_name} <${emailMsg.sender_email}>`;
+  if (elements.inboundAccountPill) {
+    elements.inboundAccountPill.className = `account-pill-badge ${accInfo.type}`;
+    elements.inboundAccountPill.innerHTML = `📬 Received on: <strong>${accInfo.label}</strong>`;
+  }
   elements.inboundDate.textContent = `Received: ${emailMsg.received_at}`;
   elements.inboundMessageBody.textContent = emailMsg.body_text;
   
@@ -663,6 +837,12 @@ function selectRecruiterEmail(emailId) {
     const defaultResume = APP_STATE.profile?.active_resume_file || 'Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx';
     elements.attachedResumeName.textContent = defaultResume;
     elements.resumeVariantSelect.value = defaultResume;
+  }
+  
+  // Update Stage Button Label to indicate destination mailbox
+  if (elements.btnSaveDraftLabel) {
+    const clientName = accInfo.type === 'google' ? 'Gmail' : (accInfo.type === 'imap' ? 'Spectrum' : 'Outlook');
+    elements.btnSaveDraftLabel.textContent = `Stage Draft in ${clientName} (${accInfo.accountId})`;
   }
   
   // Draft Reply & Structured Grounding State
@@ -737,6 +917,7 @@ function updateRiskBadge(emailMsg) {
 
 function renderTriageTable() {
   const tbody = elements.triageTableBody;
+  if (!tbody) return;
   tbody.innerHTML = '';
   
   let filtered = APP_STATE.emails;
@@ -747,11 +928,32 @@ function renderTriageTable() {
   } else if (APP_STATE.activeFilter === 'OTHER') {
     filtered = APP_STATE.emails.filter(e => !e.classification?.is_noise && !e.classification?.is_resume_request);
   }
+
+  // Filter by selected mailbox
+  if (APP_STATE.activeNoiseAccountFilter && APP_STATE.activeNoiseAccountFilter !== 'ALL') {
+    filtered = filtered.filter(e => {
+      const accInfo = getAccountInfoForEmail(e);
+      return accInfo.accountId.toLowerCase() === APP_STATE.activeNoiseAccountFilter.toLowerCase();
+    });
+  }
   
-  document.getElementById('triage-total-label').textContent = `Showing ${filtered.length} emails`;
+  const totalLabel = document.getElementById('triage-total-label');
+  if (totalLabel) totalLabel.textContent = `Showing ${filtered.length} emails`;
   
+  if (filtered.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="6" style="text-align: center; padding: 2rem; color: var(--text-muted);">
+          No emails match the selected category & mailbox filter.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
   filtered.forEach(emailMsg => {
     const tr = document.createElement('tr');
+    const accInfo = getAccountInfoForEmail(emailMsg);
     
     let tagClass = 'other';
     let tagLabel = 'Direct / Human';
@@ -769,30 +971,164 @@ function renderTriageTable() {
       tagLabel = '🔔 System Alert';
     }
     
-    const isTrashed = emailMsg.status === 'TRASHED';
+    const isCleaned = emailMsg.status === 'TRASHED';
     
     tr.innerHTML = `
       <td>
-        <strong style="font-size: 0.85rem;">${emailMsg.sender_name}</strong>
-        <div style="font-size: 0.75rem; color: var(--text-muted);">${emailMsg.sender_email}</div>
+        <span class="account-chip ${accInfo.type}" title="Received on ${accInfo.label}">
+          ${accInfo.type === 'google' ? '🌐' : (accInfo.type === 'outlook' ? '📬' : '⚡')} ${accInfo.accountId}
+        </span>
       </td>
       <td>
-        <div style="font-weight: 500; color: #e2e8f0; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${emailMsg.subject}</div>
-        <div style="font-size: 0.75rem; color: var(--text-secondary); max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${emailMsg.preview}</div>
+        <strong style="font-size: 0.85rem;">${escapeHtml(emailMsg.sender_name)}</strong>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(emailMsg.sender_email)}</div>
+      </td>
+      <td>
+        <div style="font-weight: 500; color: #e2e8f0; max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(emailMsg.subject)}</div>
+        <div style="font-size: 0.75rem; color: var(--text-secondary); max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(emailMsg.preview)}</div>
       </td>
       <td><span class="category-tag ${tagClass}">${tagLabel}</span></td>
-      <td style="font-size: 0.775rem; color: var(--text-secondary); max-width: 250px;">
-        ${emailMsg.classification?.reasoning || 'Classified by Aura AI'}
+      <td style="font-size: 0.775rem; color: var(--text-secondary); max-width: 220px;">
+        ${escapeHtml(emailMsg.classification?.reasoning || 'Classified by Aura AI')}
       </td>
       <td>
-        ${isTrashed ? 
-          '<span style="color: var(--text-muted); font-size: 0.8rem;">✓ Cleaned</span>' :
-          `<button class="btn btn-secondary btn-sm" onclick="trashSingleEmail('${emailMsg.id}')">Trash</button>`
+        ${isCleaned ? 
+          '<span style="color: #34d399; font-size: 0.775rem; font-weight: 600;">✓ In Safe Folder</span>' :
+          `<button class="btn btn-secondary btn-sm" onclick="quarantineSingleEmail('${emailMsg.id}')" title="Move to cloud safe folder">🛡️ Quarantine</button>`
         }
       </td>
     `;
     tbody.appendChild(tr);
   });
+}
+
+function renderNoiseAccountCards() {
+  const container = elements.noiseAccountsGrid;
+  if (!container) return;
+  container.innerHTML = '';
+
+  const accounts = APP_STATE.accounts.length > 0 ? APP_STATE.accounts : [
+    { account_id: 'kinlawb@outlook.com', provider: 'MICROSOFT_GRAPH', display_name: 'kinlawb@outlook.com' },
+    { account_id: 'brian.kinlaw@outlook.com', provider: 'MICROSOFT_GRAPH', display_name: 'brian.kinlaw@outlook.com' },
+    { account_id: 'brian@mavencode.com', provider: 'GMAIL', display_name: 'brian@mavencode.com' },
+    { account_id: 'briankkinlaw@gmail.com', provider: 'GMAIL', display_name: 'briankkinlaw@gmail.com' },
+    { account_id: 'briankinlaw@satx.rr.com', provider: 'IMAP', display_name: 'briankinlaw@satx.rr.com' }
+  ];
+
+  accounts.forEach(acc => {
+    const accId = acc.account_id || acc.email_address || '';
+    const accEmails = APP_STATE.emails.filter(e => {
+      const info = getAccountInfoForEmail(e);
+      return info.accountId.toLowerCase() === accId.toLowerCase();
+    });
+
+    const noiseRemaining = accEmails.filter(e => e.classification?.is_noise && e.status !== 'TRASHED').length;
+    const noiseCleaned = accEmails.filter(e => e.classification?.is_noise && e.status === 'TRASHED').length;
+    const recruiters = accEmails.filter(e => e.classification?.is_resume_request && e.status !== 'TRASHED').length;
+    const isClean = noiseRemaining === 0;
+
+    let provIcon = '📬';
+    let provLabel = 'Microsoft Graph (Outlook)';
+    if (acc.provider === 'GMAIL' || accId.includes('gmail.com') || accId.includes('mavencode.com')) {
+      provIcon = '🌐';
+      provLabel = 'Google Workspace / Gmail';
+    } else if (acc.provider === 'IMAP' || accId.includes('satx.rr.com')) {
+      provIcon = '⚡';
+      provLabel = 'Spectrum IMAP';
+    }
+
+    const card = document.createElement('div');
+    card.className = `noise-acc-card ${isClean ? 'is-clean' : ''}`;
+    card.innerHTML = `
+      <div>
+        <div class="noise-acc-card-header">
+          <span style="font-size: 1.1rem;">${provIcon}</span>
+          <span class="noise-clean-badge ${isClean ? 'zero-noise' : 'has-noise'}">
+            ${isClean ? '✓ 100% Noise-Free' : `⚠️ ${noiseRemaining} Noise in Inbox`}
+          </span>
+        </div>
+        <div class="noise-acc-email" style="margin-top: 6px;">${escapeHtml(accId)}</div>
+        <div class="noise-acc-provider">${provLabel}</div>
+      </div>
+      
+      <div>
+        <div class="noise-acc-stats-row">
+          <span>In-Inbox Recruiters:</span>
+          <strong style="color: #93c5fd;">${recruiters}</strong>
+        </div>
+        <div class="noise-acc-stats-row">
+          <span>Quarantined Safe:</span>
+          <strong style="color: #34d399;">${noiseCleaned}</strong>
+        </div>
+        ${!isClean ? `
+          <button class="btn btn-secondary btn-sm noise-acc-clean-action" onclick="cleanNoiseForAccount('${escapeHtml(accId)}')">
+            🧹 Clean ${noiseRemaining} Noise Emails
+          </button>
+        ` : `
+          <div style="font-size: 0.75rem; color: #34d399; text-align: center; margin-top: 8px; font-weight: 600;">
+            ● Inbox fully protected
+          </div>
+        `}
+      </div>
+    `;
+    container.appendChild(card);
+  });
+
+  renderTriageAccountFilterButtons(accounts);
+}
+
+function updateNoiseBatchCleanButtonLabel() {
+  const btn = elements.btnBatchCleanNoise;
+  if (!btn) return;
+  if (!APP_STATE.activeNoiseAccountFilter || APP_STATE.activeNoiseAccountFilter === 'ALL') {
+    btn.innerHTML = '<span>🧹</span> Clean Loaded Noise (All Mailboxes)';
+  } else {
+    btn.innerHTML = `<span>🧹</span> Clean Loaded Noise (<code>${escapeHtml(APP_STATE.activeNoiseAccountFilter)}</code>)`;
+  }
+}
+
+function renderTriageAccountFilterButtons(accounts) {
+  const container = elements.triageAccountFilterGroup;
+  if (!container) return;
+  
+  const allBtn = container.querySelector('[data-account-filter="ALL"]');
+  container.innerHTML = '';
+  if (allBtn) {
+    container.appendChild(allBtn);
+  } else {
+    const btn = document.createElement('button');
+    btn.className = `btn btn-secondary btn-sm ${APP_STATE.activeNoiseAccountFilter === 'ALL' ? 'active-filter' : ''}`;
+    btn.setAttribute('data-account-filter', 'ALL');
+    btn.textContent = 'All Mailboxes';
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('button').forEach(b => b.classList.remove('active-filter'));
+      btn.classList.add('active-filter');
+      APP_STATE.activeNoiseAccountFilter = 'ALL';
+      updateNoiseBatchCleanButtonLabel();
+      renderTriageTable();
+    });
+    container.appendChild(btn);
+  }
+
+  accounts.forEach(acc => {
+    const accId = acc.account_id || acc.email_address;
+    if (!accId) return;
+    const btn = document.createElement('button');
+    btn.className = `btn btn-secondary btn-sm ${APP_STATE.activeNoiseAccountFilter.toLowerCase() === accId.toLowerCase() ? 'active-filter' : ''}`;
+    btn.setAttribute('data-account-filter', accId);
+    btn.textContent = accId.split('@')[0];
+    btn.title = accId;
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('button').forEach(b => b.classList.remove('active-filter'));
+      btn.classList.add('active-filter');
+      APP_STATE.activeNoiseAccountFilter = accId;
+      updateNoiseBatchCleanButtonLabel();
+      renderTriageTable();
+    });
+    container.appendChild(btn);
+  });
+  
+  updateNoiseBatchCleanButtonLabel();
 }
 
 function renderVaultGrid() {
@@ -1359,7 +1695,9 @@ function setupEventListeners() {
       const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
       const replyBody = elements.replyBodyText.value;
       const chosenResume = elements.resumeVariantSelect.value;
-      showToast(`Staging draft in cloud mailbox with '${chosenResume}' attached...`, 'info');
+      const accInfo = getAccountInfoForEmail(emailMsg);
+      const clientName = accInfo.type === 'google' ? 'Gmail' : (accInfo.type === 'imap' ? 'Spectrum' : 'Outlook');
+      showToast(`Staging draft in ${clientName} (${accInfo.accountId}) with '${chosenResume}' attached...`, 'info');
 
       try {
         const payload = {
@@ -1380,13 +1718,159 @@ function setupEventListeners() {
           updateGroundingBadge(emailMsg);
         }
         if (data.success) {
-          showToast(data.safe_message || 'Draft successfully staged in cloud Drafts folder! Review and send in Outlook/Gmail.', 'success');
+          showToast(data.safe_message || `✓ Draft successfully staged in ${clientName} Drafts folder (${accInfo.accountId})! Review and send in ${clientName}.`, 'success');
         } else {
           showToast(`Draft staging error: ${data.safe_message}`, 'error');
         }
         await refreshAll();
       } catch (err) {
         showToast('Failed to stage draft: ' + err.message, 'error');
+      }
+    });
+  }
+
+  // Mark as Replied & Schedule Follow-up
+  if (elements.btnMarkReplied) {
+    elements.btnMarkReplied.addEventListener('click', async () => {
+      if (!APP_STATE.selectedEmailId) return;
+      const emailMsg = APP_STATE.emails.find(em => em.id === APP_STATE.selectedEmailId);
+      const accInfo = getAccountInfoForEmail(emailMsg);
+      showToast(`Marking response sent and scheduling follow-up for ${emailMsg?.sender_name || 'recruiter'}...`, 'info');
+
+      try {
+        const res = await fetch(`/api/emails/${encodeURIComponent(APP_STATE.selectedEmailId)}/mark-replied`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            followup_days: 3,
+            notes: `Sent response from ${accInfo.accountId} via ${accInfo.provider}`
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(`✓ Marked as Replied! Follow-up reminder scheduled for 3 business days.`, 'success');
+        } else {
+          showToast(`Error: ${data.detail || 'Failed to mark replied'}`, 'error');
+        }
+        await refreshAll();
+      } catch (err) {
+        showToast('Failed to mark replied: ' + err.message, 'error');
+      }
+    });
+  }
+
+  // Recruiter Queue Sub-Filter Buttons
+  const queueFilterBtns = [
+    { btn: elements.filterBtnPending, filter: 'pending' },
+    { btn: elements.filterBtnStaged, filter: 'staged' },
+    { btn: elements.filterBtnReplied, filter: 'replied' },
+    { btn: elements.filterBtnAll, filter: 'all' }
+  ];
+
+  queueFilterBtns.forEach(({ btn, filter }) => {
+    if (btn) {
+      btn.addEventListener('click', () => {
+        queueFilterBtns.forEach(item => item.btn?.classList.remove('active-filter'));
+        btn.classList.add('active-filter');
+        APP_STATE.queueFilter = filter;
+        renderRecruiterList();
+      });
+    }
+  });
+
+  // Follow-up Sub-Filters
+  const followupFilterBtns = [
+    { btn: elements.fuFilterPending, filter: 'pending' },
+    { btn: elements.fuFilterCompleted, filter: 'completed' },
+    { btn: elements.fuFilterAll, filter: 'all' }
+  ];
+
+  followupFilterBtns.forEach(({ btn, filter }) => {
+    if (btn) {
+      btn.addEventListener('click', () => {
+        followupFilterBtns.forEach(item => item.btn?.classList.remove('active-filter'));
+        btn.classList.add('active-filter');
+        APP_STATE.followupFilter = filter;
+        renderFollowups();
+      });
+    }
+  });
+
+  // Orchestrate Pipeline Hero Button
+  if (elements.btnAddOrchestratePipeline) {
+    elements.btnAddOrchestratePipeline.addEventListener('click', () => {
+      if (typeof window.orchestratePipeline === 'function') {
+        window.orchestratePipeline();
+      }
+    });
+  }
+
+  // Add Custom Follow-up Modal
+  if (elements.btnAddCustomFollowup) {
+    elements.btnAddCustomFollowup.addEventListener('click', () => {
+      if (elements.fuDateInput) {
+        const d = new Date();
+        d.setDate(d.getDate() + 3);
+        elements.fuDateInput.value = d.toISOString().split('T')[0];
+      }
+      if (elements.followupModal) elements.followupModal.classList.add('active');
+    });
+  }
+
+  if (elements.followupModalCloseBtn) {
+    elements.followupModalCloseBtn.addEventListener('click', () => {
+      if (elements.followupModal) elements.followupModal.classList.remove('active');
+    });
+  }
+
+  if (elements.btnCancelFollowup) {
+    elements.btnCancelFollowup.addEventListener('click', () => {
+      if (elements.followupModal) elements.followupModal.classList.remove('active');
+    });
+  }
+
+  if (elements.btnSaveCustomFollowup) {
+    elements.btnSaveCustomFollowup.addEventListener('click', async () => {
+      const roleTitle = elements.fuRoleInput?.value.trim() || 'Executive Outreach';
+      const recruiterName = elements.fuRecruiterInput?.value.trim() || 'Recruiter';
+      const companyName = elements.fuCompanyInput?.value.trim() || 'Hiring Organization';
+      const dueDate = elements.fuDateInput?.value;
+      const notes = elements.fuNotesInput?.value.trim();
+
+      if (!dueDate) {
+        showToast('Please provide a follow-up due date.', 'warning');
+        return;
+      }
+
+      try {
+        const payload = {
+          role_title: roleTitle,
+          title: roleTitle,
+          recruiter_name: recruiterName,
+          company_name: companyName,
+          company: companyName,
+          due_date: dueDate,
+          notes: notes || `Follow-up scheduled with ${recruiterName} (${companyName}) regarding ${roleTitle}.`
+        };
+        const res = await fetch('/api/followups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          showToast('Follow-up reminder scheduled!', 'success');
+          if (elements.followupModal) elements.followupModal.classList.remove('active');
+          if (elements.fuRoleInput) elements.fuRoleInput.value = '';
+          if (elements.fuRecruiterInput) elements.fuRecruiterInput.value = '';
+          if (elements.fuCompanyInput) elements.fuCompanyInput.value = '';
+          if (elements.fuNotesInput) elements.fuNotesInput.value = '';
+          await fetchFollowups();
+        } else {
+          const data = await res.json();
+          showToast(`Error: ${data.detail || 'Could not create follow-up'}`, 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save follow-up: ' + err.message, 'error');
       }
     });
   }
@@ -1469,18 +1953,32 @@ function setupEventListeners() {
     });
   }
 
-  // Batch Clean Noise
-  elements.btnBatchCleanNoise.addEventListener('click', async () => {
-    showToast('Moving noise emails to cloud quarantine folder...', 'info');
-    try {
-      const res = await fetch('/api/emails/clean-noise', { method: 'POST' });
-      const data = await res.json();
-      showToast(data.message || `Cleaned ${data.cleaned_count} emails.`, 'success');
-      await refreshAll();
-    } catch (err) {
-      showToast('Cleanup failed: ' + err.message, 'error');
-    }
-  });
+  // Orchestrate All Inboxes Noise
+  if (elements.btnOrchestrateAllNoise) {
+    elements.btnOrchestrateAllNoise.addEventListener('click', async () => {
+      await orchestrateAllInboxesNoise();
+    });
+  }
+
+  // Batch Clean Noise (Current View)
+  if (elements.btnBatchCleanNoise) {
+    elements.btnBatchCleanNoise.addEventListener('click', async () => {
+      showToast('Relocating noise emails to cloud safe folder...', 'info');
+      try {
+        const payload = APP_STATE.activeNoiseAccountFilter !== 'ALL' ? { account_id: APP_STATE.activeNoiseAccountFilter } : {};
+        const res = await fetch('/api/emails/clean-noise', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        showToast(data.message || `Cleaned ${data.cleaned_count} emails.`, 'success');
+        await refreshAll();
+      } catch (err) {
+        showToast('Cleanup failed: ' + err.message, 'error');
+      }
+    });
+  }
 
   // Triage Filter Buttons
   const filterBtns = document.querySelectorAll('#triage-filter-group button');
@@ -1561,6 +2059,7 @@ function setupEventListeners() {
     const googleClient = document.getElementById('setting-google-client')?.value.trim() || '';
     const googleSecret = document.getElementById('setting-google-secret')?.value.trim() || '';
     const safeFolder = document.getElementById('setting-safe-folder').value.trim();
+    const autoQuarantine = document.getElementById('setting-auto-quarantine-noise')?.checked;
     const demoMode = document.getElementById('setting-demo-mode').checked;
     
     showToast('Saving engine settings...', 'info');
@@ -1570,6 +2069,7 @@ function setupEventListeners() {
         azure_tenant_id: azureTenant,
         google_client_id: googleClient,
         safe_folder_name: safeFolder,
+        auto_quarantine_noise: autoQuarantine !== false,
         demo_mode: demoMode
       };
       if (geminiKey) payload.gemini_api_key = geminiKey;
@@ -1612,6 +2112,10 @@ async function fetchAnalyticsData() {
       fetch('/api/analytics/resumes-roi'),
       fetch('/api/analytics/events')
     ]);
+
+    if (!kpisRes.ok || !funnelRes.ok || !compRes.ok || !roiRes.ok || !eventsRes.ok) {
+      return;
+    }
 
     const [kpis, funnel, comp, roi, events] = await Promise.all([
       kpisRes.json(),
@@ -1755,6 +2259,58 @@ function renderAuditStream(events) {
   });
 }
 
+window.orchestrateAllInboxesNoise = async function() {
+  showToast('⚡ Orchestrating & scanning all mailboxes for zero-noise inboxes...', 'info');
+  try {
+    const res = await fetch('/api/inbox/orchestrate-noise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sync_first: true })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`✓ Zero-Noise Orchestration Complete: ${data.total_noise_quarantined || 0} noise emails safely quarantined across ${data.accounts_scanned || 0} mailboxes to '${data.safe_folder_name || 'AI Cleaned - Noise'}'.`, 'success');
+    } else {
+      showToast(`Orchestration error: ${data.detail || data.message || 'Unknown error'}`, 'error');
+    }
+    await refreshAll();
+  } catch (err) {
+    showToast('Failed to orchestrate noise: ' + err.message, 'error');
+  }
+};
+
+window.cleanNoiseForAccount = async function(accountId) {
+  showToast(`Quarantining noise emails for ${accountId}...`, 'info');
+  try {
+    const res = await fetch('/api/emails/clean-noise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account_id: accountId })
+    });
+    const data = await res.json();
+    showToast(data.message || `Cleaned ${data.cleaned_count} emails for ${accountId}.`, 'success');
+    await refreshAll();
+  } catch (err) {
+    showToast('Failed to clean noise: ' + err.message, 'error');
+  }
+};
+
+window.quarantineSingleEmail = async function(emailId) {
+  showToast('Moving email to cloud safe folder...', 'info');
+  try {
+    const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/quarantine`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(data.message || 'Email safely moved to quarantine folder.', 'success');
+    } else {
+      showToast(`Error: ${data.detail || 'Failed to quarantine email'}`, 'error');
+    }
+    await refreshAll();
+  } catch (err) {
+    showToast('Failed: ' + err.message, 'error');
+  }
+};
+
 window.trashSingleEmail = async function(emailId) {
   try {
     const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/trash`, { method: 'POST' });
@@ -1789,3 +2345,214 @@ function showToast(message, type = 'info') {
     setTimeout(() => toast.remove(), 300);
   }, 4500);
 }
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+async function fetchFollowups() {
+  try {
+    const res = await fetch('/api/followups');
+    if (res.ok) {
+      const data = await res.json();
+      APP_STATE.followups = data.tasks || [];
+      renderFollowups();
+    }
+  } catch (err) {
+    console.error('Failed to fetch followups:', err);
+  }
+}
+
+function renderFollowups() {
+  const container = elements.followupTasksList || document.getElementById('followup-tasks-list');
+  if (!container) return;
+
+  const filter = APP_STATE.followupFilter || 'pending';
+  const tasks = APP_STATE.followups || [];
+
+  const filteredTasks = tasks.filter(t => {
+    if (filter === 'pending') return t.status === 'PENDING';
+    if (filter === 'completed') return t.status === 'COMPLETED';
+    return true; // 'all'
+  });
+
+  // Update tab badge and filter counters
+  const pendingCount = tasks.filter(t => t.status === 'PENDING').length;
+  const completedCount = tasks.filter(t => t.status === 'COMPLETED').length;
+  const totalCount = tasks.length;
+
+  if (elements.fuCountPending) elements.fuCountPending.textContent = pendingCount;
+  if (elements.fuCountCompleted) elements.fuCountCompleted.textContent = completedCount;
+  if (elements.fuCountAll) elements.fuCountAll.textContent = totalCount;
+
+  if (elements.tabBadgeFollowups) {
+    elements.tabBadgeFollowups.textContent = pendingCount;
+    elements.tabBadgeFollowups.style.display = pendingCount > 0 ? 'inline-block' : 'none';
+  }
+
+  container.innerHTML = '';
+
+  if (filteredTasks.length === 0) {
+    container.innerHTML = `
+      <div style="text-align: center; padding: 48px; color: var(--text-muted);">
+        <div style="font-size: 2.5rem; margin-bottom: 12px;">📅</div>
+        <h4 style="color: var(--text-primary); margin-bottom: 8px;">No ${filter !== 'all' ? filter : ''} follow-up tasks</h4>
+        <p style="font-size: 0.85rem;">Follow-up reminders appear here automatically from all active recruiter reachouts, or you can add custom reminders.</p>
+        <button class="btn btn-primary" onclick="orchestratePipeline()" style="margin-top: 16px; background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 600;">
+          <span>⚡</span> Orchestrate Pipeline
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  filteredTasks.forEach(task => {
+    const card = document.createElement('div');
+    card.className = `followup-card ${task.status.toLowerCase()}`;
+    
+    // Check if overdue
+    const isOverdue = task.status === 'PENDING' && task.due_date && new Date(task.due_date) < new Date(new Date().setHours(0,0,0,0));
+    const title = task.role_title || task.title || 'Executive Outreach';
+    const company = task.company_name || task.company || 'Hiring Organization';
+    const recruiter = task.recruiter_name || 'Recruiter';
+    
+    card.innerHTML = `
+      <div class="followup-card-left">
+        <div class="followup-card-header" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span class="followup-card-title ${task.status === 'COMPLETED' ? 'strikethrough' : ''}" style="font-weight: 700; color: #f8fafc;">${escapeHtml(title)}</span>
+          ${isOverdue ? '<span class="status-chip chip-overdue" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-size: 0.72rem; padding: 2px 8px; border-radius: 999px;">⚠️ Overdue</span>' : ''}
+          <span class="status-chip ${task.status.toLowerCase()}" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; ${task.status === 'COMPLETED' ? 'background: rgba(16, 185, 129, 0.2); color: #34d399;' : 'background: rgba(14, 165, 233, 0.2); color: #38bdf8;'}">${task.status === 'COMPLETED' ? '✓ Completed' : '⏳ Action Needed'}</span>
+        </div>
+        <div class="followup-card-meta" style="display: flex; gap: 14px; margin-top: 6px; font-size: 0.82rem; color: var(--text-secondary); flex-wrap: wrap;">
+          <span>👤 <strong>${escapeHtml(recruiter)}</strong></span>
+          <span>🏢 ${escapeHtml(company)}</span>
+          ${task.account_id ? `<span>📬 <code style="font-size: 0.75rem;">${escapeHtml(task.account_id)}</code></span>` : ''}
+          ${task.due_date ? `<span>📅 Target Due: <strong style="color: #38bdf8;">${escapeHtml(task.due_date)}</strong></span>` : ''}
+        </div>
+        ${task.notes ? `<div class="followup-card-notes" style="margin-top: 8px; font-size: 0.82rem; color: #cbd5e1; background: rgba(15, 23, 42, 0.6); padding: 8px 12px; border-radius: 6px; border-left: 3px solid #0284c7;">📝 ${escapeHtml(task.notes)}</div>` : ''}
+      </div>
+      <div class="followup-card-actions" style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+        ${task.email_id ? `
+          <button class="btn btn-primary btn-sm" onclick="openFollowupInStudio('${escapeHtml(task.email_id)}')" title="Open reachout and tailored draft in Recruiter Studio" style="background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 600;">
+            <span>🎯</span> Open in Studio
+          </button>
+        ` : ''}
+        ${task.status === 'PENDING' ? `
+          <button class="btn btn-secondary btn-sm" onclick="completeFollowupTask('${escapeHtml(task.id)}')" title="Mark Completed">✓ Done</button>
+        ` : `
+          <button class="btn btn-secondary btn-sm" onclick="reopenFollowupTask('${escapeHtml(task.id)}')" title="Reopen Task">↩ Reopen</button>
+        `}
+        <button class="btn btn-icon btn-sm" onclick="deleteFollowupTask('${escapeHtml(task.id)}')" title="Delete Reminder" style="color: var(--text-muted);">🗑️</button>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+window.openFollowupInStudio = function(emailId) {
+  if (!emailId) return;
+  // 1. Switch to Recruiter & Resume Studio tab
+  const studioTabBtn = document.querySelector('.tab-btn[data-tab="recruiter-studio"]');
+  if (studioTabBtn) studioTabBtn.click();
+
+  // 2. Ensure queue filter shows all reachouts so the targeted card is rendered
+  APP_STATE.queueFilter = 'all';
+  const filterBtns = document.querySelectorAll('#queue-filter-group button');
+  filterBtns.forEach(b => {
+    if (b.getAttribute('data-queue-filter') === 'all') {
+      b.classList.add('active');
+    } else {
+      b.classList.remove('active');
+    }
+  });
+  renderRecruiterList();
+
+  // 3. Select the email in the Studio
+  if (typeof selectRecruiterEmail === 'function') {
+    selectRecruiterEmail(emailId);
+  }
+
+  // 4. Smooth scroll the card into view
+  setTimeout(() => {
+    const card = document.getElementById(`card-${emailId.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, 100);
+
+  showToast('Loaded recruiter opportunity in Studio.', 'info');
+};
+
+window.orchestratePipeline = async function() {
+  try {
+    showToast('Orchestrating Recruiter Follow-ups & Pipeline...', 'info');
+    const res = await fetch('/api/pipeline/orchestrate', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      showToast(`Pipeline Orchestrated! ${data.pending_tasks || 0} reachouts scheduled.`, 'success');
+      await fetchFollowups();
+    } else {
+      showToast('Failed to orchestrate pipeline.', 'error');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+};
+
+window.completeFollowupTask = async function(taskId) {
+  try {
+    const res = await fetch(`/api/followups/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'COMPLETED' })
+    });
+    if (res.ok) {
+      showToast('Follow-up marked as completed!', 'success');
+      await fetchFollowups();
+    } else {
+      showToast('Failed to update follow-up.', 'error');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+};
+
+window.reopenFollowupTask = async function(taskId) {
+  try {
+    const res = await fetch(`/api/followups/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'PENDING' })
+    });
+    if (res.ok) {
+      showToast('Follow-up reopened.', 'info');
+      await fetchFollowups();
+    } else {
+      showToast('Failed to reopen follow-up.', 'error');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+};
+
+window.deleteFollowupTask = async function(taskId) {
+  if (!confirm('Are you sure you want to delete this follow-up reminder?')) return;
+  try {
+    const res = await fetch(`/api/followups/${taskId}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast('Follow-up deleted.', 'info');
+      await fetchFollowups();
+    } else {
+      showToast('Failed to delete follow-up.', 'error');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+};
+

@@ -237,7 +237,16 @@ def validate_browser_context(scope: Scope) -> Optional[str]:
                 return "Browser context verification failed: Cross-site request with Origin rejected."
             method = scope.get("method", "").upper()
             path = scope.get("path", "")
-            if (method, path) not in CROSS_SITE_NAVIGATION_ALLOWLIST:
+
+            # Permits top-level OAuth callback completion landing redirects (e.g. /?auth=success&provider=google)
+            is_oauth_landing = False
+            if method in ("GET", "HEAD") and path in ("/", "/index.html"):
+                qs = scope.get("query_string", b"")
+                qs_str = qs.decode("utf-8", errors="ignore") if isinstance(qs, bytes) else str(qs or "")
+                if "auth=success" in qs_str or "auth_error=" in qs_str:
+                    is_oauth_landing = True
+
+            if not is_oauth_landing and (method, path) not in CROSS_SITE_NAVIGATION_ALLOWLIST:
                 return "Browser context verification failed: Cross-site request rejected."
 
     return None

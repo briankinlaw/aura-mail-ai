@@ -22,6 +22,8 @@ from backend.models import (
     EmailMessage,
     EmailCategory,
     ClassificationResult,
+    RecruiterDetails,
+    ResumeMatchResult,
     UserProfile,
     ReplyDraftRequest,
     SaveDraftRequest,
@@ -52,6 +54,7 @@ from backend.ai_agent import classify_email, generate_personalized_reply
 from backend.provider_manager import provider_manager
 from backend.desktop_helper import get_desktop_app_status
 from backend.analytics import (
+    get_db_connection,
     record_opportunity,
     update_opportunity_stage,
     log_event,
@@ -61,7 +64,12 @@ from backend.analytics import (
     get_compensation_benchmarks,
     get_resume_roi_leaderboard,
     get_recent_audit_events,
-    export_analytics_data
+    export_analytics_data,
+    create_followup_task,
+    list_followup_tasks,
+    update_followup_task,
+    delete_followup_task,
+    orchestrate_followup_pipeline
 )
 
 from contextlib import asynccontextmanager
@@ -166,10 +174,82 @@ def load_cached_emails():
             with open(EMAILS_CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 CACHED_EMAILS = {k: EmailMessage(**v) for k, v in data.items()}
+                for email_msg in CACHED_EMAILS.values():
+                    _, dec_acc, _ = decode_composite_id(email_msg.id)
+                    if dec_acc and dec_acc not in ("unknown@auramail.local", "primary", "default"):
+                        if email_msg.account_id in ("primary", "default", "", None):
+                            email_msg.account_id = dec_acc
                 sync_cache_to_analytics()
-                return
         except Exception as e:
             logger.warning(f"Failed to load cached emails: {e}")
+    
+    # Hydrate opportunities from SQLite analytics database if not yet present in cache
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM opportunities WHERE status != 'TRASHED'")
+        opps = cursor.fetchall()
+        user_prof = None
+        for r in opps:
+            opp_id = r["id"]
+            if opp_id and opp_id not in CACHED_EMAILS:
+                meta = {}
+                if r["metadata_json"]:
+                    try:
+                        meta = json.loads(r["metadata_json"])
+                    except Exception:
+                        pass
+                subj = meta.get("subject") or r["role_title"] or "Solutions Architecture Opportunity"
+                rec_name = r["recruiter_name"] or "Recruiter"
+                comp_name = r["company_name"] or "Prospective Client / Employer"
+                role_title = r["role_title"] or "Solutions Architecture Leadership"
+                lens = r["lens_name"] or "Level 3A — Advisor / Principal Solutions Architect"
+                resume = r["attached_resume_file"] or "Brian_Kinlaw_2026-09-08_Advisor_Canonical_current.docx"
+                
+                email_msg = EmailMessage(
+                    id=opp_id,
+                    sender_name=rec_name,
+                    sender_email=r["recruiter_email"] or "recruiter@hiring.com",
+                    subject=subj,
+                    body_text=f"Hello Brian,\n\nI came across your background and wanted to connect regarding the {role_title} opportunity at {comp_name}.\n\nCompensation: {r['salary_text'] or 'Competitive'}\n\nBest regards,\n{rec_name}",
+                    preview=f"{rec_name} reaching out regarding {role_title} at {comp_name}",
+                    account_id="kinlawb@outlook.com",
+                    provider="MICROSOFT_GRAPH",
+                    status=r["status"] if r["status"] in ["DRAFTED", "REPLIED", "SCHEDULED", "INBOUND"] else "INBOUND",
+                    received_at=r["first_contact_at"] or datetime.now().isoformat(),
+                    selected_resume_file=resume,
+                    classification=ClassificationResult(
+                        category=EmailCategory.RESUME_REQUEST,
+                        confidence=float(r["match_score"] or 95) / 100.0,
+                        reasoning=f"Matched to canonical lens: {lens}",
+                        is_noise=False,
+                        is_resume_request=True,
+                        recruiter_details=RecruiterDetails(
+                            recruiter_name=rec_name,
+                            company_name=comp_name,
+                            role_title=role_title,
+                            salary_range=r["salary_text"] or "Competitive"
+                        ),
+                        resume_match=ResumeMatchResult(
+                            matching_lens=r["target_lens"] or "level_3a_advisor",
+                            lens_name=lens,
+                            lens_badge=lens.split("—")[0].strip() if "—" in lens else "Advisor",
+                            selected_resume=resume,
+                            rationale=f"Authoritative resume selected from Vault: {resume}"
+                        )
+                    )
+                )
+                email_msg.draft_reply = (
+                    f"Hi {rec_name},\n\n"
+                    f"Thank you for reaching out regarding the {role_title} role at {comp_name}. "
+                    f"With 20+ years of enterprise architecture leadership across Cloud, Data, and AI platforms—driving $100M+ in enterprise value and leading complex cloud transformations—this aligns closely with my core expertise.\n\n"
+                    f"I have attached my tailored executive resume ({resume}) for your review. Let's schedule a brief introductory discussion to explore how I can add immediate strategic value.\n\n"
+                    f"Best regards,\nBrian K. Kinlaw\n(210) 717-5305\nhttps://linkedin.com/in/briankinlaw/"
+                )
+                CACHED_EMAILS[opp_id] = email_msg
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to hydrate opportunities into cache: {e}")
     
     # If explicit Demo Mode is enabled and no cache exists, load demo provider samples
     if provider_manager.is_demo_mode():
@@ -301,6 +381,7 @@ def get_settings():
         "has_google_client_secret": bool(google_secret),
         "google_client_secret_masked": mask_secret(google_secret) if google_secret else "",
         "auto_pilot_enabled": settings.get("auto_pilot_enabled", False),
+        "auto_quarantine_noise": settings.get("auto_quarantine_noise", True),
         "safe_folder_name": settings.get("safe_folder_name", "AI Cleaned - Noise"),
         "demo_mode": settings.get("demo_mode", False),
         "configured_accounts": settings.get("configured_accounts", [])
@@ -329,6 +410,8 @@ def update_settings_endpoint(payload: Dict[str, Any]):
             os.environ["GOOGLE_CLIENT_SECRET"] = gsec
     if "auto_pilot_enabled" in payload:
         settings["auto_pilot_enabled"] = bool(payload["auto_pilot_enabled"])
+    if "auto_quarantine_noise" in payload:
+        settings["auto_quarantine_noise"] = bool(payload["auto_quarantine_noise"])
     if "safe_folder_name" in payload:
         settings["safe_folder_name"] = payload["safe_folder_name"].strip()
     if "demo_mode" in payload:
@@ -1067,9 +1150,14 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
         # Account Context Validation (Phase 8 Invariant: Account/Message mismatch MUST fail closed)
         req_account_id = payload.get("account_id")
         _, decoded_account, _ = decode_composite_id(email_msg.id)
-        msg_account_id = email_msg.account_id or decoded_account
-        if req_account_id and msg_account_id:
-            if req_account_id.strip().lower() != msg_account_id.strip().lower():
+        msg_account_id = decoded_account if (decoded_account and decoded_account not in ("unknown@auramail.local", "primary", "default")) else email_msg.account_id
+        if msg_account_id and email_msg.account_id in ("primary", "default", "", None):
+            email_msg.account_id = msg_account_id
+
+        if req_account_id:
+            clean_req = req_account_id.strip().lower()
+            clean_msg = (msg_account_id or "").strip().lower()
+            if clean_req not in ("primary", "default") and clean_msg and clean_req != clean_msg:
                 logger.warning(
                     f"Account/message mismatch for save-draft: requested '{req_account_id}', "
                     f"message owned by '{msg_account_id}'"
@@ -1181,11 +1269,12 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
             email_msg.grounding_status = grounding_status_val
 
     # Execute cloud operation under draft-first policy
+    target_account_id = msg_account_id if (req_account_id in (None, "", "primary", "default")) else req_account_id
     result = provider_manager.save_draft_reply(
         message_id=email_msg.id,
         reply_body=reply_body,
         resume_filename=resume_file,
-        account_id=req_account_id or msg_account_id
+        account_id=target_account_id
     )
     
     with _EMAIL_STATE_LOCK:
@@ -1208,6 +1297,114 @@ def save_draft_to_cloud(email_id: str, payload: Dict[str, Any]):
         res_dict["grounding_status"] = grounding_status_val
         res_dict["validation_summary"] = validation_summary
         return res_dict
+
+@app.post("/api/emails/{email_id}/mark-replied", dependencies=[Depends(require_local_auth)])
+def mark_email_replied(email_id: str, payload: Optional[Dict[str, Any]] = None):
+    """
+    Marks an email/opportunity as REPLIED in local cache and Analytics Pipeline.
+    Automatically schedules a follow-up to-do task for +3 business days unless custom due date is given.
+    """
+    if email_id not in CACHED_EMAILS:
+        norm_id = encode_composite_id(*decode_composite_id(email_id))
+        if norm_id in CACHED_EMAILS:
+            email_id = norm_id
+        else:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+    payload_data = payload or {}
+    due_days = payload_data.get("due_days", 3)
+    due_date = payload_data.get("due_date")
+    notes = payload_data.get("notes", "")
+
+    with _EMAIL_STATE_LOCK:
+        email_msg = CACHED_EMAILS[email_id]
+        email_msg.status = "REPLIED"
+        save_cached_emails()
+        update_opportunity_stage(email_id, "REPLIED")
+
+        specs = email_msg.classification.recruiter_details if email_msg.classification else None
+        recruiter_name = specs.recruiter_name if specs else email_msg.sender_name
+        company_name = specs.company_name if specs else "Hiring Organization"
+        role_title = specs.role_title if specs else email_msg.subject
+        _, decoded_account, _ = decode_composite_id(email_msg.id)
+        account_id = decoded_account or email_msg.account_id or "kinlawb@outlook.com"
+
+        followup = create_followup_task(
+            opportunity_id=email_id,
+            email_id=email_id,
+            recruiter_name=recruiter_name,
+            company_name=company_name,
+            role_title=role_title,
+            account_id=account_id,
+            due_days=due_days,
+            due_date=due_date,
+            notes=notes or f"Follow up with {recruiter_name} ({company_name}) on executive response sent."
+        )
+
+        log_event(
+            event_type="REPLY_SENT",
+            opportunity_id=email_id,
+            details=f"Marked opportunity with {recruiter_name} as REPLIED. Follow-up scheduled for {followup['due_date']}."
+        )
+
+        return {
+            "success": True,
+            "status": "REPLIED",
+            "email_id": email_id,
+            "followup": followup,
+            "safe_message": f"Marked as Replied! Follow-up scheduled for {followup['due_date']}."
+        }
+
+@app.get("/api/followups", dependencies=[Depends(require_local_auth)])
+def get_followup_tasks_endpoint(status: Optional[str] = None):
+    """Lists follow-up to-do tasks sorted by due date, auto-syncing from active recruiter pipeline."""
+    with _EMAIL_STATE_LOCK:
+        orchestrate_followup_pipeline(list(CACHED_EMAILS.values()))
+    return {"tasks": list_followup_tasks(status)}
+
+@app.post("/api/pipeline/orchestrate", dependencies=[Depends(require_local_auth)])
+def orchestrate_pipeline_endpoint():
+    """Auto-orchestrates all active recruiter opportunities and populates Follow-ups & Pipeline."""
+    with _EMAIL_STATE_LOCK:
+        res = orchestrate_followup_pipeline(list(CACHED_EMAILS.values()))
+    return res
+
+@app.post("/api/followups", dependencies=[Depends(require_local_auth)])
+def create_followup_task_endpoint(payload: Dict[str, Any]):
+    """Creates a custom follow-up task."""
+    task = create_followup_task(
+        opportunity_id=payload.get("opportunity_id"),
+        email_id=payload.get("email_id"),
+        recruiter_name=payload.get("recruiter_name"),
+        company_name=payload.get("company_name"),
+        role_title=payload.get("role_title"),
+        account_id=payload.get("account_id"),
+        due_days=payload.get("due_days", 3),
+        due_date=payload.get("due_date"),
+        notes=payload.get("notes", "")
+    )
+    return {"success": True, "task": task}
+
+@app.patch("/api/followups/{task_id}", dependencies=[Depends(require_local_auth)])
+def update_followup_task_endpoint(task_id: str, payload: Dict[str, Any]):
+    """Updates status, due_date, or notes of a follow-up task."""
+    updated = update_followup_task(
+        task_id=task_id,
+        status=payload.get("status"),
+        due_date=payload.get("due_date"),
+        notes=payload.get("notes")
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Follow-up task not found")
+    return {"success": True, "task": updated}
+
+@app.delete("/api/followups/{task_id}", dependencies=[Depends(require_local_auth)])
+def delete_followup_task_endpoint(task_id: str):
+    """Deletes a follow-up task."""
+    deleted = delete_followup_task(task_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Follow-up task not found")
+    return {"success": True, "deleted": True}
 
 @app.post("/api/emails/{email_id}/risk-check", dependencies=[Depends(require_local_auth)])
 def email_risk_check_endpoint(email_id: str, payload: Dict[str, Any]):
@@ -1538,46 +1735,188 @@ def send_email_reply(email_id: str, payload: Optional[SendReplyRequest] = None):
         }
     )
 
+@app.post("/api/inbox/orchestrate-noise", dependencies=[Depends(require_local_auth)])
+def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
+    """
+    Synchronized cross-account sweep to orchestrate every connected inbox:
+    1. Optionally syncs unified inboxes across all active accounts.
+    2. Runs AI Opportunity Radar classification on unclassified messages.
+    3. Retains all recruiters, career opportunities, and direct important communications in default Inboxes.
+    4. Automatically relocates all promotional, newsletter, and notification noise to the cloud safe folder.
+    5. Returns a structured per-account breakdown and clean status report.
+    """
+    settings = load_settings()
+    folder_name = settings.get("safe_folder_name", "AI Cleaned - Noise")
+    payload_data = payload or {}
+    sync_first = payload_data.get("sync_first", True)
+    target_account = payload_data.get("account_id")
+    since_date = payload_data.get("since_date")
+    limit_per_account = int(payload_data.get("limit_per_account", 500 if since_date else 50))
+
+    # 1. Sync active inboxes if requested
+    if sync_first:
+        try:
+            with _EMAIL_STATE_LOCK:
+                fetched_emails, _ = provider_manager.sync_unified_inbox(
+                    limit_per_account=limit_per_account,
+                    since_date=since_date
+                )
+                for em in fetched_emails:
+                    if em.id not in CACHED_EMAILS:
+                        CACHED_EMAILS[em.id] = em
+                    elif CACHED_EMAILS[em.id].status != "TRASHED":
+                        if not CACHED_EMAILS[em.id].classification and em.classification:
+                            CACHED_EMAILS[em.id].classification = em.classification
+                save_cached_emails()
+        except Exception as e:
+            logger.warning(f"Error syncing inboxes during noise orchestration: {e}")
+
+    # 2. Gather emails, ensure classification, and inspect for noise
+    with _EMAIL_STATE_LOCK:
+        for em in CACHED_EMAILS.values():
+            if not em.classification and em.status != "TRASHED":
+                try:
+                    em.classification = classify_email(em)
+                except Exception as e:
+                    logger.warning(f"Error classifying email {em.id}: {e}")
+
+        active_emails = list(CACHED_EMAILS.values())
+        
+        if target_account:
+            active_emails = [
+                em for em in active_emails
+                if em.account_id == target_account or em.id.startswith(f"{em.provider}::{target_account}::")
+            ]
+
+        noise_emails = [
+            em for em in active_emails
+            if em.classification and em.classification.is_noise and em.status != "TRASHED"
+        ]
+
+        # 3. Batch quarantine all noise emails across their respective mailboxes
+        quarantine_batch = provider_manager.batch_quarantine_noise(noise_emails, folder_name=folder_name)
+
+        for r in quarantine_batch.results:
+            if r.success and r.email_id in CACHED_EMAILS:
+                CACHED_EMAILS[r.email_id].status = "TRASHED"
+                log_event("NOISE_CLEANED", details=f"Orchestrated '{CACHED_EMAILS[r.email_id].subject[:40]}' to {folder_name}")
+
+        save_cached_emails()
+
+        # 4. Compute per-account metrics
+        configured_accounts = provider_manager.get_configured_accounts()
+        per_account_stats = []
+
+        for acc in configured_accounts:
+            acc_id = acc.get("account_id", "")
+            if not acc.get("enabled", True):
+                continue
+            
+            acc_emails = [
+                em for em in CACHED_EMAILS.values()
+                if (em.account_id == acc_id or em.id.startswith(f"{acc.get('provider')}::{acc_id}::"))
+            ]
+            
+            total_inbox = len(acc_emails)
+            noise_remaining = len([em for em in acc_emails if em.classification and em.classification.is_noise and em.status != "TRASHED"])
+            noise_cleaned = len([em for em in acc_emails if em.classification and em.classification.is_noise and em.status == "TRASHED"])
+            recruiters = len([em for em in acc_emails if em.classification and em.classification.is_resume_request and em.status != "TRASHED"])
+            important = len([em for em in acc_emails if em.classification and not em.classification.is_noise and not em.classification.is_resume_request and em.status != "TRASHED"])
+            
+            cleanliness = 100 if noise_remaining == 0 else max(0, round((1 - (noise_remaining / max(1, (noise_remaining + recruiters + important)))) * 100))
+
+            per_account_stats.append({
+                "account_id": acc_id,
+                "provider": acc.get("provider", "UNKNOWN"),
+                "display_name": acc.get("display_name", acc_id),
+                "is_connected": acc.get("is_connected", True),
+                "total_messages": total_inbox,
+                "noise_quarantined": noise_cleaned,
+                "noise_remaining": noise_remaining,
+                "recruiters_retained": recruiters,
+                "important_retained": important,
+                "cleanliness_score": cleanliness,
+                "is_clean": noise_remaining == 0
+            })
+
+        return {
+            "status": quarantine_batch.status,
+            "total_noise_quarantined": quarantine_batch.cleaned_count,
+            "failed_count": quarantine_batch.failed_count,
+            "safe_folder_name": folder_name,
+            "accounts_scanned": len(per_account_stats),
+            "per_account_stats": per_account_stats,
+            "message": f"Orchestrated across {len(per_account_stats)} mailboxes: {quarantine_batch.cleaned_count} noise emails quarantined to '{folder_name}'."
+        }
+
 @app.post("/api/emails/clean-noise", dependencies=[Depends(require_local_auth)])
-def clean_all_noise_endpoint():
+def clean_all_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
+    settings = load_settings()
+    folder_name = settings.get("safe_folder_name", "AI Cleaned - Noise")
+    target_account = (payload or {}).get("account_id")
+    
+    with _EMAIL_STATE_LOCK:
+        for em in CACHED_EMAILS.values():
+            if not em.classification and em.status != "TRASHED":
+                try:
+                    em.classification = classify_email(em)
+                except Exception:
+                    pass
+        
+        noise_emails = [
+            em for em in CACHED_EMAILS.values()
+            if em.classification and em.classification.is_noise and em.status != "TRASHED"
+            and (not target_account or em.account_id == target_account or em.id.startswith(f"{em.provider}::{target_account}::"))
+        ]
+        
+        quarantine_batch = provider_manager.batch_quarantine_noise(noise_emails, folder_name=folder_name)
+        
+        for r in quarantine_batch.results:
+            if r.success and r.email_id in CACHED_EMAILS:
+                CACHED_EMAILS[r.email_id].status = "TRASHED"
+                log_event("NOISE_CLEANED", details=f"Moved '{CACHED_EMAILS[r.email_id].subject[:40]}' to {folder_name}")
+        
+        save_cached_emails()
+        return {
+            "status": quarantine_batch.status,
+            "cleaned_count": quarantine_batch.cleaned_count,
+            "cleaned_ids": quarantine_batch.cleaned_ids,
+            "failed_count": quarantine_batch.failed_count,
+            "failed_moves": [r.model_dump() for r in quarantine_batch.results if not r.success],
+            "message": f"Cleaned {quarantine_batch.cleaned_count} noise emails to '{folder_name}'."
+        }
+
+@app.post("/api/emails/{email_id}/quarantine", dependencies=[Depends(require_local_auth)])
+def quarantine_single_email_endpoint(email_id: str):
+    if email_id not in CACHED_EMAILS:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
     settings = load_settings()
     folder_name = settings.get("safe_folder_name", "AI Cleaned - Noise")
     
-    cleaned_ids = []
-    failed_moves = []
-    
-    for email_id, email_msg in list(CACHED_EMAILS.items()):
-        if email_msg.classification and email_msg.classification.is_noise and email_msg.status != "TRASHED":
-            res = provider_manager.move_message(email_msg.id, folder_name)
-            if res.success:
-                email_msg.status = "TRASHED"
-                cleaned_ids.append(email_id)
-                log_event("NOISE_CLEANED", details=f"Moved '{email_msg.subject[:40]}' to {folder_name}")
-            else:
-                failed_moves.append({"email_id": email_id, "error": res.safe_message})
-    
-    save_cached_emails()
-    return {
-        "status": "SUCCESS" if not failed_moves else "PARTIAL_SUCCESS",
-        "cleaned_count": len(cleaned_ids),
-        "cleaned_ids": cleaned_ids,
-        "failed_count": len(failed_moves),
-        "failed_moves": failed_moves,
-        "message": f"Cleaned {len(cleaned_ids)} noise emails to '{folder_name}'."
-    }
+    with _EMAIL_STATE_LOCK:
+        email_msg = CACHED_EMAILS[email_id]
+        res = provider_manager.quarantine_message(email_msg.id, folder_name=folder_name)
+        if res.success:
+            email_msg.status = "TRASHED"
+            save_cached_emails()
+            log_event("NOISE_CLEANED", details=f"Quarantined '{email_msg.subject[:40]}' to {folder_name}")
+            return {"status": "SUCCESS", "message": f"Email safely relocated to '{folder_name}'.", "folder_name": folder_name}
+        raise HTTPException(status_code=500, detail=res.safe_message)
 
 @app.post("/api/emails/{email_id}/trash", dependencies=[Depends(require_local_auth)])
 def trash_single_email(email_id: str):
     if email_id not in CACHED_EMAILS:
         raise HTTPException(status_code=404, detail="Email not found")
     
-    email_msg = CACHED_EMAILS[email_id]
-    res = provider_manager.delete_message(email_msg.id)
-    if res.success:
-        email_msg.status = "TRASHED"
-        save_cached_emails()
-        return {"status": "SUCCESS", "message": "Email moved to trash."}
-    raise HTTPException(status_code=500, detail=res.safe_message)
+    with _EMAIL_STATE_LOCK:
+        email_msg = CACHED_EMAILS[email_id]
+        res = provider_manager.delete_message(email_msg.id)
+        if res.success:
+            email_msg.status = "TRASHED"
+            save_cached_emails()
+            return {"status": "SUCCESS", "message": "Email moved to trash."}
+        raise HTTPException(status_code=500, detail=res.safe_message)
 
 # --- Analytics & Observability Endpoints ---
 

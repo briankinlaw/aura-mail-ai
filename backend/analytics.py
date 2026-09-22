@@ -8,9 +8,10 @@ import sqlite3
 import json
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger("analytics")
@@ -88,6 +89,21 @@ def init_analytics_db():
         recruiter_reachouts INTEGER,
         time_saved_minutes REAL,
         created_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS followup_tasks (
+        id TEXT PRIMARY KEY,
+        opportunity_id TEXT,
+        email_id TEXT,
+        recruiter_name TEXT,
+        company_name TEXT,
+        role_title TEXT,
+        account_id TEXT,
+        status TEXT DEFAULT 'PENDING', -- PENDING, COMPLETED, SNOOZED, CANCELLED
+        due_date TEXT,
+        notes TEXT,
+        created_at TEXT,
+        completed_at TEXT
     );
     """)
 
@@ -507,3 +523,279 @@ def export_analytics_data() -> Dict[str, Any]:
         "events": events,
         "grounding_audits": audits
     }
+
+
+def create_followup_task(
+    opportunity_id: Optional[str] = None,
+    recruiter_name: Optional[str] = None,
+    company_name: Optional[str] = None,
+    role_title: Optional[str] = None,
+    account_id: Optional[str] = None,
+    email_id: Optional[str] = None,
+    due_days: int = 3,
+    due_date: Optional[str] = None,
+    notes: str = ""
+) -> Dict[str, Any]:
+    """Creates a new follow-up to-do task linked to a recruiter inquiry."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    task_id = f"fu_{uuid.uuid4().hex[:12]}"
+    now_dt = datetime.now()
+    now_iso = now_dt.isoformat()
+
+    if not due_date:
+        calc_due = now_dt + timedelta(days=due_days)
+        due_date_str = calc_due.strftime("%Y-%m-%d")
+    else:
+        due_date_str = due_date
+
+    cursor.execute("""
+    INSERT INTO followup_tasks (
+        id, opportunity_id, email_id, recruiter_name, company_name,
+        role_title, account_id, status, due_date, notes, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+    """, (
+        task_id,
+        opportunity_id or email_id or "",
+        email_id or opportunity_id or "",
+        recruiter_name or "Recruiter",
+        company_name or "Hiring Organization",
+        role_title or "Solutions Architecture Leadership",
+        account_id or "kinlawb@outlook.com",
+        due_date_str,
+        notes or f"Follow up on executive response sent regarding {role_title or 'opportunity'}.",
+        now_iso
+    ))
+
+    conn.commit()
+    conn.close()
+
+    log_event(
+        event_type="RECRUITER_FOLLOW_UP",
+        opportunity_id=opportunity_id or email_id,
+        details=f"Follow-up scheduled for {due_date_str} with {recruiter_name or 'recruiter'} ({company_name or 'company'})."
+    )
+
+    return {
+        "id": task_id,
+        "opportunity_id": opportunity_id or email_id or "",
+        "email_id": email_id or opportunity_id or "",
+        "recruiter_name": recruiter_name or "Recruiter",
+        "company_name": company_name or "Hiring Organization",
+        "role_title": role_title or "Solutions Architecture Leadership",
+        "account_id": account_id or "kinlawb@outlook.com",
+        "status": "PENDING",
+        "due_date": due_date_str,
+        "notes": notes,
+        "created_at": now_iso,
+        "completed_at": None
+    }
+
+
+def orchestrate_followup_pipeline(cached_emails: Optional[List[Any]] = None) -> Dict[str, Any]:
+    """
+    Orchestrates the Recruiter Opportunity Pipeline & Follow-up Scheduler:
+    1. Scans all active recruiter inquiries in cache and database.
+    2. Synchronizes opportunities table.
+    3. Auto-generates structured follow-up tasks for unreplied, staged, or active reachouts.
+    4. Computes pending pipeline action counts.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Get existing task email_ids
+    cursor.execute("SELECT email_id FROM followup_tasks")
+    existing_email_ids = set(r["email_id"] for r in cursor.fetchall() if r["email_id"])
+
+    created_count = 0
+    now_dt = datetime.now()
+
+    if cached_emails:
+        for em in cached_emails:
+            if not em or getattr(em, "status", None) == "TRASHED":
+                continue
+            
+            classification = getattr(em, "classification", None)
+            is_recruiter = False
+            if classification and getattr(classification, "is_resume_request", False):
+                is_recruiter = True
+            
+            if not is_recruiter:
+                continue
+
+            email_id = getattr(em, "id", "")
+            if not email_id or email_id in existing_email_ids:
+                continue
+
+            rec_details = getattr(classification, "recruiter_details", None) if classification else None
+            recruiter_name = getattr(rec_details, "recruiter_name", None) or getattr(em, "sender_name", "Recruiter")
+            company_name = getattr(rec_details, "company_name", None) or "Hiring Organization"
+            role_title = getattr(rec_details, "role_title", None) or getattr(em, "subject", "Architecture Leadership")
+            account_id = getattr(em, "account_id", "kinlawb@outlook.com")
+            status = getattr(em, "status", "PENDING")
+
+            task_id = f"fu_{uuid.uuid4().hex[:12]}"
+            
+            # Default due date: within 2 days
+            due_date_str = (now_dt + timedelta(days=2)).strftime("%Y-%m-%d")
+
+            if status == "REPLIED":
+                notes = f"Executive response sent to {recruiter_name}. Follow up on next steps and interview scheduling."
+                due_date_str = (now_dt + timedelta(days=3)).strftime("%Y-%m-%d")
+            elif status == "DRAFTED":
+                notes = f"Tailored draft staged in cloud ({account_id}). Ready for final review in Outlook/Gmail."
+                due_date_str = (now_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                salary_str = f" | Comp: {rec_details.salary_range}" if (rec_details and getattr(rec_details, "salary_range", None)) else ""
+                notes = f"Inbound inquiry for '{role_title}'{salary_str}. Review matched canonical resume and send draft."
+
+            cursor.execute("""
+            INSERT INTO followup_tasks (
+                id, opportunity_id, email_id, recruiter_name, company_name,
+                role_title, account_id, status, due_date, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+            """, (
+                task_id, email_id, email_id, recruiter_name, company_name,
+                role_title, account_id, due_date_str, notes, now_dt.isoformat()
+            ))
+            existing_email_ids.add(email_id)
+            created_count += 1
+
+    # Also scan persistent opportunities table in database
+    try:
+        cursor.execute("SELECT * FROM opportunities WHERE status != 'TRASHED'")
+        db_opps = cursor.fetchall()
+        for opp in db_opps:
+            opp_id = opp["id"]
+            if not opp_id or opp_id in existing_email_ids:
+                continue
+
+            recruiter_name = opp["recruiter_name"] or "Recruiter"
+            company_name = opp["company_name"] or "Hiring Organization"
+            role_title = opp["role_title"] or "Solutions Architecture Leadership"
+            lens_name = opp["lens_name"] or "Executive Advisory"
+            resume_file = opp["attached_resume_file"] or "Canonical Resume"
+            salary_text = opp["salary_text"] or ""
+            account_id = opp["recruiter_email"] or "kinlawb@outlook.com"
+            status = opp["status"] or "PENDING"
+
+            task_id = f"fu_{uuid.uuid4().hex[:12]}"
+            due_date_str = (now_dt + timedelta(days=2)).strftime("%Y-%m-%d")
+
+            if status == "REPLIED":
+                notes = f"Executive response sent to {recruiter_name} ({company_name}). Follow up on next steps."
+                due_date_str = (now_dt + timedelta(days=3)).strftime("%Y-%m-%d")
+            elif status == "DRAFTED":
+                notes = f"Draft staged using {resume_file}. Ready for final dispatch."
+                due_date_str = (now_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                salary_part = f" | Comp: {salary_text}" if salary_text else ""
+                notes = f"Targeting {lens_name} via {resume_file}{salary_part}. Follow up on reachout and next steps."
+
+            cursor.execute("""
+            INSERT INTO followup_tasks (
+                id, opportunity_id, email_id, recruiter_name, company_name,
+                role_title, account_id, status, due_date, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+            """, (
+                task_id, opp_id, opp_id, recruiter_name, company_name,
+                role_title, account_id, due_date_str, notes, now_dt.isoformat()
+            ))
+            existing_email_ids.add(opp_id)
+            created_count += 1
+    except Exception:
+        pass
+
+    conn.commit()
+
+    cursor.execute("SELECT count(*) FROM followup_tasks WHERE status = 'PENDING'")
+    pending_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT count(*) FROM followup_tasks")
+    total_count = cursor.fetchone()[0]
+
+    conn.close()
+
+    return {
+        "status": "SUCCESS",
+        "tasks_created": created_count,
+        "pending_tasks": pending_count,
+        "total_tasks": total_count,
+        "message": f"Orchestrated pipeline: {created_count} new follow-up tasks created. {pending_count} pending action items."
+    }
+
+
+def list_followup_tasks(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Lists all follow-up to-do tasks sorted by due date."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    if status and status.upper() != "ALL":
+        cursor.execute("""
+        SELECT * FROM followup_tasks
+        WHERE UPPER(status) = UPPER(?)
+        ORDER BY due_date ASC, created_at DESC
+        """, (status,))
+    else:
+        cursor.execute("""
+        SELECT * FROM followup_tasks
+        ORDER BY 
+          CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END,
+          due_date ASC,
+          created_at DESC
+        """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(r) for r in rows]
+
+
+def update_followup_task(
+    task_id: str,
+    status: Optional[str] = None,
+    due_date: Optional[str] = None,
+    notes: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Updates status (PENDING, COMPLETED, SNOOZED), due_date, or notes of a follow-up task."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM followup_tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    new_status = status.upper() if status else row["status"]
+    new_due = due_date if due_date is not None else row["due_date"]
+    new_notes = notes if notes is not None else row["notes"]
+    now_iso = datetime.now().isoformat()
+    completed_at = now_iso if (new_status == "COMPLETED" and row["status"] != "COMPLETED") else (None if new_status == "PENDING" else row["completed_at"])
+
+    cursor.execute("""
+    UPDATE followup_tasks
+    SET status = ?, due_date = ?, notes = ?, completed_at = ?
+    WHERE id = ?
+    """, (new_status, new_due, new_notes, completed_at, task_id))
+
+    conn.commit()
+
+    cursor.execute("SELECT * FROM followup_tasks WHERE id = ?", (task_id,))
+    updated_row = cursor.fetchone()
+    conn.close()
+
+    return dict(updated_row) if updated_row else None
+
+
+def delete_followup_task(task_id: str) -> bool:
+    """Deletes a follow-up task by ID."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM followup_tasks WHERE id = ?", (task_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+

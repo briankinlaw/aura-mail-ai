@@ -95,7 +95,7 @@ class DemoProvider(BaseEmailProvider):
             )
         ]
 
-    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "Inbox") -> Tuple[List[EmailMessage], Optional[str]]:
+    def fetch_inbox_messages(self, account_id: str = "demo@auramail.local", limit: int = 50, folder: str = "Inbox", since_date: Optional[str] = None) -> Tuple[List[EmailMessage], Optional[str]]:
         return list(self._mock_messages.values()), None
 
     def create_reply_draft(

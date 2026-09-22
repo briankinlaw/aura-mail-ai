@@ -134,3 +134,80 @@ def test_failed_move_operation_returns_failure():
             res = graph.move_message("kinlawb@outlook.com", "MICROSOFT_GRAPH::kinlawb@outlook.com::msg_99", "non_existent_folder")
             assert res.success is False
             assert res.error_code == "HTTP_404"
+
+
+def test_save_draft_primary_account_token_resolves_to_composite_owner():
+    """Verifies that save-draft resolves owner from composite ID when account_id is 'primary' or omitted."""
+    from fastapi.testclient import TestClient
+    from backend.main import app, CACHED_EMAILS
+    from backend.auth import get_local_session_token
+    from backend.providers.base import ProviderOperationResult
+
+    client = TestClient(app)
+    headers = {"X-Aura-Session-Token": get_local_session_token()}
+
+    msg_id = "MICROSOFT_GRAPH::kinlawb%40outlook.com::msg_composite_test_1"
+    test_msg = EmailMessage(
+        id=msg_id,
+        account_id="primary",
+        subject="AI Leadership Opportunity",
+        sender_name="Ibrahim S A K",
+        sender_email="recruiter@example.com",
+        body_text="Reachout regarding Solutions Architecture"
+    )
+    CACHED_EMAILS[msg_id] = test_msg
+
+    with patch("backend.main.provider_manager.save_draft_reply") as mock_save:
+        mock_save.return_value = ProviderOperationResult(
+            success=True,
+            provider="MICROSOFT_GRAPH",
+            account_id="kinlawb@outlook.com",
+            operation="CREATE_DRAFT",
+            safe_message="Draft staged successfully",
+            remote_object_id="draft_cloud_composite_1"
+        )
+        res = client.post(
+            f"/api/emails/{msg_id}/save-draft",
+            headers=headers,
+            json={"reply_body": "Thank you for reaching out."}
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        # Verify provider_manager was invoked with the resolved owner account, not literal 'primary'
+        mock_save.assert_called_once()
+        assert mock_save.call_args.kwargs["account_id"] == "kinlawb@outlook.com"
+
+
+def test_save_draft_account_mismatch_fails_closed():
+    """Verifies that an explicit mismatch between requested account and message owner fails closed with 403."""
+    from fastapi.testclient import TestClient
+    from backend.main import app, CACHED_EMAILS
+    from backend.auth import get_local_session_token
+
+    client = TestClient(app)
+    headers = {"X-Aura-Session-Token": get_local_session_token()}
+
+    msg_id = "MICROSOFT_GRAPH::kinlawb%40outlook.com::msg_composite_test_2"
+    test_msg = EmailMessage(
+        id=msg_id,
+        account_id="kinlawb@outlook.com",
+        subject="Architecture Opportunity",
+        sender_name="Recruiter",
+        sender_email="rec@example.com",
+        body_text="Reachout"
+    )
+    CACHED_EMAILS[msg_id] = test_msg
+
+    # Request with a different active account
+    res = client.post(
+        f"/api/emails/{msg_id}/save-draft",
+        headers=headers,
+        json={
+            "reply_body": "Thank you for reaching out.",
+            "account_id": "brian@mavencode.com"
+        }
+    )
+    assert res.status_code == 403
+    assert "Account context mismatch" in res.json()["detail"]
+

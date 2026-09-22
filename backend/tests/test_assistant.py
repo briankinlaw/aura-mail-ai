@@ -97,9 +97,18 @@ def test_list_and_triage_endpoints():
     assert isinstance(emails, list)
 
 def test_clean_noise_batch_endpoint():
-    from unittest.mock import patch, MagicMock
-    with patch("backend.main.provider_manager.move_message") as mock_move:
-        mock_move.return_value = MagicMock(success=True, safe_message="Moved")
+    from unittest.mock import patch
+    from backend.models import QuarantineBatchResult
+    with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+        mock_batch.return_value = QuarantineBatchResult(
+            status="SUCCESS",
+            total_requested=0,
+            cleaned_count=0,
+            failed_count=0,
+            cleaned_ids=[],
+            results=[],
+            message="Cleaned 0 noise emails."
+        )
         response = client.post("/api/emails/clean-noise")
         assert response.status_code == 200
         data = response.json()
@@ -127,7 +136,6 @@ def test_user_profile_email_accounts():
         "kinlawb@outlook.com",
         "brian.kinlaw@outlook.com",
         "briankkinlaw@gmail.com",
-        "cbkinlaw@satx.rr.com",
         "briankinlaw@satx.rr.com",
         "brian@mavencode.com"
     ]
@@ -146,4 +154,4 @@ def test_user_profile_email_accounts():
     assert post_res.status_code == 200
     data = post_res.json()
     assert data["status"] == "SUCCESS"
-    assert len(data["profile"]["active_email_accounts"]) == 6
+    assert len(data["profile"]["active_email_accounts"]) == len(expected_active)

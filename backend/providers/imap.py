@@ -80,47 +80,61 @@ class ImapProvider(BaseEmailProvider):
         raw_server = cfg.get("imap_server", "mail.twc.com" if "rr.com" in email_addr else "outlook.office365.com")
         server, port = self._parse_host_port(raw_server, int(cfg.get("imap_port", 993)))
         
-        import ssl
-        context = ssl.create_default_context()
+        def _connect_client(h: str, p: int, timeout: int = 15):
+            if p == 993:
+                import ssl
+                context = ssl.create_default_context()
+                return imaplib.IMAP4_SSL(h, p, ssl_context=context, timeout=timeout)
+            return imaplib.IMAP4(h, p, timeout=timeout)
 
-        # Attempt 1: Standard login with full email address
-        try:
-            client = imaplib.IMAP4_SSL(server, port, ssl_context=context, timeout=15)
-            client.login(email_addr, password)
-            self._last_error.pop(account_id, None)
-            return client
-        except Exception as e1:
-            logger.warning(f"IMAP login for {email_addr} with full email failed on {server}:{port}: {e1}")
-            
-            # Attempt 2: Try username prefix without domain (e.g. briankinlaw)
-            if "@" in email_addr:
-                user_prefix = email_addr.split("@")[0]
+        candidates: List[Tuple[str, int]] = [(server, port)]
+        is_spectrum = "twc.com" in server.lower() or "rr.com" in email_addr.lower() or "charter.net" in server.lower()
+        if is_spectrum:
+            for fallback in [
+                ("mail.twc.com", 143),
+                ("mobile.charter.net", 993),
+                ("mobile.charter.net", 143),
+                ("pop-server.satx.rr.com", 143),
+                ("mail.twc.com", 993),
+            ]:
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+        usernames = [email_addr]
+        if "@" in email_addr:
+            usernames.append(email_addr.split("@")[0])
+
+        last_auth_error = None
+        last_conn_error = None
+
+        for target_host, target_port in candidates:
+            for u in usernames:
+                client = None
                 try:
-                    client2 = imaplib.IMAP4_SSL(server, port, ssl_context=context, timeout=15)
-                    client2.login(user_prefix, password)
-                    logger.info(f"IMAP login succeeded for {email_addr} using username prefix '{user_prefix}'.")
+                    client = _connect_client(target_host, target_port, timeout=10)
+                    client.login(u, password)
+                    logger.info(f"IMAP login succeeded for {email_addr} (as '{u}') on {target_host}:{target_port}.")
                     self._last_error.pop(account_id, None)
-                    return client2
-                except Exception as e2:
-                    logger.warning(f"IMAP login with prefix '{user_prefix}' on {server} failed: {e2}")
+                    return client
+                except Exception as e:
+                    err_msg = str(e)
+                    if client:
+                        try:
+                            client.logout()
+                        except Exception:
+                            pass
+                    if "Invalid user name or password" in err_msg or "AUTHENTICATIONFAILED" in err_msg.upper():
+                        last_auth_error = f"Authentication failed: Invalid username or password on {target_host}:{target_port}. Verify login at webmail.spectrum.net."
+                        logger.warning(f"IMAP login failed for {email_addr} (as '{u}') on {target_host}:{target_port}: {err_msg}")
+                    else:
+                        last_conn_error = f"Connection failed on {target_host}:{target_port}: {err_msg}"
+                        logger.debug(f"IMAP connect/login attempt failed for {target_host}:{target_port}: {err_msg}")
 
-            # Attempt 3: Spectrum mobile.charter.net fallback if Roadrunner/TWC
-            if "twc.com" in server.lower() or "rr.com" in email_addr.lower():
-                try:
-                    client3 = imaplib.IMAP4_SSL("mobile.charter.net", 993, ssl_context=context, timeout=15)
-                    client3.login(email_addr, password)
-                    logger.info(f"IMAP login succeeded for {email_addr} on mobile.charter.net.")
-                    self._last_error.pop(account_id, None)
-                    return client3
-                except Exception as e3:
-                    logger.warning(f"IMAP fallback to mobile.charter.net failed: {e3}")
-
-            err_detail = str(e1)
-            if "Invalid user name or password" in err_detail or "AUTHENTICATIONFAILED" in err_detail.upper():
-                self._last_error[account_id] = f"Invalid username or password on {server}:{port}. Verify webmail login at webmail.spectrum.net."
-            else:
-                self._last_error[account_id] = f"IMAP connection failed ({server}:{port}): {err_detail}"
-            return None
+        if last_auth_error:
+            self._last_error[account_id] = last_auth_error
+        else:
+            self._last_error[account_id] = last_conn_error or f"IMAP connection failed ({server}:{port})"
+        return None
 
     def _discover_folders(self, client: imaplib.IMAP4_SSL, account_id: str) -> Dict[str, str]:
         """Discovers standard folders using RFC 6154 Special-Use attributes or names."""
@@ -253,7 +267,7 @@ class ImapProvider(BaseEmailProvider):
                 ))
         return results
 
-    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "INBOX") -> Tuple[List[EmailMessage], Optional[str]]:
+    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "INBOX", since_date: Optional[str] = None) -> Tuple[List[EmailMessage], Optional[str]]:
         client = self._get_imap_connection(account_id)
         if not client:
             return [], f"Could not connect to IMAP server for {account_id}"
@@ -261,13 +275,24 @@ class ImapProvider(BaseEmailProvider):
         messages: List[EmailMessage] = []
         try:
             client.select(folder, readonly=True)
-            status, search_data = client.uid("search", None, "ALL")
+            search_criteria = "ALL"
+            if since_date:
+                try:
+                    d_str = since_date.split("T")[0]
+                    dt = datetime.strptime(d_str, "%Y-%m-%d")
+                    imap_date = dt.strftime("%d-%b-%Y")
+                    search_criteria = f'(SINCE "{imap_date}")'
+                except Exception as ex:
+                    logger.warning(f"Could not parse IMAP since_date '{since_date}': {ex}")
+                    search_criteria = "ALL"
+
+            status, search_data = client.uid("search", None, search_criteria)
             if status != "OK" or not search_data or not search_data[0]:
                 client.logout()
                 return [], None
 
             uids = search_data[0].split()
-            recent_uids = uids[-limit:]
+            recent_uids = uids[-limit:] if limit else uids
             recent_uids.reverse()
 
             for uid in recent_uids:

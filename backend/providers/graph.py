@@ -376,7 +376,7 @@ class MicrosoftGraphProvider(BaseEmailProvider):
                 ))
         return results
 
-    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "Inbox") -> Tuple[List[EmailMessage], Optional[str]]:
+    def fetch_inbox_messages(self, account_id: str, limit: int = 50, folder: str = "Inbox", since_date: Optional[str] = None) -> Tuple[List[EmailMessage], Optional[str]]:
         """Fetches messages with Graph pagination and precise field selection."""
         token = self.get_access_token(account_id)
         if not token:
@@ -391,6 +391,9 @@ class MicrosoftGraphProvider(BaseEmailProvider):
             "$select": "id,conversationId,subject,from,receivedDateTime,bodyPreview,body,isRead,hasAttachments,parentFolderId",
             "$orderby": "receivedDateTime desc"
         }
+        if since_date:
+            iso_date = since_date if "T" in since_date else f"{since_date}T00:00:00Z"
+            params["$filter"] = f"receivedDateTime ge {iso_date}"
 
         url = f"{GRAPH_API_ENDPOINT}/me/mailFolders/{folder}/messages"
         messages: List[EmailMessage] = []
