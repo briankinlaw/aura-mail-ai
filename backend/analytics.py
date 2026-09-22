@@ -10,7 +10,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 import logging
 
@@ -27,6 +27,64 @@ def get_db_connection():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def derive_owning_account_id(
+    email_id: Optional[str] = None,
+    metadata_json: Optional[Union[str, Dict[str, Any]]] = None
+) -> str:
+    """Derives owning mailbox account ID from composite email ID or metadata.
+    Returns 'UNKNOWN' if neither is reliable. Never defaults to recruiter email or hardcoded personal address.
+    """
+    if metadata_json:
+        try:
+            meta = json.loads(metadata_json) if isinstance(metadata_json, str) else metadata_json
+            if isinstance(meta, dict):
+                acc = meta.get("account_id") or meta.get("owning_account")
+                if acc and isinstance(acc, str) and "@" in acc and not acc.lower().startswith("recruiter"):
+                    return acc.strip()
+        except Exception:
+            pass
+
+    if email_id and isinstance(email_id, str) and "::" in email_id:
+        try:
+            from backend.providers.base import decode_composite_id
+            _, account_id, _ = decode_composite_id(email_id)
+            if account_id and "@" in account_id:
+                return account_id.strip()
+        except Exception:
+            pass
+
+    return "UNKNOWN"
+
+
+def migrate_legacy_followup_attribution():
+    """Corrects legacy followup_tasks rows where account_id was mistakenly set to recruiter_email.
+    Preserves all other rows, including manually assigned accounts.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT f.id, f.opportunity_id, f.email_id, f.account_id, o.recruiter_email, o.metadata_json
+            FROM followup_tasks f
+            JOIN opportunities o ON (f.opportunity_id = o.id OR f.email_id = o.id)
+            WHERE f.account_id IS NOT NULL
+              AND o.recruiter_email IS NOT NULL
+              AND LOWER(TRIM(f.account_id)) = LOWER(TRIM(o.recruiter_email))
+        """)
+        misattributed_rows = cursor.fetchall()
+        for row in misattributed_rows:
+            task_id = row["id"]
+            opp_id = row["opportunity_id"] or row["email_id"]
+            meta = row["metadata_json"]
+            new_acc = derive_owning_account_id(opp_id, meta)
+            cursor.execute("UPDATE followup_tasks SET account_id = ? WHERE id = ?", (new_acc, task_id))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Followup attribution migration warning: {e}")
+    finally:
+        conn.close()
 
 
 def init_analytics_db():
@@ -109,6 +167,8 @@ def init_analytics_db():
 
     conn.commit()
     conn.close()
+
+    migrate_legacy_followup_attribution()
     logger.info("Analytics database initialized successfully.")
 
 
@@ -153,7 +213,8 @@ def record_opportunity(
     recruiter_details: Any,
     resume_match: Any,
     status: str = "INBOUND",
-    received_at: str = ""
+    received_at: str = "",
+    account_id: Optional[str] = None
 ):
     """Records or updates a recruiter opportunity in SQLite."""
     conn = get_db_connection()
@@ -196,6 +257,11 @@ def record_opportunity(
     now_iso = datetime.now().isoformat()
     contact_date = received_at or now_iso
 
+    meta_payload: Dict[str, Any] = {"subject": subject}
+    resolved_acc = account_id or derive_owning_account_id(email_id)
+    if resolved_acc and resolved_acc != "UNKNOWN":
+        meta_payload["account_id"] = resolved_acc
+
     cursor.execute("""
     INSERT INTO opportunities (
         id, conversation_id, recruiter_name, recruiter_email, company_name,
@@ -220,7 +286,7 @@ def record_opportunity(
         role, lens_key, lens_name, resume_file, sal_text,
         sal_info["min"], sal_info["max"], sal_info["type"],
         getattr(recruiter_details, "urgency", "Normal"),
-        status, match_score, contact_date, now_iso, json.dumps({"subject": subject})
+        status, match_score, contact_date, now_iso, json.dumps(meta_payload)
     ))
 
     conn.commit()
@@ -550,6 +616,8 @@ def create_followup_task(
     else:
         due_date_str = due_date
 
+    resolved_account = account_id or derive_owning_account_id(email_id or opportunity_id) or "UNKNOWN"
+
     cursor.execute("""
     INSERT INTO followup_tasks (
         id, opportunity_id, email_id, recruiter_name, company_name,
@@ -562,7 +630,7 @@ def create_followup_task(
         recruiter_name or "Recruiter",
         company_name or "Hiring Organization",
         role_title or "Solutions Architecture Leadership",
-        account_id or "kinlawb@outlook.com",
+        resolved_account,
         due_date_str,
         notes or f"Follow up on executive response sent regarding {role_title or 'opportunity'}.",
         now_iso
@@ -584,7 +652,7 @@ def create_followup_task(
         "recruiter_name": recruiter_name or "Recruiter",
         "company_name": company_name or "Hiring Organization",
         "role_title": role_title or "Solutions Architecture Leadership",
-        "account_id": account_id or "kinlawb@outlook.com",
+        "account_id": resolved_account,
         "status": "PENDING",
         "due_date": due_date_str,
         "notes": notes,
@@ -632,7 +700,7 @@ def orchestrate_followup_pipeline(cached_emails: Optional[List[Any]] = None) -> 
             recruiter_name = getattr(rec_details, "recruiter_name", None) or getattr(em, "sender_name", "Recruiter")
             company_name = getattr(rec_details, "company_name", None) or "Hiring Organization"
             role_title = getattr(rec_details, "role_title", None) or getattr(em, "subject", "Architecture Leadership")
-            account_id = getattr(em, "account_id", "kinlawb@outlook.com")
+            account_id = getattr(em, "account_id", None) or derive_owning_account_id(email_id) or "UNKNOWN"
             status = getattr(em, "status", "PENDING")
 
             task_id = f"fu_{uuid.uuid4().hex[:12]}"
@@ -677,7 +745,7 @@ def orchestrate_followup_pipeline(cached_emails: Optional[List[Any]] = None) -> 
             lens_name = opp["lens_name"] or "Executive Advisory"
             resume_file = opp["attached_resume_file"] or "Canonical Resume"
             salary_text = opp["salary_text"] or ""
-            account_id = opp["recruiter_email"] or "kinlawb@outlook.com"
+            account_id = derive_owning_account_id(opp_id, opp["metadata_json"]) or "UNKNOWN"
             status = opp["status"] or "PENDING"
 
             task_id = f"fu_{uuid.uuid4().hex[:12]}"

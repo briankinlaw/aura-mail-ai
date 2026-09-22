@@ -222,3 +222,155 @@ def test_mark_replied_api(tmp_path, monkeypatch):
     assert tasks[0]["opportunity_id"] == test_email_id
     assert tasks[0]["recruiter_name"] == "Jessica Hayes"
     assert tasks[0]["status"] == "PENDING"
+
+
+def test_followup_attribution_derived_from_composite_id_not_recruiter_email(tmp_path, monkeypatch):
+    """
+    ATTRIBUTION BOUNDARY:
+    Verifies that follow-up tasks derive account_id from the owning mailbox (composite ID / account field),
+    and NEVER from the recruiter's email address or a hardcoded personal address.
+    """
+    from backend.analytics import (
+        orchestrate_followup_pipeline,
+        record_opportunity,
+        derive_owning_account_id,
+        get_db_connection
+    )
+
+    test_db = tmp_path / "test_attribution.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+
+    # Case 1: Opportunity with recruiter email differing from owning mailbox
+    owning_mailbox = "brian.kinlaw@customdomain.com"
+    recruiter_email = "recruiter.sarah@topsearchfirm.com"
+    composite_opp_id = f"MICROSOFT_GRAPH::{owning_mailbox}::msg_opp_987"
+
+    record_opportunity(
+        email_id=composite_opp_id,
+        subject="Lead Cloud Architect Role",
+        sender_name="Sarah Miller",
+        sender_email=recruiter_email,
+        recruiter_details=RecruiterDetails(
+            recruiter_name="Sarah Miller",
+            company_name="Cloud Corp",
+            role_title="Lead Cloud Architect"
+        ),
+        resume_match=None,
+        status="INBOUND"
+    )
+
+    # Run orchestration pipeline
+    result = orchestrate_followup_pipeline(cached_emails=[])
+    assert result["status"] == "SUCCESS"
+    assert result["tasks_created"] == 1
+
+    tasks = list_followup_tasks()
+    matching_tasks = [t for t in tasks if t["opportunity_id"] == composite_opp_id]
+    assert len(matching_tasks) == 1
+    task = matching_tasks[0]
+
+    # account_id MUST be owning mailbox
+    assert task["account_id"] == owning_mailbox
+    # account_id MUST NOT be recruiter's email
+    assert task["account_id"] != recruiter_email
+    assert task["account_id"] != "kinlawb@outlook.com"
+
+    # Case 2: Unresolvable ID -> UNKNOWN attribution (never hardcoded email or recruiter email)
+    unknown_opp_id = "simple_legacy_id_without_composite_parts"
+    record_opportunity(
+        email_id=unknown_opp_id,
+        subject="Advisor Reachout",
+        sender_name="Dan Recruiter",
+        sender_email="dan@recruiting.org",
+        recruiter_details=RecruiterDetails(
+            recruiter_name="Dan Recruiter",
+            company_name="Venture Tech",
+            role_title="Technical Advisor"
+        ),
+        resume_match=None,
+        status="INBOUND"
+    )
+
+    result2 = orchestrate_followup_pipeline(cached_emails=[])
+    assert result2["tasks_created"] == 1
+
+    tasks2 = list_followup_tasks()
+    matching_tasks2 = [t for t in tasks2 if t["opportunity_id"] == unknown_opp_id]
+    assert len(matching_tasks2) == 1
+    assert matching_tasks2[0]["account_id"] == "UNKNOWN"
+    assert matching_tasks2[0]["account_id"] != "dan@recruiting.org"
+    assert matching_tasks2[0]["account_id"] != "kinlawb@outlook.com"
+
+
+def test_legacy_followup_attribution_migration(tmp_path, monkeypatch):
+    """
+    DATA INTEGRITY BOUNDARY:
+    Verifies that migrate_legacy_followup_attribution():
+    1. Corrects rows where account_id was mistakenly set to recruiter_email.
+    2. Preserves manually assigned accounts that do not equal recruiter_email.
+    """
+    from backend.analytics import (
+        migrate_legacy_followup_attribution,
+        get_db_connection,
+        record_opportunity
+    )
+
+    test_db = tmp_path / "test_migration.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Seed an opportunity
+    opp_id_1 = "MICROSOFT_GRAPH::actual.owner@outlook.com::msg_1"
+    cursor.execute("""
+        INSERT INTO opportunities (
+            id, conversation_id, recruiter_name, recruiter_email, company_name,
+            role_title, target_lens, lens_name, attached_resume_file, salary_text,
+            salary_min, salary_max, salary_type, urgency, status, match_score,
+            first_contact_at, last_action_at, metadata_json
+        ) VALUES (
+            ?, ?, 'Recruiter Bob', 'bob@recruiter.com', 'Acme Corp',
+            'VP Architecture', 'advisor', 'Advisor Lens', 'resume.docx', '$300k',
+            300000, 300000, 'ANNUAL', 'Normal', 'INBOUND', 90,
+            '2026-09-20', '2026-09-20', '{"subject": "VP Role"}'
+        )
+    """, (opp_id_1, opp_id_1))
+
+    # Seed a buggy row where account_id == recruiter_email ('bob@recruiter.com')
+    cursor.execute("""
+        INSERT INTO followup_tasks (
+            id, opportunity_id, email_id, recruiter_name, company_name,
+            role_title, account_id, status, due_date, notes, created_at
+        ) VALUES (
+            'fu_legacy_buggy', ?, ?, 'Recruiter Bob', 'Acme Corp',
+            'VP Architecture', 'bob@recruiter.com', 'PENDING', '2026-09-25', 'Legacy buggy task', '2026-09-20'
+        )
+    """, (opp_id_1, opp_id_1))
+
+    # Seed a manually assigned row ('custom.manual@company.com' != 'bob@recruiter.com')
+    cursor.execute("""
+        INSERT INTO followup_tasks (
+            id, opportunity_id, email_id, recruiter_name, company_name,
+            role_title, account_id, status, due_date, notes, created_at
+        ) VALUES (
+            'fu_manual_custom', ?, ?, 'Recruiter Bob', 'Acme Corp',
+            'VP Architecture', 'custom.manual@company.com', 'PENDING', '2026-09-25', 'Manual task', '2026-09-20'
+        )
+    """, (opp_id_1, opp_id_1))
+
+    conn.commit()
+    conn.close()
+
+    # Run migration
+    migrate_legacy_followup_attribution()
+
+    # Verify results
+    tasks = {t["id"]: t for t in list_followup_tasks()}
+
+    # Buggy row was corrected to owning account
+    assert tasks["fu_legacy_buggy"]["account_id"] == "actual.owner@outlook.com"
+    # Manually assigned row was strictly preserved
+    assert tasks["fu_manual_custom"]["account_id"] == "custom.manual@company.com"

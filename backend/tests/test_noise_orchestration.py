@@ -260,3 +260,106 @@ def test_daemon_auto_quarantine_cycle(mock_processed, mock_classify, mock_pm_cls
     assert summary["messages_checked"] == 1
     assert summary["noise_quarantined"] == 1
     assert mock_pm.quarantine_message.called
+
+
+def test_noise_orchestration_complete_and_partial_sync_failure_truthfulness(tmp_path, monkeypatch):
+    """
+    TRUTHFUL REPORTING BOUNDARY:
+    1. Complete sync failure: must return overall status SYNC_FAILED, identify failed accounts,
+       and NOT present empty/cached mailboxes as verified clean inboxes.
+    2. Partial sync failure: must return PARTIAL_SUCCESS, report synced vs failed counts,
+       and distinguish live verified mailboxes from unverified failed mailboxes.
+    """
+    test_db = tmp_path / "test_truthful_sync.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+
+    # Clear cached emails
+    monkeypatch.setattr("backend.main.CACHED_EMAILS", {})
+
+    configured_mock = [
+        {"account_id": "kinlawb@outlook.com", "provider": "MICROSOFT_GRAPH", "enabled": True, "display_name": "Outlook Work"},
+        {"account_id": "brian@mavencode.com", "provider": "GMAIL", "enabled": True, "display_name": "Google Workspace"}
+    ]
+
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        # Case 1: Complete Sync Failure
+        with patch("backend.main.provider_manager.sync_unified_inbox") as mock_sync:
+            mock_sync.return_value = ([], {
+                "status": "FAILED",
+                "accounts_synced": 0,
+                "accounts_failed": 2,
+                "errors": [
+                    {"account_id": "kinlawb@outlook.com", "error": "Token expired"},
+                    {"account_id": "brian@mavencode.com", "error": "Rate limit exceeded"}
+                ]
+            })
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS",
+                    total_requested=0,
+                    cleaned_count=0,
+                    failed_count=0,
+                    results=[],
+                    message="No noise"
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+
+                # Overall status must report SYNC_FAILED
+                assert data["status"] == "SYNC_FAILED"
+                assert data["sync_status"] == "FAILED"
+                assert data["accounts_synced"] == 0
+                assert data["accounts_failed"] == 2
+                assert len(data["sync_errors"]) == 2
+
+                # None of the accounts should be marked clean or verified
+                for acc in data["per_account_stats"]:
+                    assert acc["sync_status"] == "FAILED"
+                    assert acc["is_clean"] is False
+                    assert acc["is_verified_clean"] is False
+                    assert acc["sync_error"] is not None
+
+        # Case 2: Partial Sync Failure (Outlook succeeded, Gmail failed)
+        with patch("backend.main.provider_manager.sync_unified_inbox") as mock_sync:
+            mock_sync.return_value = ([], {
+                "status": "PARTIAL_SUCCESS",
+                "accounts_synced": 1,
+                "accounts_failed": 1,
+                "errors": [
+                    {"account_id": "brian@mavencode.com", "error": "Connection timeout"}
+                ]
+            })
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS",
+                    total_requested=0,
+                    cleaned_count=0,
+                    failed_count=0,
+                    results=[],
+                    message="No noise"
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+
+                assert data["status"] == "PARTIAL_SUCCESS"
+                assert data["sync_status"] == "PARTIAL_SUCCESS"
+                assert data["accounts_synced"] == 1
+                assert data["accounts_failed"] == 1
+
+                stats_by_id = {acc["account_id"]: acc for acc in data["per_account_stats"]}
+
+                # Outlook succeeded: verified clean
+                assert stats_by_id["kinlawb@outlook.com"]["sync_status"] == "SUCCESS"
+                assert stats_by_id["kinlawb@outlook.com"]["is_clean"] is True
+                assert stats_by_id["kinlawb@outlook.com"]["is_verified_clean"] is True
+
+                # Gmail failed: NOT verified clean
+                assert stats_by_id["brian@mavencode.com"]["sync_status"] == "FAILED"
+                assert stats_by_id["brian@mavencode.com"]["is_clean"] is False
+                assert stats_by_id["brian@mavencode.com"]["is_verified_clean"] is False
+                assert "Connection timeout" in stats_by_id["brian@mavencode.com"]["sync_error"]

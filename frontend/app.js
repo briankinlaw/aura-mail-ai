@@ -2269,7 +2269,15 @@ window.orchestrateAllInboxesNoise = async function() {
     });
     const data = await res.json();
     if (res.ok) {
-      showToast(`✓ Zero-Noise Orchestration Complete: ${data.total_noise_quarantined || 0} noise emails safely quarantined across ${data.accounts_scanned || 0} mailboxes to '${data.safe_folder_name || 'AI Cleaned - Noise'}'.`, 'success');
+      if (data.sync_status === 'FAILED' || data.status === 'SYNC_FAILED') {
+        const errAccounts = (data.sync_errors || []).map(e => e.account_id).filter(Boolean).join(', ') || 'configured mailboxes';
+        showToast(`⚠️ Sync failed for ${errAccounts}. Triaged ${data.cached_messages_triaged || 0} cached emails (${data.total_noise_quarantined || 0} quarantined). Live status unverified.`, 'warning');
+      } else if (data.sync_status === 'PARTIAL_SUCCESS' || (data.accounts_failed && data.accounts_failed > 0)) {
+        const errAccounts = (data.sync_errors || []).map(e => e.account_id).filter(Boolean).join(', ');
+        showToast(`⚠️ Partial sync (${data.accounts_synced || 0} synced, ${data.accounts_failed || 0} failed: ${errAccounts}). ${data.total_noise_quarantined || 0} noise emails quarantined.`, 'warning');
+      } else {
+        showToast(`✓ Zero-Noise Orchestration Complete: ${data.total_noise_quarantined || 0} noise emails safely quarantined across ${data.accounts_synced || data.accounts_scanned || 0} mailboxes to '${data.safe_folder_name || 'AI Cleaned - Noise'}'.`, 'success');
+      }
     } else {
       showToast(`Orchestration error: ${data.detail || data.message || 'Unknown error'}`, 'error');
     }

@@ -162,5 +162,118 @@ class TestAuraDaemon(unittest.TestCase):
         mock_pm.send_reply.assert_not_called()
         self.assertFalse(mock_pm.send_reply.called, "CRITICAL INVARIANT VIOLATION: Daemon attempted to call send_reply()!")
 
+    @patch("backend.daemon.save_processed_id")
+    @patch("backend.daemon.load_processed_ids")
+    @patch("backend.daemon.ProviderManager")
+    @patch("backend.daemon.classify_email_radar")
+    def test_daemon_quarantine_failure_retried_on_next_cycle(self, mock_classify, mock_pm_cls, mock_load_processed, mock_save_processed):
+        """
+        RELIABILITY BOUNDARY:
+        Verifies that when auto-quarantining a noise email fails:
+        1. The message ID is NOT added to processed IDs.
+        2. The failure is reported in summary['errors'].
+        3. A subsequent daemon cycle retries and successfully quarantines the message.
+        4. On success, the message ID is saved and subsequent cycles skip it.
+        """
+        mock_pm = MagicMock()
+        mock_pm_cls.return_value = mock_pm
+
+        noise_msg = EmailMessage(
+            id="noise_retry_01",
+            account_id="kinlawb@outlook.com",
+            sender_name="Spam Bot",
+            sender_email="promo@spam.com",
+            subject="Spam Promotion",
+            body_text="Claim discount now",
+            status="INBOUND"
+        )
+        mock_pm.sync_unified_inbox.return_value = ([noise_msg], {"accounts_synced": 1, "status": "SUCCESS"})
+
+        mock_classify.return_value = ClassificationResult(
+            category=EmailCategory.NOISE_PROMOTIONAL,
+            confidence=0.99,
+            reasoning="Promotional noise",
+            is_noise=True
+        )
+
+        # Cycle 1: Quarantine fails (e.g. temporary network/folder error)
+        mock_load_processed.return_value = set()
+        mock_pm.quarantine_message.return_value = ProviderOperationResult(
+            success=False,
+            provider="GRAPH",
+            account_id="kinlawb@outlook.com",
+            operation="QUARANTINE",
+            safe_message="Failed to move: folder lock conflict"
+        )
+
+        summary1 = run_daemon_cycle(dry_run=False)
+        self.assertEqual(summary1["noise_quarantined"], 0)
+        self.assertTrue(any("Failed to auto-quarantine noise_retry_01" in err for err in summary1["errors"]))
+        # save_processed_id MUST NOT be called for the failed message
+        mock_save_processed.assert_not_called()
+
+        # Cycle 2: Subsequent cycle runs with message still unrecorded in processed_ids; succeeds
+        mock_pm.quarantine_message.return_value = ProviderOperationResult(
+            success=True,
+            provider="GRAPH",
+            account_id="kinlawb@outlook.com",
+            operation="QUARANTINE",
+            safe_message="Moved to AI Cleaned - Noise"
+        )
+
+        summary2 = run_daemon_cycle(dry_run=False)
+        self.assertEqual(summary2["noise_quarantined"], 1)
+        self.assertEqual(len(summary2["errors"]), 0)
+        mock_save_processed.assert_called_once()
+        save_args, _ = mock_save_processed.call_args
+        self.assertEqual(save_args[0], "noise_retry_01")
+        self.assertEqual(save_args[1]["action"], "QUARANTINED_NOISE")
+
+    @patch("backend.daemon.save_processed_id")
+    @patch("backend.daemon.load_processed_ids", return_value=set())
+    @patch("backend.daemon.ProviderManager")
+    @patch("backend.daemon.classify_email_radar")
+    @patch("backend.daemon.load_settings")
+    def test_daemon_dry_run_and_disabled_quarantine_explicit(self, mock_settings, mock_classify, mock_pm_cls, mock_load_processed, mock_save_processed):
+        """
+        Verifies dry-run and disabled auto-quarantine explicitly record truthful actions.
+        """
+        mock_pm = MagicMock()
+        mock_pm_cls.return_value = mock_pm
+
+        noise_msg = EmailMessage(
+            id="noise_dry_01",
+            account_id="kinlawb@outlook.com",
+            sender_name="Spam Bot",
+            sender_email="promo@spam.com",
+            subject="Spam Promotion",
+            body_text="Claim discount now",
+            status="INBOUND"
+        )
+        mock_pm.sync_unified_inbox.return_value = ([noise_msg], {"accounts_synced": 1, "status": "SUCCESS"})
+        mock_classify.return_value = ClassificationResult(
+            category=EmailCategory.NOISE_PROMOTIONAL,
+            confidence=0.99,
+            reasoning="Promotional noise",
+            is_noise=True
+        )
+
+        # 1. Dry run: action is DRY_RUN_NOISE
+        mock_settings.return_value = {"auto_quarantine_noise": True}
+        summary_dry = run_daemon_cycle(dry_run=True)
+        self.assertEqual(summary_dry["noise_skipped"], 1)
+        mock_pm.quarantine_message.assert_not_called()
+        self.assertTrue(mock_save_processed.called)
+        self.assertEqual(mock_save_processed.call_args[0][1]["action"], "DRY_RUN_NOISE")
+
+        # 2. Disabled auto-quarantine: action is AUTO_QUARANTINE_DISABLED
+        mock_save_processed.reset_mock()
+        mock_settings.return_value = {"auto_quarantine_noise": False}
+        summary_disabled = run_daemon_cycle(dry_run=False)
+        self.assertEqual(summary_disabled["noise_skipped"], 1)
+        mock_pm.quarantine_message.assert_not_called()
+        self.assertTrue(mock_save_processed.called)
+        self.assertEqual(mock_save_processed.call_args[0][1]["action"], "AUTO_QUARANTINE_DISABLED")
+
 if __name__ == "__main__":
     unittest.main()

@@ -148,22 +148,39 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
             email.classification = classification
 
             if classification.is_noise:
-                quarantine_action = "SKIPPED_NOISE"
                 if auto_quarantine and not dry_run:
                     q_res = manager.quarantine_message(email.id, folder_name=safe_folder)
                     if q_res.success:
                         summary["noise_quarantined"] += 1
                         quarantine_action = "QUARANTINED_NOISE"
+                        save_processed_id(email.id, {
+                            "category": classification.category.value,
+                            "action": quarantine_action,
+                            "subject": email.subject,
+                            "dry_run": False
+                        })
                     else:
                         summary["errors"].append(f"Failed to auto-quarantine {email.id}: {q_res.safe_message}")
-                else:
+                        # Do NOT record in processed_ids on failure so subsequent cycle can retry
+                elif dry_run:
                     summary["noise_skipped"] += 1
-
-                save_processed_id(email.id, {
-                    "category": classification.category.value,
-                    "action": quarantine_action,
-                    "subject": email.subject
-                })
+                    quarantine_action = "DRY_RUN_NOISE"
+                    save_processed_id(email.id, {
+                        "category": classification.category.value,
+                        "action": quarantine_action,
+                        "subject": email.subject,
+                        "dry_run": True
+                    })
+                else:
+                    # Auto-quarantine disabled in settings
+                    summary["noise_skipped"] += 1
+                    quarantine_action = "AUTO_QUARANTINE_DISABLED"
+                    save_processed_id(email.id, {
+                        "category": classification.category.value,
+                        "action": quarantine_action,
+                        "subject": email.subject,
+                        "dry_run": False
+                    })
                 continue
 
             # Evaluate opportunity fit

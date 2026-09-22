@@ -452,3 +452,77 @@ def test_persisted_send_capability_sanitized_at_provider_manager_boundary():
         # Alias account sanitization
         assert "SEND" not in accounts[1].capabilities
         assert accounts[1].capabilities == ["DRAFTS", "ATTACHMENTS", "MOVE"]
+
+
+def test_no_plaintext_imap_login_and_cert_verification_enforced():
+    """
+    SECURITY BOUNDARY:
+    Verifies that IMAP strictly enforces verified TLS on port 993:
+    1. Rejects unencrypted ports (e.g. 143, 110) with error, never attempting login.
+    2. SSL / certificate verification failures fail closed without falling back to plaintext.
+    3. Fallback candidates exclude all port 143 candidates and only permit port 993 verified TLS.
+    """
+    import ssl
+    imap = ImapProvider()
+
+    # 1. Configured insecure port (e.g. 143) is rejected immediately
+    insecure_settings = {
+        "configured_accounts": [
+            {
+                "account_id": "test@satx.rr.com",
+                "email": "test@satx.rr.com",
+                "provider": "IMAP",
+                "imap_server": "mail.twc.com",
+                "imap_port": 143,
+                "enabled": True
+            }
+        ]
+    }
+    with patch("backend.config.load_settings", return_value=insecure_settings):
+        with patch("backend.providers.imap.get_secret", return_value="mock_password"):
+            with patch("imaplib.IMAP4") as mock_imap4, patch("imaplib.IMAP4_SSL") as mock_imap4_ssl:
+                res = imap.validate_connection("test@satx.rr.com")
+                assert res.success is False
+                assert res.error_code == "CONNECTION_FAILED"
+                assert "993" in res.safe_message or "prohibited" in res.safe_message.lower()
+                mock_imap4.assert_not_called()
+                mock_imap4_ssl.assert_not_called()
+
+    # 2. Certificate verification failure fails closed without plaintext fallback
+    secure_settings = {
+        "configured_accounts": [
+            {
+                "account_id": "test@satx.rr.com",
+                "email": "test@satx.rr.com",
+                "provider": "IMAP",
+                "imap_server": "mail.twc.com",
+                "imap_port": 993,
+                "enabled": True
+            }
+        ]
+    }
+    with patch("backend.config.load_settings", return_value=secure_settings):
+        with patch("backend.providers.imap.get_secret", return_value="mock_password"):
+            with patch("imaplib.IMAP4_SSL", side_effect=ssl.SSLCertVerificationError("Certificate verify failed: self-signed certificate")):
+                with patch("imaplib.IMAP4") as mock_imap4:
+                    res = imap.validate_connection("test@satx.rr.com")
+                    assert res.success is False
+                    assert res.error_code == "CONNECTION_FAILED"
+                    assert "certificate" in res.safe_message.lower() or "tls" in res.safe_message.lower()
+                    # Plaintext IMAP4 must NEVER be called as fallback
+                    mock_imap4.assert_not_called()
+
+    # 3. Verify candidate ports are exclusively 993 for Spectrum/Roadrunner
+    conn_attempts = []
+    def mock_ssl_init(host, port, ssl_context=None, timeout=10):
+        conn_attempts.append((host, port))
+        raise ConnectionRefusedError(f"Connection refused to {host}:{port}")
+
+    with patch("backend.config.load_settings", return_value=secure_settings):
+        with patch("backend.providers.imap.get_secret", return_value="mock_password"):
+            with patch("imaplib.IMAP4_SSL", side_effect=mock_ssl_init):
+                imap.validate_connection("test@satx.rr.com")
+                # All connection attempts must be port 993
+                assert len(conn_attempts) > 0
+                for host, port in conn_attempts:
+                    assert port == 993, f"Plaintext port {port} attempted on {host}!"

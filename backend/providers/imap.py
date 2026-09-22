@@ -79,23 +79,26 @@ class ImapProvider(BaseEmailProvider):
         
         raw_server = cfg.get("imap_server", "mail.twc.com" if "rr.com" in email_addr else "outlook.office365.com")
         server, port = self._parse_host_port(raw_server, int(cfg.get("imap_port", 993)))
+
+        if port != 993:
+            err = f"Insecure IMAP port {port} is prohibited. Only IMAP over verified TLS on port 993 is permitted."
+            logger.error(err)
+            self._last_error[account_id] = err
+            return None
         
         def _connect_client(h: str, p: int, timeout: int = 15):
-            if p == 993:
-                import ssl
-                context = ssl.create_default_context()
-                return imaplib.IMAP4_SSL(h, p, ssl_context=context, timeout=timeout)
-            return imaplib.IMAP4(h, p, timeout=timeout)
+            if p != 993:
+                raise ValueError(f"Insecure IMAP port {p} requested. Only port 993 (IMAP4_SSL) is allowed.")
+            import ssl
+            context = ssl.create_default_context()
+            return imaplib.IMAP4_SSL(h, p, ssl_context=context, timeout=timeout)
 
-        candidates: List[Tuple[str, int]] = [(server, port)]
+        candidates: List[Tuple[str, int]] = [(server, 993)]
         is_spectrum = "twc.com" in server.lower() or "rr.com" in email_addr.lower() or "charter.net" in server.lower()
         if is_spectrum:
             for fallback in [
-                ("mail.twc.com", 143),
-                ("mobile.charter.net", 993),
-                ("mobile.charter.net", 143),
-                ("pop-server.satx.rr.com", 143),
                 ("mail.twc.com", 993),
+                ("mobile.charter.net", 993),
             ]:
                 if fallback not in candidates:
                     candidates.append(fallback)
@@ -127,7 +130,7 @@ class ImapProvider(BaseEmailProvider):
                         last_auth_error = f"Authentication failed: Invalid username or password on {target_host}:{target_port}. Verify login at webmail.spectrum.net."
                         logger.warning(f"IMAP login failed for {email_addr} (as '{u}') on {target_host}:{target_port}: {err_msg}")
                     else:
-                        last_conn_error = f"Connection failed on {target_host}:{target_port}: {err_msg}"
+                        last_conn_error = f"Connection/TLS verification failed on {target_host}:{target_port}: {err_msg}"
                         logger.debug(f"IMAP connect/login attempt failed for {target_host}:{target_port}: {err_msg}")
 
         if last_auth_error:
