@@ -1813,15 +1813,36 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
 
         # 4. Compute per-account metrics and reconcile sync status truthfully
         configured_accounts = provider_manager.get_configured_accounts()
-        per_account_stats = []
+        enabled_accounts = [acc for acc in configured_accounts if acc.get("enabled", True)]
 
+        # Track quarantine failure counts per account
+        account_quarantine_failed_counts: Dict[str, int] = {}
+        for r in quarantine_batch.results:
+            if not r.success:
+                acc_key = str(r.account_id or "").lower()
+                account_quarantine_failed_counts[acc_key] = account_quarantine_failed_counts.get(acc_key, 0) + 1
+
+        # Determine sync status
+        if not sync_first:
+            sync_status_val = "SYNC_SKIPPED"
+        elif not enabled_accounts:
+            sync_status_val = "UNVERIFIED"
+        elif not sync_stats or not sync_stats.get("status"):
+            sync_status_val = "UNVERIFIED"
+        else:
+            sync_status_val = sync_stats.get("status", "UNVERIFIED")
+
+        accounts_synced = sync_stats.get("accounts_synced", 0) if sync_stats else 0
+        accounts_failed = sync_stats.get("accounts_failed", 0) if sync_stats else 0
         sync_errors = sync_stats.get("errors", []) if sync_stats else []
+
         sync_error_map = {
             str(err.get("account_id", "")).lower(): str(err.get("error", "Sync failed"))
             for err in sync_errors
         }
         all_sync_failed = "all" in sync_error_map
 
+        per_account_stats = []
         for acc in configured_accounts:
             acc_id = acc.get("account_id", "")
             if not acc.get("enabled", True):
@@ -1831,10 +1852,12 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
             is_sync_failed = all_sync_failed or (acc_id_lower in sync_error_map)
             account_sync_error = sync_error_map.get(acc_id_lower) or (sync_error_map.get("all") if all_sync_failed else None)
 
-            if sync_first:
-                account_sync_status = "FAILED" if is_sync_failed else "SUCCESS"
-            else:
+            if not sync_first:
                 account_sync_status = "SKIPPED"
+            elif is_sync_failed:
+                account_sync_status = "FAILED"
+            else:
+                account_sync_status = "SUCCESS"
 
             acc_emails = [
                 em for em in CACHED_EMAILS.values()
@@ -1844,12 +1867,13 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
             total_cached = len(acc_emails)
             noise_remaining = len([em for em in acc_emails if em.classification and em.classification.is_noise and em.status != "TRASHED"])
             noise_cleaned = len([em for em in acc_emails if em.classification and em.classification.is_noise and em.status == "TRASHED"])
+            noise_failed = account_quarantine_failed_counts.get(acc_id_lower, 0)
             recruiters = len([em for em in acc_emails if em.classification and em.classification.is_resume_request and em.status != "TRASHED"])
             important = len([em for em in acc_emails if em.classification and not em.classification.is_noise and not em.classification.is_resume_request and em.status != "TRASHED"])
             
-            # A failed sync cannot be certified clean simply because cache has no noise
+            # is_verified_clean is True ONLY for an account whose live sync succeeded and whose relevant noise moves succeeded
             is_clean = (noise_remaining == 0 and not is_sync_failed)
-            is_verified_clean = (is_clean and account_sync_status == "SUCCESS")
+            is_verified_clean = (account_sync_status == "SUCCESS" and noise_remaining == 0 and noise_failed == 0)
             cleanliness = 100 if is_clean else (0 if is_sync_failed and noise_remaining > 0 else max(0, round((1 - (noise_remaining / max(1, (noise_remaining + recruiters + important)))) * 100)))
 
             per_account_stats.append({
@@ -1863,6 +1887,7 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
                 "cached_messages": total_cached,
                 "noise_quarantined": noise_cleaned,
                 "noise_remaining": noise_remaining,
+                "noise_failed": noise_failed,
                 "recruiters_retained": recruiters,
                 "important_retained": important,
                 "cleanliness_score": cleanliness,
@@ -1870,26 +1895,29 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
                 "is_verified_clean": is_verified_clean
             })
 
-        sync_status_val = sync_stats.get("status", "SKIPPED") if sync_stats else ("SKIPPED" if not sync_first else "UNKNOWN")
-        accounts_synced = sync_stats.get("accounts_synced", 0) if sync_stats else 0
-        accounts_failed = sync_stats.get("accounts_failed", 0) if sync_stats else 0
-
-        if sync_status_val == "FAILED":
+        # Overall Status Resolution from both live sync and quarantine outcomes
+        if not sync_first:
+            overall_status = "SYNC_SKIPPED"
+            msg = f"Cached sweep completed: {quarantine_batch.cleaned_count} cached noise emails quarantined to '{folder_name}'. Live mailbox sync was skipped."
+        elif not enabled_accounts or sync_status_val == "UNVERIFIED":
+            overall_status = "UNVERIFIED"
+            msg = f"Orchestration unverified: no active configured accounts or sync result unavailable. {quarantine_batch.cleaned_count} cached noise emails quarantined."
+        elif sync_status_val == "FAILED" or (accounts_synced == 0 and accounts_failed > 0):
             overall_status = "SYNC_FAILED"
-            msg = f"Sync failed for all accounts: {quarantine_batch.cleaned_count} cached noise emails quarantined, but live inboxes could not be verified."
+            msg = f"Live sync failed for all requested mailboxes: {quarantine_batch.cleaned_count} cached noise emails quarantined, but live inboxes could not be verified."
         elif sync_status_val == "PARTIAL_SUCCESS" or accounts_failed > 0:
             overall_status = "PARTIAL_SUCCESS"
             failed_names = [e.get("account_id") for e in sync_errors if e.get("account_id")]
-            msg = f"Orchestrated with partial sync ({accounts_synced} synced, {accounts_failed} failed: {', '.join(failed_names)}): {quarantine_batch.cleaned_count} noise emails quarantined."
-        elif quarantine_batch.status == "FAILED":
+            msg = f"Partial sync completed ({accounts_synced} synced, {accounts_failed} failed: {', '.join(failed_names)}): {quarantine_batch.cleaned_count} noise emails quarantined."
+        elif quarantine_batch.total_requested > 0 and quarantine_batch.cleaned_count == 0:
             overall_status = "QUARANTINE_FAILED"
-            msg = f"Quarantine failed across mailboxes: {quarantine_batch.failed_count} failures."
+            msg = f"Live sync succeeded, but all {quarantine_batch.failed_count} noise quarantine move(s) failed."
         elif quarantine_batch.failed_count > 0:
             overall_status = "PARTIAL_SUCCESS"
-            msg = f"Orchestrated across {len(per_account_stats)} mailboxes: {quarantine_batch.cleaned_count} quarantined, {quarantine_batch.failed_count} failed."
+            msg = f"Live sync succeeded with partial quarantine: {quarantine_batch.cleaned_count} noise emails moved, {quarantine_batch.failed_count} failed."
         else:
             overall_status = "SUCCESS"
-            msg = f"Orchestrated across {len(per_account_stats)} mailboxes: {quarantine_batch.cleaned_count} noise emails quarantined to '{folder_name}'."
+            msg = f"Zero-noise orchestration complete across {accounts_synced} mailboxes: {quarantine_batch.cleaned_count} noise emails quarantined to '{folder_name}'."
 
         return {
             "status": overall_status,
@@ -1903,9 +1931,11 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
             "accounts_synced": accounts_synced,
             "accounts_failed": accounts_failed,
             "sync_errors": sync_errors,
-            "cached_messages_triaged": len(active_emails),
+            "quarantine_status": quarantine_batch.status,
             "total_noise_quarantined": quarantine_batch.cleaned_count,
-            "failed_count": quarantine_batch.failed_count,
+            "failed_quarantine_count": quarantine_batch.failed_count,
+            "quarantine_errors": [r.model_dump() for r in quarantine_batch.results if not r.success],
+            "cached_messages_triaged": len(active_emails),
             "safe_folder_name": folder_name,
             "accounts_scanned": len(per_account_stats),
             "per_account_stats": per_account_stats,

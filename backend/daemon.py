@@ -30,26 +30,33 @@ logger = logging.getLogger("aura_daemon")
 PROCESSED_LOG_FILE = DATA_DIR / "daemon_processed.json"
 STATE_FILE = DATA_DIR / "daemon_state.json"
 
-def load_processed_ids() -> set:
+def load_processed_ids(log_file: Optional[Path] = None) -> set:
     """Loads set of previously processed message IDs to guarantee idempotency."""
-    if PROCESSED_LOG_FILE.is_file():
+    target_file = log_file or PROCESSED_LOG_FILE
+    if target_file.is_file():
         try:
-            with open(PROCESSED_LOG_FILE, "r", encoding="utf-8") as f:
+            with open(target_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return set(data.get("processed_message_ids", []))
         except Exception as e:
             logger.warning(f"Error loading processed IDs: {e}")
     return set()
 
-def save_processed_id(message_id: str, details: Dict[str, Any]):
-    """Records message ID and triage metadata to prevent duplicate draft staging."""
-    processed_ids = load_processed_ids()
-    processed_ids.add(message_id)
-    
+def save_processed_id(message_id: str, details: Dict[str, Any], live_success: bool = True, log_file: Optional[Path] = None):
+    """
+    Records triage metadata. An ID is added to processed_message_ids ONLY when
+    a live side effect succeeded (confirmed quarantine move or confirmed draft stage).
+    """
+    target_file = log_file or PROCESSED_LOG_FILE
+    processed_ids = load_processed_ids(target_file)
+
+    if live_success:
+        processed_ids.add(message_id)
+
     records = []
-    if PROCESSED_LOG_FILE.is_file():
+    if target_file.is_file():
         try:
-            with open(PROCESSED_LOG_FILE, "r", encoding="utf-8") as f:
+            with open(target_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 records = data.get("records", [])
         except Exception:
@@ -64,13 +71,121 @@ def save_processed_id(message_id: str, details: Dict[str, Any]):
     # Keep last 500 records
     records = records[-500:]
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(PROCESSED_LOG_FILE, "w", encoding="utf-8") as f:
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(target_file, "w", encoding="utf-8") as f:
         json.dump({
             "processed_message_ids": list(processed_ids),
             "records": records,
             "last_updated": datetime.utcnow().isoformat()
         }, f, indent=2)
+
+def record_diagnostic_event(message_id: str, details: Dict[str, Any], log_file: Optional[Path] = None):
+    """Records diagnostic/skipped/dry-run triage metadata without adding message_id to processed_message_ids."""
+    save_processed_id(message_id, details, live_success=False, log_file=log_file)
+
+def reconcile_processed_state(log_file: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Reconciles existing daemon_processed.json files:
+    1. Where retained records definitively identify an ID as DRY_RUN_NOISE, AUTO_QUARANTINE_DISABLED,
+       or dry-run recruiter opportunity, removes that ID from processed_message_ids ONLY if no
+       subsequent record confirms a successful live action for the same ID.
+    2. Preserves confirmed live quarantine moves and draft stages.
+    3. Leaves IDs with insufficient history (e.g. capped history) untouched in processed_message_ids.
+    4. Is strictly idempotent and preserves the file on failure.
+    """
+    target_file = log_file or PROCESSED_LOG_FILE
+    if not target_file.is_file():
+        return {
+            "status": "NOOP",
+            "reconciled_removed": 0,
+            "confirmed_preserved": 0,
+            "insufficient_history": 0,
+            "total_processed_ids": 0
+        }
+
+    try:
+        with open(target_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Error reading processed log during reconciliation: {e}")
+        return {
+            "status": "ERROR",
+            "error": str(e),
+            "reconciled_removed": 0,
+            "confirmed_preserved": 0,
+            "insufficient_history": 0
+        }
+
+    processed_ids = set(data.get("processed_message_ids", []))
+    records = data.get("records", [])
+
+    records_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    for r in records:
+        mid = r.get("message_id")
+        if mid:
+            records_by_id.setdefault(mid, []).append(r)
+
+    final_processed_ids = set()
+    reconciled_removed_count = 0
+    confirmed_preserved_count = 0
+    insufficient_history_count = 0
+
+    for mid in processed_ids:
+        id_records = records_by_id.get(mid, [])
+        if not id_records:
+            # Capped / truncated history: leave untouched
+            final_processed_ids.add(mid)
+            insufficient_history_count += 1
+            continue
+
+        has_live_success = False
+        last_is_skipped_or_dry = False
+
+        for rec in id_records:
+            details = rec.get("details", {})
+            action = str(details.get("action", "")).upper()
+            category = str(details.get("category", "")).upper()
+            is_dry_run = bool(details.get("dry_run", False))
+            is_live_success = bool(details.get("live_success", False))
+
+            if is_live_success or action in ("QUARANTINED_NOISE", "DRAFT_STAGED") or (action == "OPPORTUNITY_STAGED" and not is_dry_run) or (category == "OPPORTUNITY_STAGED" and not is_dry_run):
+                has_live_success = True
+                last_is_skipped_or_dry = False
+            elif is_dry_run or action in ("DRY_RUN_NOISE", "AUTO_QUARANTINE_DISABLED", "SKIPPED_NOISE", "DRY_RUN_DRAFT_SIMULATED", "FAILED_QUARANTINE", "FAILED_DRAFT_STAGE") or category == "OPPORTUNITY_SIMULATED":
+                last_is_skipped_or_dry = True
+
+        if has_live_success:
+            final_processed_ids.add(mid)
+            confirmed_preserved_count += 1
+        elif last_is_skipped_or_dry:
+            reconciled_removed_count += 1
+        else:
+            final_processed_ids.add(mid)
+            insufficient_history_count += 1
+
+    data["processed_message_ids"] = list(final_processed_ids)
+    data["last_reconciled_at"] = datetime.utcnow().isoformat()
+
+    try:
+        with open(target_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Error saving reconciled processed state: {e}")
+        return {
+            "status": "ERROR",
+            "error": str(e),
+            "reconciled_removed": 0,
+            "confirmed_preserved": 0,
+            "insufficient_history": 0
+        }
+
+    return {
+        "status": "SUCCESS",
+        "reconciled_removed": reconciled_removed_count,
+        "confirmed_preserved": confirmed_preserved_count,
+        "insufficient_history": insufficient_history_count,
+        "total_processed_ids": len(final_processed_ids)
+    }
 
 def update_daemon_state(status: str, last_summary: Optional[Dict[str, Any]] = None):
     """Saves daemon heartbeat and last execution metrics for the dashboard & CLI."""
@@ -100,13 +215,13 @@ def send_macos_notification(title: str, subtitle: str, message: str):
     except Exception as e:
         logger.warning(f"Failed to dispatch macOS notification: {e}")
 
-def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] = None) -> Dict[str, Any]:
+def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] = None, log_file: Optional[Path] = None) -> Dict[str, Any]:
     """
     Executes a single autonomous triage cycle across all configured provider accounts:
     1. Fetches unread messages.
     2. Runs Opportunity Radar classification & fit scoring.
     3. Integrates Calendar Broker availability if scheduling is requested.
-    4. Stages grounded executive response drafts in cloud Drafts folders.
+    4. Stages grounded executive response drafts in cloud Drafts folders (or simulates in dry run).
     5. Automatically relocates noise emails to cloud safe folder if auto-quarantine is active.
     6. Dispatches macOS desktop alerts for high-fit roles.
     """
@@ -118,6 +233,7 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
         "accounts_scanned": 0,
         "messages_checked": 0,
         "drafts_staged": 0,
+        "drafts_simulated": 0,
         "noise_skipped": 0,
         "noise_quarantined": 0,
         "high_fit_opportunities": [],
@@ -125,8 +241,11 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
     }
 
     try:
+        # Reconcile processed state to eliminate prior unperformed actions
+        reconcile_processed_state(log_file)
+
         folders = target_folders or ["Inbox", "Jobs", "CCK Career", "AI Reachouts"]
-        processed_ids = load_processed_ids()
+        processed_ids = load_processed_ids(log_file)
         manager = ProviderManager()
         profile = get_user_profile()
         settings = load_settings()
@@ -157,30 +276,37 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
                             "category": classification.category.value,
                             "action": quarantine_action,
                             "subject": email.subject,
-                            "dry_run": False
-                        })
+                            "dry_run": False,
+                            "live_success": True
+                        }, live_success=True, log_file=log_file)
                     else:
                         summary["errors"].append(f"Failed to auto-quarantine {email.id}: {q_res.safe_message}")
-                        # Do NOT record in processed_ids on failure so subsequent cycle can retry
+                        record_diagnostic_event(email.id, {
+                            "category": classification.category.value,
+                            "action": "FAILED_QUARANTINE",
+                            "error": q_res.safe_message,
+                            "subject": email.subject,
+                            "dry_run": False
+                        }, log_file=log_file)
                 elif dry_run:
                     summary["noise_skipped"] += 1
                     quarantine_action = "DRY_RUN_NOISE"
-                    save_processed_id(email.id, {
+                    record_diagnostic_event(email.id, {
                         "category": classification.category.value,
                         "action": quarantine_action,
                         "subject": email.subject,
                         "dry_run": True
-                    })
+                    }, log_file=log_file)
                 else:
                     # Auto-quarantine disabled in settings
                     summary["noise_skipped"] += 1
                     quarantine_action = "AUTO_QUARANTINE_DISABLED"
-                    save_processed_id(email.id, {
+                    record_diagnostic_event(email.id, {
                         "category": classification.category.value,
                         "action": quarantine_action,
                         "subject": email.subject,
                         "dry_run": False
-                    })
+                    }, log_file=log_file)
                 continue
 
             # Evaluate opportunity fit
@@ -221,12 +347,10 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
                 body_lower = (email.body_text or "").lower()
                 meeting_keywords = ["availability", "time to chat", "quick call", "are you free", "schedule a call", "speak this week"]
                 if any(kw in body_lower for kw in meeting_keywords):
-                    # Propose optimal booking slots for the coming week
                     now = datetime.now()
                     start_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
                     end_date = (now + timedelta(days=5)).strftime("%Y-%m-%d")
 
-                    
                     cal_req = FreeBusyRequest(
                         start_date=start_date,
                         end_date=end_date,
@@ -252,44 +376,69 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
                         else:
                             reply_body += "\n" + "\n".join(slot_lines)
 
-                staged_success = False
-                if not dry_run:
-                    draft_res = manager.save_draft_reply(
-                        message_id=email.id,
-                        reply_body=reply_body,
-                        resume_filename=selected_resume
-                    )
-                    staged_success = draft_res.success
-                else:
-                    staged_success = True
-
-
-                if staged_success:
-                    summary["drafts_staged"] += 1
+                if dry_run:
+                    summary["drafts_simulated"] += 1
                     summary["high_fit_opportunities"].append({
                         "subject": email.subject,
                         "sender": email.sender_name or email.sender_email,
                         "role_title": role_title,
                         "fit_score": fit_data["fit_score"],
                         "attached_resume": selected_resume,
-                        "account_id": email.account_id
+                        "account_id": email.account_id,
+                        "simulated": True
                     })
-
-                    # Dispatch macOS alert banner
-                    company = rec_details.company_name if rec_details else "Enterprise Client"
-                    send_macos_notification(
-                        title="✉️ Aura Mail: Recruiter Draft Staged",
-                        subtitle=f"{role_title} ({fit_data['fit_score']}% Fit)",
-                        message=f"Draft response with {selected_resume} staged in Drafts for {company}."
-                    )
-
-                    save_processed_id(email.id, {
-                        "category": "OPPORTUNITY_STAGED",
+                    record_diagnostic_event(email.id, {
+                        "category": "OPPORTUNITY_SIMULATED",
+                        "action": "DRY_RUN_DRAFT_SIMULATED",
                         "role_title": role_title,
                         "fit_score": fit_data["fit_score"],
                         "selected_resume": selected_resume,
-                        "dry_run": dry_run
-                    })
+                        "dry_run": True
+                    }, log_file=log_file)
+                else:
+                    draft_res = manager.save_draft_reply(
+                        message_id=email.id,
+                        reply_body=reply_body,
+                        resume_filename=selected_resume
+                    )
+                    if draft_res.success:
+                        summary["drafts_staged"] += 1
+                        summary["high_fit_opportunities"].append({
+                            "subject": email.subject,
+                            "sender": email.sender_name or email.sender_email,
+                            "role_title": role_title,
+                            "fit_score": fit_data["fit_score"],
+                            "attached_resume": selected_resume,
+                            "account_id": email.account_id,
+                            "simulated": False
+                        })
+
+                        # Dispatch macOS alert banner
+                        company = rec_details.company_name if rec_details else "Enterprise Client"
+                        send_macos_notification(
+                            title="✉️ Aura Mail: Recruiter Draft Staged",
+                            subtitle=f"{role_title} ({fit_data['fit_score']}% Fit)",
+                            message=f"Draft response with {selected_resume} staged in Drafts for {company}."
+                        )
+
+                        save_processed_id(email.id, {
+                            "category": "OPPORTUNITY_STAGED",
+                            "action": "DRAFT_STAGED",
+                            "role_title": role_title,
+                            "fit_score": fit_data["fit_score"],
+                            "selected_resume": selected_resume,
+                            "dry_run": False,
+                            "live_success": True
+                        }, live_success=True, log_file=log_file)
+                    else:
+                        summary["errors"].append(f"Failed to stage draft for {email.id}: {draft_res.safe_message}")
+                        record_diagnostic_event(email.id, {
+                            "category": "OPPORTUNITY_STAGE_FAILED",
+                            "action": "FAILED_DRAFT_STAGE",
+                            "error": draft_res.safe_message,
+                            "role_title": role_title,
+                            "dry_run": False
+                        }, log_file=log_file)
 
         update_daemon_state("IDLE", summary)
     except Exception as e:

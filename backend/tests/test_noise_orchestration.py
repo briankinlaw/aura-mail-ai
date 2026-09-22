@@ -363,3 +363,267 @@ def test_noise_orchestration_complete_and_partial_sync_failure_truthfulness(tmp_
                 assert stats_by_id["brian@mavencode.com"]["is_clean"] is False
                 assert stats_by_id["brian@mavencode.com"]["is_verified_clean"] is False
                 assert "Connection timeout" in stats_by_id["brian@mavencode.com"]["sync_error"]
+
+
+def test_noise_orchestration_skipped_sync_truthfulness(tmp_path, monkeypatch):
+    """Verifies that when sync_first is False, sweep returns SYNC_SKIPPED and accounts are unverified."""
+    test_db = tmp_path / "test_skipped_sync.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+    monkeypatch.setattr("backend.main.CACHED_EMAILS", {})
+
+    configured_mock = [
+        {"account_id": "kinlawb@outlook.com", "provider": "MICROSOFT_GRAPH", "enabled": True, "display_name": "Outlook Work"}
+    ]
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+            mock_batch.return_value = QuarantineBatchResult(
+                status="SUCCESS",
+                total_requested=0,
+                cleaned_count=0,
+                failed_count=0,
+                results=[],
+                message="No noise"
+            )
+
+            res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": False})
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "SYNC_SKIPPED"
+            assert data["sync_status"] == "SYNC_SKIPPED"
+            assert data["per_account_stats"][0]["sync_status"] == "SKIPPED"
+            assert data["per_account_stats"][0]["is_verified_clean"] is False
+
+
+def test_noise_orchestration_empty_and_unknown_sync_truthfulness(tmp_path, monkeypatch):
+    """Verifies that empty accounts or missing sync stats return UNVERIFIED, not SUCCESS."""
+    test_db = tmp_path / "test_unknown_sync.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+    monkeypatch.setattr("backend.main.CACHED_EMAILS", {})
+
+    # Case 1: Empty configured accounts
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=[]):
+        with patch("backend.main.provider_manager.sync_unified_inbox", return_value=([], {})):
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS",
+                    total_requested=0,
+                    cleaned_count=0,
+                    failed_count=0,
+                    results=[],
+                    message="No noise"
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+                assert data["status"] == "UNVERIFIED"
+                assert data["sync_status"] == "UNVERIFIED"
+
+    # Case 2: Unknown / missing sync status
+    configured_mock = [
+        {"account_id": "kinlawb@outlook.com", "provider": "MICROSOFT_GRAPH", "enabled": True}
+    ]
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        with patch("backend.main.provider_manager.sync_unified_inbox", return_value=([], None)):
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS",
+                    total_requested=0,
+                    cleaned_count=0,
+                    failed_count=0,
+                    results=[],
+                    message="No noise"
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+                assert data["status"] == "UNVERIFIED"
+
+
+def test_noise_orchestration_complete_and_partial_quarantine_failure(tmp_path, monkeypatch):
+    """
+    Verifies that when live sync succeeds:
+    1. All quarantine moves fail -> QUARANTINE_FAILED.
+    2. Some quarantine moves fail -> PARTIAL_SUCCESS.
+    """
+    test_db = tmp_path / "test_quarantine_failures.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+
+    configured_mock = [
+        {"account_id": "kinlawb@outlook.com", "provider": "MICROSOFT_GRAPH", "enabled": True}
+    ]
+
+    noise_msg_1 = EmailMessage(
+        id="MICROSOFT_GRAPH::kinlawb@outlook.com::noise_qfail_1",
+        account_id="kinlawb@outlook.com",
+        sender_name="Promo Marketing",
+        sender_email="promo1@deals.com",
+        provider="MICROSOFT_GRAPH",
+        subject="Promo 1",
+        body_text="Promo",
+        status="INBOUND",
+        classification=ClassificationResult(
+            category=EmailCategory.NOISE_PROMOTIONAL,
+            confidence=0.99,
+            reasoning="Promo",
+            is_noise=True
+        )
+    )
+    noise_msg_2 = EmailMessage(
+        id="MICROSOFT_GRAPH::kinlawb@outlook.com::noise_qfail_2",
+        account_id="kinlawb@outlook.com",
+        sender_name="Promo Marketing",
+        sender_email="promo2@deals.com",
+        provider="MICROSOFT_GRAPH",
+        subject="Promo 2",
+        body_text="Promo",
+        status="INBOUND",
+        classification=ClassificationResult(
+            category=EmailCategory.NOISE_PROMOTIONAL,
+            confidence=0.99,
+            reasoning="Promo",
+            is_noise=True
+        )
+    )
+
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        # Case 1: Complete Quarantine Failure
+        monkeypatch.setattr("backend.main.CACHED_EMAILS", {
+            noise_msg_1.id: noise_msg_1,
+            noise_msg_2.id: noise_msg_2
+        })
+        with patch("backend.main.provider_manager.sync_unified_inbox") as mock_sync:
+            mock_sync.return_value = ([noise_msg_1, noise_msg_2], {
+                "status": "SUCCESS",
+                "accounts_synced": 1,
+                "accounts_failed": 0,
+                "errors": []
+            })
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="FAILED",
+                    total_requested=2,
+                    cleaned_count=0,
+                    failed_count=2,
+                    cleaned_ids=[],
+                    results=[
+                        QuarantineMessageResult(
+                            email_id=noise_msg_1.id,
+                            subject="Promo 1",
+                            provider="MICROSOFT_GRAPH",
+                            account_id="kinlawb@outlook.com",
+                            success=False,
+                            message="Folder lock error"
+                        ),
+                        QuarantineMessageResult(
+                            email_id=noise_msg_2.id,
+                            subject="Promo 2",
+                            provider="MICROSOFT_GRAPH",
+                            account_id="kinlawb@outlook.com",
+                            success=False,
+                            message="Folder lock error"
+                        )
+                    ],
+                    message="Failed to move 2 messages."
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+                assert data["status"] == "QUARANTINE_FAILED"
+                assert data["sync_status"] == "SUCCESS"
+                assert data["failed_quarantine_count"] == 2
+                assert data["total_noise_quarantined"] == 0
+                assert data["per_account_stats"][0]["is_verified_clean"] is False
+                assert data["per_account_stats"][0]["noise_failed"] == 2
+
+        # Case 2: Partial Quarantine Failure (1 succeeded, 1 failed)
+        monkeypatch.setattr("backend.main.CACHED_EMAILS", {
+            noise_msg_1.id: noise_msg_1,
+            noise_msg_2.id: noise_msg_2
+        })
+        with patch("backend.main.provider_manager.sync_unified_inbox") as mock_sync:
+            mock_sync.return_value = ([noise_msg_1, noise_msg_2], {
+                "status": "SUCCESS",
+                "accounts_synced": 1,
+                "accounts_failed": 0,
+                "errors": []
+            })
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="PARTIAL_SUCCESS",
+                    total_requested=2,
+                    cleaned_count=1,
+                    failed_count=1,
+                    cleaned_ids=[noise_msg_1.id],
+                    results=[
+                        QuarantineMessageResult(
+                            email_id=noise_msg_1.id,
+                            subject="Promo 1",
+                            provider="MICROSOFT_GRAPH",
+                            account_id="kinlawb@outlook.com",
+                            success=True,
+                            message="Moved"
+                        ),
+                        QuarantineMessageResult(
+                            email_id=noise_msg_2.id,
+                            subject="Promo 2",
+                            provider="MICROSOFT_GRAPH",
+                            account_id="kinlawb@outlook.com",
+                            success=False,
+                            message="Folder lock error"
+                        )
+                    ],
+                    message="Partial move."
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+                assert data["status"] == "PARTIAL_SUCCESS"
+                assert data["total_noise_quarantined"] == 1
+                assert data["failed_quarantine_count"] == 1
+
+
+def test_noise_orchestration_successful_live_sync_no_noise(tmp_path, monkeypatch):
+    """Verifies that successful live sync with no noise returns SUCCESS and is_verified_clean=True."""
+    test_db = tmp_path / "test_success_clean.db"
+    monkeypatch.setattr("backend.analytics.DB_PATH", test_db)
+    init_analytics_db()
+    monkeypatch.setattr("backend.main.CACHED_EMAILS", {})
+
+    configured_mock = [
+        {"account_id": "kinlawb@outlook.com", "provider": "MICROSOFT_GRAPH", "enabled": True, "display_name": "Outlook Work"}
+    ]
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        with patch("backend.main.provider_manager.sync_unified_inbox") as mock_sync:
+            mock_sync.return_value = ([], {
+                "status": "SUCCESS",
+                "accounts_synced": 1,
+                "accounts_failed": 0,
+                "errors": []
+            })
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS",
+                    total_requested=0,
+                    cleaned_count=0,
+                    failed_count=0,
+                    results=[],
+                    message="Zero noise."
+                )
+
+                res = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True})
+                assert res.status_code == 200
+                data = res.json()
+                assert data["status"] == "SUCCESS"
+                assert data["sync_status"] == "SUCCESS"
+                assert data["accounts_synced"] == 1
+                assert data["accounts_failed"] == 0
+                assert data["total_noise_quarantined"] == 0
+                assert data["per_account_stats"][0]["is_clean"] is True
+                assert data["per_account_stats"][0]["is_verified_clean"] is True

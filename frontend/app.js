@@ -2269,14 +2269,27 @@ window.orchestrateAllInboxesNoise = async function() {
     });
     const data = await res.json();
     if (res.ok) {
-      if (data.sync_status === 'FAILED' || data.status === 'SYNC_FAILED') {
-        const errAccounts = (data.sync_errors || []).map(e => e.account_id).filter(Boolean).join(', ') || 'configured mailboxes';
-        showToast(`⚠️ Sync failed for ${errAccounts}. Triaged ${data.cached_messages_triaged || 0} cached emails (${data.total_noise_quarantined || 0} quarantined). Live status unverified.`, 'warning');
-      } else if (data.sync_status === 'PARTIAL_SUCCESS' || (data.accounts_failed && data.accounts_failed > 0)) {
-        const errAccounts = (data.sync_errors || []).map(e => e.account_id).filter(Boolean).join(', ');
-        showToast(`⚠️ Partial sync (${data.accounts_synced || 0} synced, ${data.accounts_failed || 0} failed: ${errAccounts}). ${data.total_noise_quarantined || 0} noise emails quarantined.`, 'warning');
-      } else {
+      if (data.status === 'SUCCESS') {
         showToast(`✓ Zero-Noise Orchestration Complete: ${data.total_noise_quarantined || 0} noise emails safely quarantined across ${data.accounts_synced || data.accounts_scanned || 0} mailboxes to '${data.safe_folder_name || 'AI Cleaned - Noise'}'.`, 'success');
+      } else if (data.status === 'SYNC_SKIPPED' || data.status === 'UNVERIFIED') {
+        showToast(`ℹ️ Cached sweep completed: ${data.total_noise_quarantined || 0} noise emails quarantined. Live mailboxes were not synced (unverified).`, 'info');
+      } else if (data.status === 'SYNC_FAILED') {
+        const errAccounts = (data.sync_errors || []).map(e => e.account_id).filter(Boolean).join(', ') || 'configured mailboxes';
+        showToast(`❌ Live sync failed for all mailboxes (${errAccounts}). Triaged ${data.cached_messages_triaged || 0} cached emails. Live status unverified.`, 'error');
+      } else if (data.status === 'QUARANTINE_FAILED') {
+        showToast(`❌ Quarantine failed: could not move ${data.failed_quarantine_count || 0} noise emails to '${data.safe_folder_name || 'AI Cleaned - Noise'}'.`, 'error');
+      } else if (data.status === 'PARTIAL_SUCCESS') {
+        let errDetails = '';
+        if (data.accounts_failed > 0) {
+          const errAccounts = (data.sync_errors || []).map(e => e.account_id).filter(Boolean).join(', ');
+          errDetails = `sync failed for ${errAccounts}`;
+        }
+        if (data.failed_quarantine_count > 0) {
+          errDetails += (errDetails ? '; ' : '') + `${data.failed_quarantine_count} quarantine moves failed`;
+        }
+        showToast(`⚠️ Partial orchestration (${data.total_noise_quarantined || 0} quarantined, but ${errDetails || 'some operations failed'}).`, 'warning');
+      } else {
+        showToast(`Orchestration status: ${data.message || data.status}`, 'info');
       }
     } else {
       showToast(`Orchestration error: ${data.detail || data.message || 'Unknown error'}`, 'error');
