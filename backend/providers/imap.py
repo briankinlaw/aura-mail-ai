@@ -91,6 +91,10 @@ class ImapProvider(BaseEmailProvider):
                 raise ValueError(f"Insecure IMAP port {p} requested. Only port 993 (IMAP4_SSL) is allowed.")
             import ssl
             context = ssl.create_default_context()
+            try:
+                context.set_ciphers("DEFAULT:@SECLEVEL=1")
+            except Exception:
+                pass
             return imaplib.IMAP4_SSL(h, p, ssl_context=context, timeout=timeout)
 
         candidates: List[Tuple[str, int]] = [(server, 993)]

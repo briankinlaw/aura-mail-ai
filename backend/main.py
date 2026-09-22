@@ -356,13 +356,37 @@ def list_accounts_endpoint():
 @app.post("/api/accounts/{account_id}/test", dependencies=[Depends(require_local_auth)])
 def test_account_connection(account_id: str):
     provider, _ = provider_manager.get_provider_for_account(account_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' is not configured.")
     res = provider.validate_connection(account_id)
+    settings = load_settings()
+    updated = False
+    for acc in settings.get("configured_accounts", []):
+        if acc.get("account_id", "").lower() == account_id.lower() or acc.get("email", "").lower() == account_id.lower():
+            acc["is_connected"] = res.success
+            acc["last_error"] = None if res.success else res.safe_message
+            updated = True
+    if updated:
+        save_settings(settings)
+        provider_manager.reload_config()
     return res.model_dump()
 
 @app.post("/api/accounts/{account_id}/disconnect", dependencies=[Depends(require_local_auth)])
 def disconnect_account(account_id: str):
     provider, _ = provider_manager.get_provider_for_account(account_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' is not configured.")
     res = provider.logout(account_id)
+    settings = load_settings()
+    updated = False
+    for acc in settings.get("configured_accounts", []):
+        if acc.get("account_id", "").lower() == account_id.lower() or acc.get("email", "").lower() == account_id.lower():
+            acc["is_connected"] = False
+            acc["last_error"] = None
+            updated = True
+    if updated:
+        save_settings(settings)
+        provider_manager.reload_config()
     return res.model_dump()
 
 @app.get("/api/settings", dependencies=[Depends(require_local_auth)])
