@@ -1861,22 +1861,28 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
         sync_errors = sync_stats.get("errors", []) if sync_stats else []
         enabled_ids = {str(acc.get("account_id", "")).lower() for acc in enabled_accounts}
         confirmed_synced = {str(account).lower() for account in (sync_stats.get("synced_accounts") or [])} if sync_stats else set()
+        # Only the provider can attest which accounts it deliberately omitted.
+        skipped_ids = {
+            str(item.get("account_id", "")).lower()
+            for item in (sync_stats.get("skipped_accounts") or []) if isinstance(item, dict)
+        } & enabled_ids if sync_stats else set()
+        expected_ids = enabled_ids - skipped_ids
 
         sync_error_map = {
             str(err.get("account_id", "")).lower(): str(err.get("error", "Sync failed"))
             for err in sync_errors
         }
         all_sync_failed = "all" in sync_error_map
-        failed_ids = set(sync_error_map) & enabled_ids
+        failed_ids = set(sync_error_map) & expected_ids
         # Older providers may omit synced_accounts. Counts certify all accounts only
         # when they cover the whole configured set; partial results require matching
         # per-account errors before the remaining accounts can be inferred as synced.
-        if sync_status_val == "SUCCESS" and accounts_synced == len(enabled_ids) and accounts_failed == 0:
-            confirmed_synced = enabled_ids
+        if sync_status_val == "SUCCESS" and expected_ids and accounts_synced == len(expected_ids) and accounts_failed == 0:
+            confirmed_synced = expected_ids
         elif (sync_status_val == "PARTIAL_SUCCESS" and accounts_synced > 0
-              and accounts_synced + accounts_failed == len(enabled_ids)
+              and accounts_synced + accounts_failed == len(expected_ids)
               and len(failed_ids) == accounts_failed):
-            confirmed_synced |= enabled_ids - failed_ids
+            confirmed_synced |= expected_ids - failed_ids
 
         per_account_stats = []
         for acc in configured_accounts:
@@ -1890,10 +1896,12 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
 
             if not sync_first:
                 account_sync_status = "SKIPPED"
+            elif acc_id_lower in skipped_ids:
+                account_sync_status = "SKIPPED"
             elif is_sync_failed:
                 account_sync_status = "FAILED"
             elif (acc_id_lower in confirmed_synced
-                  and ((sync_status_val == "SUCCESS" and accounts_synced == len(enabled_ids) and accounts_failed == 0)
+                  and ((sync_status_val == "SUCCESS" and accounts_synced == len(expected_ids) and accounts_failed == 0)
                        or (sync_status_val == "PARTIAL_SUCCESS" and accounts_synced > 0))):
                 account_sync_status = "SUCCESS"
             else:
@@ -1939,9 +1947,9 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
         if not sync_first:
             overall_status = "SYNC_SKIPPED"
             msg = f"Cached sweep completed: {quarantine_batch.cleaned_count} cached noise emails quarantined to '{folder_name}'. Live mailbox sync was skipped."
-        elif (not enabled_accounts or sync_status_val == "UNVERIFIED"
-              or (sync_status_val == "SUCCESS" and (confirmed_synced != enabled_ids
-                  or accounts_synced != len(enabled_ids) or accounts_failed != 0))):
+        elif (not expected_ids or sync_status_val == "UNVERIFIED"
+              or (sync_status_val == "SUCCESS" and (confirmed_synced != expected_ids
+                  or accounts_synced != len(expected_ids) or accounts_failed != 0))):
             overall_status = "UNVERIFIED"
             msg = f"Orchestration unverified: no active configured accounts or sync result unavailable. {quarantine_batch.cleaned_count} cached noise emails quarantined."
         elif sync_status_val == "FAILED" or (accounts_synced == 0 and accounts_failed > 0):

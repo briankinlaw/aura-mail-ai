@@ -76,6 +76,10 @@ def test_alias_deduplication_and_historical_exclusion():
                 assert mock_fetch.call_args[0][0] == "kinlawb@outlook.com"
                 assert len(messages) == 1
                 assert stats["accounts_synced"] == 1
+                assert stats["skipped_accounts"] == [
+                    {"account_id": "test.alias@outlook.com", "reason": "alias", "alias_of": "kinlawb@outlook.com"},
+                    {"account_id": "bkinlaw@dxc.com", "reason": "historical"},
+                ]
 
 def test_no_sample_emails_on_live_sync_failure():
     """Verifies that live sync failures report truthful errors and NEVER inject mock/sample reachouts."""
@@ -210,4 +214,3 @@ def test_save_draft_account_mismatch_fails_closed():
     )
     assert res.status_code == 403
     assert "Account context mismatch" in res.json()["detail"]
-

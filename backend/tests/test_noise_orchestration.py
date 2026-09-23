@@ -365,6 +365,38 @@ def test_noise_orchestration_complete_and_partial_sync_failure_truthfulness(tmp_
                 assert "Connection timeout" in stats_by_id["brian@mavencode.com"]["sync_error"]
 
 
+def test_noise_orchestration_skipped_alias_and_historical_accounts(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.analytics.DB_PATH", tmp_path / "skipped_accounts.db")
+    init_analytics_db()
+    monkeypatch.setattr("backend.main.CACHED_EMAILS", {})
+    accounts = [
+        {"account_id": "parent@example.com", "enabled": True},
+        {"account_id": "alias@example.com", "enabled": True, "is_alias": True, "alias_of": "parent@example.com"},
+        {"account_id": "old@example.com", "enabled": True},
+    ]
+    stats = {
+        "status": "SUCCESS", "accounts_synced": 1, "accounts_failed": 0,
+        "synced_accounts": ["parent@example.com"], "errors": [],
+        "skipped_accounts": [
+            {"account_id": "alias@example.com", "reason": "alias", "alias_of": "parent@example.com"},
+            {"account_id": "old@example.com", "reason": "historical"},
+        ],
+    }
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=accounts), \
+         patch("backend.main.provider_manager.sync_unified_inbox", return_value=([], stats)), \
+         patch("backend.main.provider_manager.batch_quarantine_noise", return_value=QuarantineBatchResult(
+             status="SUCCESS", total_requested=0, cleaned_count=0, failed_count=0,
+             results=[], message="No noise")):
+        data = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True}).json()
+
+    assert data["status"] == "SUCCESS"
+    by_id = {item["account_id"]: item for item in data["per_account_stats"]}
+    assert by_id["parent@example.com"]["is_verified_clean"] is True
+    for account_id in ("alias@example.com", "old@example.com"):
+        assert by_id[account_id]["sync_status"] == "SKIPPED"
+        assert by_id[account_id]["is_verified_clean"] is False
+
+
 def test_noise_orchestration_skipped_sync_truthfulness(tmp_path, monkeypatch):
     """Verifies that when sync_first is False, sweep returns SYNC_SKIPPED and accounts are unverified."""
     test_db = tmp_path / "test_skipped_sync.db"

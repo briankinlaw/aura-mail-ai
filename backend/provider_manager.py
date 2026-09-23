@@ -259,6 +259,7 @@ class ProviderManager:
             "status": "SUCCESS",
             "accounts_synced": 0,
             "synced_accounts": [],
+            "skipped_accounts": [],
             "accounts_failed": 0,
             "errors": [],
             "timestamp": datetime.now().isoformat()
@@ -273,11 +274,13 @@ class ProviderManager:
             acc_id = acc.get("account_id", acc.get("email", "")).lower()
             
             if acc_id in historical_accounts or any(h in acc_id for h in historical_accounts):
+                sync_stats["skipped_accounts"].append({"account_id": acc_id, "reason": "historical"})
                 continue
             
             if acc.get("is_alias") and acc.get("alias_of"):
                 parent = acc.get("alias_of").lower()
                 if parent in fetched_mailboxes:
+                    sync_stats["skipped_accounts"].append({"account_id": acc_id, "reason": "alias", "alias_of": parent})
                     continue
 
             p_type = acc.get("provider", "MICROSOFT_GRAPH")
