@@ -91,10 +91,12 @@ class ImapProvider(BaseEmailProvider):
                 raise ValueError(f"Insecure IMAP port {p} requested. Only port 993 (IMAP4_SSL) is allowed.")
             import ssl
             context = ssl.create_default_context()
-            try:
+            # Legacy cipher compatibility is restricted to the configured
+            # Roadrunner mailbox and its two known Spectrum IMAP hosts.
+            if (email_addr.lower().endswith("@satx.rr.com")
+                    and h.lower() in ("mail.twc.com", "mobile.charter.net")):
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.set_ciphers("DEFAULT:@SECLEVEL=1")
-            except Exception:
-                pass
             return imaplib.IMAP4_SSL(h, p, ssl_context=context, timeout=timeout)
 
         candidates: List[Tuple[str, int]] = [(server, 993)]

@@ -1859,12 +1859,24 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
         accounts_synced = sync_stats.get("accounts_synced", 0) if sync_stats else 0
         accounts_failed = sync_stats.get("accounts_failed", 0) if sync_stats else 0
         sync_errors = sync_stats.get("errors", []) if sync_stats else []
+        enabled_ids = {str(acc.get("account_id", "")).lower() for acc in enabled_accounts}
+        confirmed_synced = {str(account).lower() for account in (sync_stats.get("synced_accounts") or [])} if sync_stats else set()
 
         sync_error_map = {
             str(err.get("account_id", "")).lower(): str(err.get("error", "Sync failed"))
             for err in sync_errors
         }
         all_sync_failed = "all" in sync_error_map
+        failed_ids = set(sync_error_map) & enabled_ids
+        # Older providers may omit synced_accounts. Counts certify all accounts only
+        # when they cover the whole configured set; partial results require matching
+        # per-account errors before the remaining accounts can be inferred as synced.
+        if sync_status_val == "SUCCESS" and accounts_synced == len(enabled_ids) and accounts_failed == 0:
+            confirmed_synced = enabled_ids
+        elif (sync_status_val == "PARTIAL_SUCCESS" and accounts_synced > 0
+              and accounts_synced + accounts_failed == len(enabled_ids)
+              and len(failed_ids) == accounts_failed):
+            confirmed_synced |= enabled_ids - failed_ids
 
         per_account_stats = []
         for acc in configured_accounts:
@@ -1880,8 +1892,12 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
                 account_sync_status = "SKIPPED"
             elif is_sync_failed:
                 account_sync_status = "FAILED"
-            else:
+            elif (acc_id_lower in confirmed_synced
+                  and ((sync_status_val == "SUCCESS" and accounts_synced == len(enabled_ids) and accounts_failed == 0)
+                       or (sync_status_val == "PARTIAL_SUCCESS" and accounts_synced > 0))):
                 account_sync_status = "SUCCESS"
+            else:
+                account_sync_status = "UNVERIFIED"
 
             acc_emails = [
                 em for em in CACHED_EMAILS.values()
@@ -1896,7 +1912,7 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
             important = len([em for em in acc_emails if em.classification and not em.classification.is_noise and not em.classification.is_resume_request and em.status != "TRASHED"])
             
             # is_verified_clean is True ONLY for an account whose live sync succeeded and whose relevant noise moves succeeded
-            is_clean = (noise_remaining == 0 and not is_sync_failed)
+            is_clean = (noise_remaining == 0 and account_sync_status == "SUCCESS" and noise_failed == 0)
             is_verified_clean = (account_sync_status == "SUCCESS" and noise_remaining == 0 and noise_failed == 0)
             cleanliness = 100 if is_clean else (0 if is_sync_failed and noise_remaining > 0 else max(0, round((1 - (noise_remaining / max(1, (noise_remaining + recruiters + important)))) * 100)))
 
@@ -1923,7 +1939,9 @@ def orchestrate_noise_endpoint(payload: Optional[Dict[str, Any]] = None):
         if not sync_first:
             overall_status = "SYNC_SKIPPED"
             msg = f"Cached sweep completed: {quarantine_batch.cleaned_count} cached noise emails quarantined to '{folder_name}'. Live mailbox sync was skipped."
-        elif not enabled_accounts or sync_status_val == "UNVERIFIED":
+        elif (not enabled_accounts or sync_status_val == "UNVERIFIED"
+              or (sync_status_val == "SUCCESS" and (confirmed_synced != enabled_ids
+                  or accounts_synced != len(enabled_ids) or accounts_failed != 0))):
             overall_status = "UNVERIFIED"
             msg = f"Orchestration unverified: no active configured accounts or sync result unavailable. {quarantine_batch.cleaned_count} cached noise emails quarantined."
         elif sync_status_val == "FAILED" or (accounts_synced == 0 and accounts_failed > 0):

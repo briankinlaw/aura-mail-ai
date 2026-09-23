@@ -419,12 +419,41 @@ def test_noise_orchestration_empty_and_unknown_sync_truthfulness(tmp_path, monke
                 assert res.status_code == 200
                 data = res.json()
                 assert data["status"] == "UNVERIFIED"
-                assert data["sync_status"] == "UNVERIFIED"
+                assert data["per_account_stats"] == []
 
-    # Case 2: Unknown / missing sync status
     configured_mock = [
         {"account_id": "kinlawb@outlook.com", "provider": "MICROSOFT_GRAPH", "enabled": True}
     ]
+
+    # A global failure without account-specific errors must not verify the account.
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        with patch("backend.main.provider_manager.sync_unified_inbox", return_value=([], {
+            "status": "FAILED", "accounts_synced": 0, "accounts_failed": 1, "errors": []
+        })):
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS", total_requested=0, cleaned_count=0,
+                    failed_count=0, results=[], message="No noise")
+                data = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True}).json()
+                assert data["status"] == "SYNC_FAILED"
+                assert data["per_account_stats"][0]["sync_status"] == "UNVERIFIED"
+                assert data["per_account_stats"][0]["is_verified_clean"] is False
+
+    # A contradictory SUCCESS with zero accounts synced is not affirmative evidence.
+    with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
+        with patch("backend.main.provider_manager.sync_unified_inbox", return_value=([], {
+            "status": "SUCCESS", "accounts_synced": 0, "accounts_failed": 0, "errors": []
+        })):
+            with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
+                mock_batch.return_value = QuarantineBatchResult(
+                    status="SUCCESS", total_requested=0, cleaned_count=0,
+                    failed_count=0, results=[], message="No noise")
+                data = auth_client.post("/api/inbox/orchestrate-noise", json={"sync_first": True}).json()
+                assert data["status"] == "UNVERIFIED"
+                assert data["per_account_stats"][0]["sync_status"] == "UNVERIFIED"
+                assert data["per_account_stats"][0]["is_verified_clean"] is False
+
+    # Case 2: Unknown / missing sync status
     with patch("backend.main.provider_manager.get_configured_accounts", return_value=configured_mock):
         with patch("backend.main.provider_manager.sync_unified_inbox", return_value=([], None)):
             with patch("backend.main.provider_manager.batch_quarantine_noise") as mock_batch:
@@ -441,6 +470,8 @@ def test_noise_orchestration_empty_and_unknown_sync_truthfulness(tmp_path, monke
                 assert res.status_code == 200
                 data = res.json()
                 assert data["status"] == "UNVERIFIED"
+                assert data["per_account_stats"][0]["sync_status"] == "UNVERIFIED"
+                assert data["per_account_stats"][0]["is_verified_clean"] is False
 
 
 def test_noise_orchestration_complete_and_partial_quarantine_failure(tmp_path, monkeypatch):

@@ -243,6 +243,7 @@ class ProviderManager:
                 "status": "SUCCESS",
                 "demo_mode": True, 
                 "accounts_synced": 1, 
+                "synced_accounts": ["demo@auramail.local"],
                 "accounts_failed": 0,
                 "errors": [],
                 "timestamp": datetime.now().isoformat()
@@ -257,6 +258,7 @@ class ProviderManager:
         sync_stats = {
             "status": "SUCCESS",
             "accounts_synced": 0,
+            "synced_accounts": [],
             "accounts_failed": 0,
             "errors": [],
             "timestamp": datetime.now().isoformat()
@@ -294,6 +296,7 @@ class ProviderManager:
                 else:
                     all_messages.extend(msgs)
                     sync_stats["accounts_synced"] += 1
+                    sync_stats["synced_accounts"].append(acc_id)
                     acc["last_sync_time"] = datetime.now().isoformat()
                     acc["last_error"] = None
                     fetched_mailboxes.add(acc_id)

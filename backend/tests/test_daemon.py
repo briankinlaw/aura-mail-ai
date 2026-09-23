@@ -305,6 +305,35 @@ class TestAuraDaemonProcessedState(unittest.TestCase):
     def tearDown(self):
         self.tmp_dir.cleanup()
 
+    def test_atomic_state_write_failure_preserves_prior_success(self):
+        save_processed_id("already_staged", {"action": "DRAFT_STAGED"}, log_file=self.log_file)
+        original = self.log_file.read_bytes()
+        with patch("backend.daemon.os.replace", side_effect=OSError("interrupted replacement")):
+            with self.assertRaisesRegex(OSError, "interrupted replacement"):
+                record_diagnostic_event("other", {"action": "DRY_RUN_NOISE"}, log_file=self.log_file)
+        self.assertEqual(self.log_file.read_bytes(), original)
+        self.assertEqual(load_processed_ids(self.log_file), {"already_staged"})
+
+    @patch("backend.daemon.ProviderManager")
+    def test_reconciliation_error_stops_before_provider_actions(self, mock_pm_cls):
+        self.log_file.write_text("{invalid json", encoding="utf-8")
+        original = self.log_file.read_bytes()
+        summary = run_daemon_cycle(dry_run=False, log_file=self.log_file)
+        self.assertTrue(any("reconciliation failed" in error for error in summary["errors"]))
+        mock_pm_cls.assert_not_called()
+        self.assertEqual(self.log_file.read_bytes(), original)
+
+    @patch("backend.daemon.ProviderManager")
+    def test_reconciliation_write_failure_stops_before_provider_actions(self, mock_pm_cls):
+        self.log_file.write_text(json.dumps({"processed_message_ids": ["skipped"],
+            "records": [{"message_id": "skipped", "details": {"action": "DRY_RUN_NOISE"}}]}), encoding="utf-8")
+        original = self.log_file.read_bytes()
+        with patch("backend.daemon.os.replace", side_effect=OSError("interrupted replacement")):
+            summary = run_daemon_cycle(dry_run=False, log_file=self.log_file)
+        self.assertTrue(any("reconciliation failed" in error for error in summary["errors"]))
+        mock_pm_cls.assert_not_called()
+        self.assertEqual(self.log_file.read_bytes(), original)
+
     @patch("backend.daemon.ProviderManager")
     @patch("backend.daemon.classify_email_radar")
     @patch("backend.daemon.load_settings")

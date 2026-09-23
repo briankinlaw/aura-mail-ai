@@ -10,6 +10,7 @@ import json
 import time
 import subprocess
 import logging
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
@@ -34,13 +35,47 @@ def load_processed_ids(log_file: Optional[Path] = None) -> set:
     """Loads set of previously processed message IDs to guarantee idempotency."""
     target_file = log_file or PROCESSED_LOG_FILE
     if target_file.is_file():
-        try:
-            with open(target_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return set(data.get("processed_message_ids", []))
-        except Exception as e:
-            logger.warning(f"Error loading processed IDs: {e}")
+        data = _read_processed_state(target_file)
+        return set(data["processed_message_ids"])
     return set()
+
+def _read_processed_state(target_file: Path) -> Dict[str, Any]:
+    with open(target_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not isinstance(data.get("processed_message_ids"), list) or not isinstance(data.get("records"), list):
+        raise ValueError("Invalid daemon processed-state format")
+    if not all(isinstance(mid, str) for mid in data["processed_message_ids"]):
+        raise ValueError("Invalid daemon processed message IDs")
+    if not all(isinstance(record, dict) for record in data["records"]):
+        raise ValueError("Invalid daemon processed-state records")
+    return data
+
+def _write_processed_state_atomically(target_file: Path, data: Dict[str, Any]) -> None:
+    """Replace the state only after its complete contents are durable on disk."""
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target_file.parent,
+                                         prefix=f".{target_file.name}.", delete=False) as f:
+            temp_name = f.name
+            if target_file.exists():
+                os.chmod(temp_name, target_file.stat().st_mode & 0o777)
+            else:
+                os.chmod(temp_name, 0o600)
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_name, target_file)
+        temp_name = None
+        if hasattr(os, "O_DIRECTORY"):
+            dir_fd = os.open(target_file.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    finally:
+        if temp_name is not None:
+            os.unlink(temp_name)
 
 def save_processed_id(message_id: str, details: Dict[str, Any], live_success: bool = True, log_file: Optional[Path] = None):
     """
@@ -48,19 +83,13 @@ def save_processed_id(message_id: str, details: Dict[str, Any], live_success: bo
     a live side effect succeeded (confirmed quarantine move or confirmed draft stage).
     """
     target_file = log_file or PROCESSED_LOG_FILE
-    processed_ids = load_processed_ids(target_file)
+    data = _read_processed_state(target_file) if target_file.exists() else {"processed_message_ids": [], "records": []}
+    processed_ids = set(data["processed_message_ids"])
 
     if live_success:
         processed_ids.add(message_id)
 
-    records = []
-    if target_file.is_file():
-        try:
-            with open(target_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                records = data.get("records", [])
-        except Exception:
-            records = []
+    records = data["records"]
 
     records.append({
         "message_id": message_id,
@@ -71,13 +100,9 @@ def save_processed_id(message_id: str, details: Dict[str, Any], live_success: bo
     # Keep last 500 records
     records = records[-500:]
 
-    target_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(target_file, "w", encoding="utf-8") as f:
-        json.dump({
-            "processed_message_ids": list(processed_ids),
-            "records": records,
-            "last_updated": datetime.utcnow().isoformat()
-        }, f, indent=2)
+    data.update({"processed_message_ids": list(processed_ids), "records": records,
+                 "last_updated": datetime.utcnow().isoformat()})
+    _write_processed_state_atomically(target_file, data)
 
 def record_diagnostic_event(message_id: str, details: Dict[str, Any], log_file: Optional[Path] = None):
     """Records diagnostic/skipped/dry-run triage metadata without adding message_id to processed_message_ids."""
@@ -104,8 +129,7 @@ def reconcile_processed_state(log_file: Optional[Path] = None) -> Dict[str, Any]
         }
 
     try:
-        with open(target_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = _read_processed_state(target_file)
     except Exception as e:
         logger.warning(f"Error reading processed log during reconciliation: {e}")
         return {
@@ -163,12 +187,11 @@ def reconcile_processed_state(log_file: Optional[Path] = None) -> Dict[str, Any]
             final_processed_ids.add(mid)
             insufficient_history_count += 1
 
-    data["processed_message_ids"] = list(final_processed_ids)
-    data["last_reconciled_at"] = datetime.utcnow().isoformat()
-
     try:
-        with open(target_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        if final_processed_ids != processed_ids:
+            data["processed_message_ids"] = list(final_processed_ids)
+            data["last_reconciled_at"] = datetime.utcnow().isoformat()
+            _write_processed_state_atomically(target_file, data)
     except Exception as e:
         logger.warning(f"Error saving reconciled processed state: {e}")
         return {
@@ -242,7 +265,9 @@ def run_daemon_cycle(dry_run: bool = False, target_folders: Optional[List[str]] 
 
     try:
         # Reconcile processed state to eliminate prior unperformed actions
-        reconcile_processed_state(log_file)
+        reconciliation = reconcile_processed_state(log_file)
+        if reconciliation["status"] == "ERROR":
+            raise RuntimeError(f"Processed-state reconciliation failed: {reconciliation['error']}")
 
         folders = target_folders or ["Inbox", "Jobs", "CCK Career", "AI Reachouts"]
         processed_ids = load_processed_ids(log_file)

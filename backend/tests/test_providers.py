@@ -526,3 +526,38 @@ def test_no_plaintext_imap_login_and_cert_verification_enforced():
                 assert len(conn_attempts) > 0
                 for host, port in conn_attempts:
                     assert port == 993, f"Plaintext port {port} attempted on {host}!"
+
+
+def test_legacy_imap_cipher_policy_is_scoped_to_roadrunner_hosts():
+    """Unrelated IMAP accounts keep Python's default verified TLS policy."""
+    from unittest.mock import MagicMock
+    import ssl
+
+    for address, host, expect_legacy in (
+        ("other@example.com", "imap.example.com", False),
+        ("test@satx.rr.com", "mail.twc.com", True),
+        ("test@satx.rr.com", "imap.example.com", False),
+    ):
+        provider = ImapProvider()
+        settings = {"configured_accounts": [{"account_id": address, "email": address,
+                    "provider": "IMAP", "imap_server": host, "imap_port": 993}]}
+        contexts = []
+        def make_context():
+            ctx = MagicMock()
+            contexts.append(ctx)
+            return ctx
+        with patch("backend.config.load_settings", return_value=settings), \
+             patch("backend.providers.imap.get_secret", return_value="mock_password"), \
+             patch("ssl.create_default_context", side_effect=make_context), \
+             patch("imaplib.IMAP4_SSL", side_effect=ConnectionRefusedError("offline")):
+            assert provider.validate_connection(address).success is False
+        assert contexts
+        # The first context belongs to the explicitly configured host. A
+        # Roadrunner mailbox may subsequently try its known ISP fallback hosts.
+        checked_contexts = contexts if expect_legacy or not address.endswith("@satx.rr.com") else contexts[:1]
+        for ctx in checked_contexts:
+            if expect_legacy:
+                ctx.set_ciphers.assert_called_once_with("DEFAULT:@SECLEVEL=1")
+                assert ctx.minimum_version == ssl.TLSVersion.TLSv1_2
+            else:
+                ctx.set_ciphers.assert_not_called()
